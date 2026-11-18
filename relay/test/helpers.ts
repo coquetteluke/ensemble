@@ -85,8 +85,8 @@ export class Client {
     return JSON.parse((await this.nextRaw()) as string);
   }
 
-  async closeCode(): Promise<number> {
-    await this.until(() => this.closed !== null);
+  async closeCode(ms = 5000): Promise<number> {
+    await this.until(() => this.closed !== null, ms);
     return this.closed!.code;
   }
 
@@ -101,10 +101,10 @@ export class Client {
   }
 }
 
-export async function connect(id: string, role = "host"): Promise<Client> {
-  const res = await SELF.fetch(`https://relay.test/v1/mailbox/${id}/${role}`, {
-    headers: { Upgrade: "websocket" },
-  });
+export async function connect(id: string, role = "host", ip?: string): Promise<Client> {
+  const headers: Record<string, string> = { Upgrade: "websocket" };
+  if (ip) headers["CF-Connecting-IP"] = ip;
+  const res = await SELF.fetch(`https://relay.test/v1/mailbox/${id}/${role}`, { headers });
   expect(res.status).toBe(101);
   const ws = res.webSocket!;
   ws.accept();
@@ -115,8 +115,9 @@ export async function claim(
   id: string,
   key: Key,
   accessKey = b64url(crypto.getRandomValues(new Uint8Array(32))),
+  ip?: string,
 ): Promise<Client> {
-  const c = await connect(id);
+  const c = await connect(id, "host", ip);
   const ch = await c.next();
   expect(ch.t).toBe("challenge");
   c.send({ t: "claim", hostKey: key.pub, accessKey, sig: await sign(key, id, ch.nonce) });
@@ -128,4 +129,54 @@ export async function auth(id: string, key: Key): Promise<Client> {
   const ch = await c.next();
   c.send({ t: "auth", sig: await sign(key, id, ch.nonce) });
   return c;
+}
+
+export interface Mac {
+  id: string;
+  accessKey: string;
+  host: Client;
+  key: Key;
+}
+
+export async function setup(): Promise<Mac> {
+  const id = randomID();
+  const accessKey = b64url(crypto.getRandomValues(new Uint8Array(32)));
+  const key = await newKey();
+  const host = await claim(id, key, accessKey);
+  expect((await host.next()).t).toBe("ready");
+  return { id, accessKey, host, key };
+}
+
+/** Connects a phone and sends a valid proof. Returns once the phone is waiting. */
+export async function phoneWaiting(mac: Mac): Promise<{ phone: Client; conn: string; token: string }> {
+  const phone = await connect(mac.id, "phone");
+  const ch = await phone.next();
+  expect(ch.t).toBe("challenge");
+  phone.send({ t: "access", proof: await proof(mac.accessKey, mac.id, ch.nonce) });
+  expect(await phone.next()).toEqual({ t: "waiting" });
+  const note = await mac.host.next();
+  expect(note.t).toBe("phone");
+  return { phone, conn: note.conn, token: note.token };
+}
+
+export async function dataSocket(mac: Mac, conn: string, token: string): Promise<Client> {
+  const data = await connect(mac.id, `data/${conn}`);
+  data.send({ t: "data", token });
+  return data;
+}
+
+export async function paired(mac: Mac) {
+  const p = await phoneWaiting(mac);
+  const data = await dataSocket(mac, p.conn, p.token);
+  expect(await p.phone.next()).toEqual({ t: "paired" });
+  return { ...p, data };
+}
+
+export async function pairStillWorks(phone: Client, data: Client) {
+  expect(await phone.quiet()).toBe(true);
+  expect(await data.quiet()).toBe(true);
+  phone.ws.send("still here");
+  expect(await data.nextRaw()).toBe("still here");
+  data.ws.send("yes");
+  expect(await phone.nextRaw()).toBe("yes");
 }

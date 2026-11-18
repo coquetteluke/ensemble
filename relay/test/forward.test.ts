@@ -1,56 +1,6 @@
 import { env, evictDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { auth, b64url, claim, Client, connect, type Key, newKey, proof, randomID } from "./helpers";
-
-interface Mac {
-  id: string;
-  accessKey: string;
-  host: Client;
-  key: Key;
-}
-
-async function setup(): Promise<Mac> {
-  const id = randomID();
-  const accessKey = b64url(crypto.getRandomValues(new Uint8Array(32)));
-  const key = await newKey();
-  const host = await claim(id, key, accessKey);
-  expect((await host.next()).t).toBe("ready");
-  return { id, accessKey, host, key };
-}
-
-/** Connects a phone and sends a valid proof. Returns once the phone is waiting. */
-async function phoneWaiting(mac: Mac): Promise<{ phone: Client; conn: string; token: string }> {
-  const phone = await connect(mac.id, "phone");
-  const ch = await phone.next();
-  expect(ch.t).toBe("challenge");
-  phone.send({ t: "access", proof: await proof(mac.accessKey, mac.id, ch.nonce) });
-  expect(await phone.next()).toEqual({ t: "waiting" });
-  const note = await mac.host.next();
-  expect(note.t).toBe("phone");
-  return { phone, conn: note.conn, token: note.token };
-}
-
-async function dataSocket(mac: Mac, conn: string, token: string): Promise<Client> {
-  const data = await connect(mac.id, `data/${conn}`);
-  data.send({ t: "data", token });
-  return data;
-}
-
-async function paired(mac: Mac) {
-  const p = await phoneWaiting(mac);
-  const data = await dataSocket(mac, p.conn, p.token);
-  expect(await p.phone.next()).toEqual({ t: "paired" });
-  return { ...p, data };
-}
-
-async function pairStillWorks(phone: Client, data: Client) {
-  expect(await phone.quiet()).toBe(true);
-  expect(await data.quiet()).toBe(true);
-  phone.ws.send("still here");
-  expect(await data.nextRaw()).toBe("still here");
-  data.ws.send("yes");
-  expect(await phone.nextRaw()).toBe("yes");
-}
+import { auth, b64url, claim, Client, connect, dataSocket, type Key, newKey, pairStillWorks, paired, phoneWaiting, proof, randomID, setup } from "./helpers";
 
 describe("phone pairing and forwarding", () => {
   it("a phone with the right proof is paired", async () => {

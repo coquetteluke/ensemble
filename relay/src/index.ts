@@ -1,5 +1,6 @@
 import { isConnID, isMailboxID } from "./wire";
 
+export { ClaimLimiter } from "./claim-limiter";
 export { Mailbox } from "./mailbox";
 
 /** Routes a request to the Durable Object for its mailbox. Anything else is a 404, a non-upgrade is a 426. */

@@ -8,9 +8,17 @@ routes = [{ pattern = "relay.coquettemc.com", custom_domain = true }]
 name = "MAILBOX"
 class_name = "Mailbox"
 
+[[durable_objects.bindings]]
+name = "CLAIM_LIMITER"
+class_name = "ClaimLimiter"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Mailbox"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["ClaimLimiter"]
 
 [observability]
 enabled = false
