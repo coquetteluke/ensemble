@@ -38,3 +38,6 @@ Config/Local.xcconfig
 
 # Local design references (screenshots of other apps; never published)
 .design-ref/
+
+# Agent worktrees made by Claude Code
+.claude/worktrees/
