@@ -2,7 +2,8 @@ import AppKit
 import SwiftUI
 import EnsembleKit
 
-/// Settings window: General, Accounts (subscriptions, sign-ins and API keys), Models, Engine, Power.
+/// Settings window: General, Accounts (subscriptions, sign-ins and API keys), Alerts, Models, Engine, Power, GitHub,
+/// Customizations.
 struct SettingsView: View {
     let store: SessionStore
     @AppStorage(Zoom.storageKey) private var zoom = 1.0
@@ -17,34 +18,42 @@ struct SettingsView: View {
 private struct SettingsTabs: View {
     let store: SessionStore
     @Environment(\.theme) private var theme
+    /// The selected tab, kept so other screens can open Settings on a tab (`CustomizationsFocus.show`).
+    @AppStorage(CustomizationsFocus.tabKey) private var tab = "general"
 
     var body: some View {
-        TabView {
-            Tab("General", systemImage: "gearshape") {
+        TabView(selection: $tab) {
+            Tab("General", systemImage: "gearshape", value: "general") {
                 GeneralSettingsView(store: store)
             }
-            Tab("Accounts", systemImage: "person.crop.circle") {
+            Tab("Accounts", systemImage: "person.crop.circle", value: "accounts") {
                 AccountsSettingsView(store: store)
             }
-            Tab("Alerts", systemImage: "bell.badge") {
+            Tab("Alerts", systemImage: "bell.badge", value: "alerts") {
                 AttentionSettingsTab()
             }
-            Tab("Models", systemImage: "cpu") {
+            Tab("Models", systemImage: "cpu", value: "models") {
                 ModelsSettingsView(store: store)
             }
-            Tab("Engine", systemImage: "server.rack") {
+            Tab("Engine", systemImage: "server.rack", value: "engine") {
                 EngineSettingsView(store: store)
             }
-            Tab("Power", systemImage: "cup.and.saucer") {
+            Tab("Power", systemImage: "cup.and.saucer", value: "power") {
                 PowerSettingsTab()
             }
-            Tab("GitHub", systemImage: "arrow.triangle.pull") {
+            Tab("GitHub", systemImage: "arrow.triangle.pull", value: "github") {
                 GitHubSettingsTab()
             }
+            Tab("Customizations", systemImage: "puzzlepiece.extension", value: CustomizationsFocus.tabValue) {
+                CustomizationsSettingsTab(store: store)
+            }
         }
-        .frame(width: theme.z(640), height: theme.z(560))
+        // The Customizations tab compares three engines side by side, so it gets a wider window.
+        .frame(width: theme.z(isWide ? 960 : 640), height: theme.z(isWide ? 660 : 560))
         .background(theme.background)
     }
+
+    private var isWide: Bool { tab == CustomizationsFocus.tabValue }
 }
 
 /// Default model for new sessions.
