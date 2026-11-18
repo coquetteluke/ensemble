@@ -4,9 +4,10 @@ Built from the two research catalogs (`docs/research/claude-code-and-antigravity
 
 The deep polish (PLAN.md M5) starts only after Luke says go, when these waves are done.
 
-## Running now
-- WP-K: Gemini through the official `agy acp`, including Ensemble setting Gemini's mode itself (this Mac's Antigravity config is Turbo).
-- WP-L: engine router, Accounts tab, plan limits.
+## Status (2026-11-18, night)
+- Done and committed: Gemini engine (WP-K), engine router and Accounts (WP-L), Wave 1 (W1-A, W1-B, W1-C), W2-B review pane, W2-C rooms in the window with one shared side pane.
+- Running: W2-A plan mode and question cards, WP-M import from Claude Code, WP-P GitHub pull request bar.
+- Next: W2-D background work and limits, W2-E workspace trust card, then Wave 3.
 
 ## Wave 1 (files nobody else is editing)
 | Item | Features | Main files |
