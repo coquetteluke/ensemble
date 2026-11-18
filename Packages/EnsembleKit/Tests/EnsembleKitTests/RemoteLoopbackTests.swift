@@ -256,6 +256,30 @@ import Testing
         #expect(await h.server.status.devices.isEmpty)
     }
 
+    @Test func helloWithAVersionThreeFrameHeaderIsRefused() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let url = try #require(RemotePairing.webSocketURL(host: "127.0.0.1", port: h.port))
+        let task = URLSession.shared.webSocketTask(with: url)
+        task.resume()
+        defer { task.cancel() }
+        _ = try await task.receive()
+        // What a real protocol 3 phone sends: v=3 in the frame header and no ephemeral key.
+        let hello = #"{"v":3,"id":"1","type":"hello","data":{"protocolVersion":3,"deviceName":"Old","deviceID":"old","clientNonce":"\#(RemoteHandshake.encode(RemoteHandshake.makeNonce()))","proof":"\#(RemoteHandshake.encode(RemoteHandshake.makeNonce()))","dialedHost":"127.0.0.1","dialedPort":\#(h.port)}}"#
+        try await task.send(.string(hello))
+        let message = try await task.receive()
+        guard case .string = message else {
+            Issue.record("The refusal of an old phone must be plaintext")
+            return
+        }
+        let reply = try RemoteCoding.decode(RemoteServerFrame.self, from: Self.data(message))
+        guard case .error(let error) = reply.message else {
+            Issue.record("Expected an error, got \(reply.message.typeName)")
+            return
+        }
+        #expect(error.code == .unsupportedVersion)
+    }
+
     @Test func missingOrMalformedEphemeralKeyIsBadRequest() async throws {
         let h = try await startServer()
         defer { Task { await h.server.stop() } }
@@ -821,7 +845,15 @@ final class FakeMac: Sendable {
 
     private static func send(_ message: RemoteServerMessage, replyTo: String? = nil, version: Int = remoteProtocolVersion,
                              on connection: NWConnection) {
-        guard let data = try? RemoteCoding.encode(RemoteServerFrame(message, replyTo: replyTo, version: version)) else { return }
+        guard var data = try? RemoteCoding.encode(RemoteServerFrame(message, replyTo: replyTo, version: version)) else { return }
+        // A Mac older than protocol 4 sends a challenge without an ephemeral key.
+        if version < 4, case .challenge = message,
+           var json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           var body = json["data"] as? [String: Any] {
+            body["ephemeralKey"] = nil
+            json["data"] = body
+            data = (try? JSONSerialization.data(withJSONObject: json)) ?? data
+        }
         let context = NWConnection.ContentContext(identifier: "text", metadata: [NWProtocolWebSocket.Metadata(opcode: .text)])
         connection.send(content: data, contentContext: context, isComplete: true, completion: .idempotent)
     }

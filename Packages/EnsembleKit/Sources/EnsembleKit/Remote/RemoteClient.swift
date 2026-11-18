@@ -225,7 +225,14 @@ public final class RemoteClient {
         defer { timer.cancel() }
         do {
             // 1. The Mac speaks first with a fresh nonce.
-            let first = try Self.decode(try await task.receive())
+            //    Read the version first: an older Mac's challenge has no ephemeral key and would not decode, so the
+            //    phone must refuse it by version before it decodes the rest.
+            let firstMessage = try await task.receive()
+            if let header = try? JSONDecoder().decode(RemoteFrameHeader.self, from: Self.data(firstMessage)),
+               header.version < remoteMinimumProtocolVersion {
+                throw RemoteError(.unsupportedVersion, "Update Ensemble on your Mac to connect from this iPhone.")
+            }
+            let first = try Self.decode(firstMessage)
             let challenge: RemoteChallenge
             switch first.message {
             case .challenge(let c): challenge = c
@@ -696,14 +703,17 @@ public final class RemoteClient {
         String(decoding: try RemoteCoding.encode(frame), as: UTF8.self)
     }
 
-    private nonisolated static func decode(_ message: URLSessionWebSocketTask.Message) throws -> RemoteServerFrame {
-        let data: Data
+    private nonisolated static func data(_ message: URLSessionWebSocketTask.Message) -> Data {
         switch message {
-        case .string(let s): data = Data(s.utf8)
-        case .data(let d): data = d
-        @unknown default: throw RemoteWireError.notText
+        case .string(let s): Data(s.utf8)
+        case .data(let d): d
+        @unknown default: Data()
         }
-        return try RemoteCoding.decode(RemoteServerFrame.self, from: data)
+    }
+
+    private nonisolated static func decode(_ message: URLSessionWebSocketTask.Message) throws -> RemoteServerFrame {
+        guard !data(message).isEmpty else { throw RemoteWireError.notText }
+        return try RemoteCoding.decode(RemoteServerFrame.self, from: data(message))
     }
 
     private nonisolated static func describe(_ error: any Error) -> String {
