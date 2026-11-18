@@ -18,3 +18,9 @@ Newest first. One line per finished piece; details in commits.
 - WP-A engine client done and committed: OpenCodeClient, EventStream, permission rules (Auto is an allowlist), EngineManager, mock model, 40 unit tests plus 10 live tests against the real service. Engine behaviour notes in docs/reference/opencode-engine-notes.md.
 - Subscriptions: Claude via the official `claude` CLI, Google AI via `agy` (installed, signed in), every OpenCode sign-in and coding plan, and a generic ACP engine. Anthropic support's first answer recorded in docs/reference/claude-code-engine-notes.md.
 - iPhone app must fit the iPhone Duo's outer and inner screens; landscape enabled.
+
+## 2026-11-18 (later)
+
+- GitHub reports the `coquetteluke` account as suspended (push refused, repo page 404). Keep committing locally; push when Luke has it restored. Do not create another account or push anywhere else.
+- Remote security fixes committed (protocol v2, mutual HMAC, pre-pairing limits). Mac side of the remote wired: Window > Pair iPhone.
+- Icon: Luke picked option 2, Constellation.
