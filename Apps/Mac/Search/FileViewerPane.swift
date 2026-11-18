@@ -201,7 +201,9 @@ private struct OpenInMenu: View {
                     }
                 }
                 if !ExternalEditors.installed.isEmpty { Divider() }
-                Button("Default app") { FileActions.openWithDefaultApp(link) }
+                if FileActions.canOpenWithDefaultApp(link) {
+                    Button("Default app") { FileActions.openWithDefaultApp(link) }
+                }
             } label: {
                 label
             }

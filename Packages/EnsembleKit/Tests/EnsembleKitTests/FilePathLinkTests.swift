@@ -145,4 +145,26 @@ import Testing
         let plain = MarkdownInline.attributed("Edited docs/PLAN.md", theme: .dark, size: 14)
         #expect(plain.runs.allSatisfy { $0.link == nil })
     }
+
+    @Test func linksAnAgentWritesCannotOpenFilesOrApps() throws {
+        let box = try Sandbox()
+        let base = (box.project as NSString).standardizingPath
+        // A hand-written file link (outside the folder, even to a real file), another app's URL scheme and a file
+        // URL all become plain text; web and mail links stay.
+        let text = "[notes](ensemble-file://open?path=/etc/hosts) [run](x-apple.systempreferences:com.apple.preference) "
+            + "[app](file:///System/Applications/Calculator.app) [web](https://example.com) [mail](mailto:a@example.com)"
+        let attributed = MarkdownInline.attributed(text, theme: .dark, size: 14, fileBase: base)
+        let links = attributed.runs.compactMap(\.link).map(\.absoluteString)
+        #expect(links == ["https://example.com", "mailto:a@example.com"])
+        #expect(!MarkdownInline.isAllowedWrittenLink(URL(string: "vscode://file/etc/hosts")!))
+        #expect(MarkdownInline.isAllowedWrittenLink(URL(string: "HTTPS://example.com")!))
+    }
+
+    @Test func clickTimeCheckRefusesFilesOutsideTheFolder() throws {
+        let box = try Sandbox()
+        let base = (box.project as NSString).standardizingPath
+        #expect(FileLinkCache.diskCheck(base + "/docs/PLAN.md", base: base))
+        #expect(!FileLinkCache.diskCheck("/etc/hosts", base: base))
+        #expect(!FileLinkCache.diskCheck(base + "/docs", base: base), "folders are not files")
+    }
 }

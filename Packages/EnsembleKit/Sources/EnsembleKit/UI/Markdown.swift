@@ -215,12 +215,25 @@ public enum MarkdownInline {
                 attributed[run.range].backgroundColor = theme.inlineCodeBackground
                 attributed[run.range].foregroundColor = theme.inlineCodeText
             }
-            if run.link != nil {
-                attributed[run.range].foregroundColor = theme.accent
+            if let link = run.link {
+                // Links an agent writes are untrusted: only web and mail links stay clickable. Anything else
+                // (including an ensemble-file link it wrote itself, or another app's URL scheme) becomes plain text.
+                if isAllowedWrittenLink(link) {
+                    attributed[run.range].foregroundColor = theme.accent
+                } else {
+                    attributed[run.range].link = nil
+                }
             }
         }
         if let fileBase, !fileBase.isEmpty { addFileLinks(&attributed, base: fileBase, theme: theme) }
         return attributed
+    }
+
+    /// Schemes a link written in agent text may open.
+    public static let writtenLinkSchemes: Set<String> = ["http", "https", "mailto"]
+
+    public static func isAllowedWrittenLink(_ url: URL) -> Bool {
+        writtenLinkSchemes.contains(url.scheme?.lowercased() ?? "")
     }
 
     /// Marks file paths that exist inside `base`: a whole code span holding a path, or paths in plain text.
@@ -407,10 +420,14 @@ public struct MarkdownView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .environment(\.openURL, OpenURLAction { [fileLinkActions] url in
-            guard let link = FileLink(url: url) else { return .systemAction }
-            fileLinkActions?.open(link)
-            return .handled
+        .environment(\.openURL, OpenURLAction { [fileLinkActions, sessionDirectory] url in
+            if let link = FileLink(url: url) {
+                // Checked again at click time: only a file that is still inside this session's folder opens.
+                guard !sessionDirectory.isEmpty, FileLinkCache.diskCheck(link.path, base: sessionDirectory) else { return .discarded }
+                fileLinkActions?.open(link)
+                return .handled
+            }
+            return MarkdownInline.isAllowedWrittenLink(url) ? .systemAction : .discarded
         })
     }
 

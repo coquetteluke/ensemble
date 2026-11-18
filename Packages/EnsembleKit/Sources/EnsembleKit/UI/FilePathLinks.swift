@@ -192,7 +192,7 @@ public final class FileLinkCache: Sendable {
         return isFile
     }
 
-    static func diskCheck(_ path: String, base: String) -> Bool {
+    public static func diskCheck(_ path: String, base: String) -> Bool {
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), !isDirectory.boolValue else { return false }
         let real = (path as NSString).resolvingSymlinksInPath

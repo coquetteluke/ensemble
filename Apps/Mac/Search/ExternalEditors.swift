@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import EnsembleKit
 
 /// A code editor installed on this Mac that files can be opened in.
@@ -98,14 +99,35 @@ enum FileActions {
     }
 
     static func openWithDefaultApp(_ link: FileLink) {
+        guard canOpenWithDefaultApp(link) else { return }
         NSWorkspace.shared.open(URL(fileURLWithPath: link.path))
     }
 
-    /// "Open in" entries: each installed editor, then the default app for the file type.
+    /// False for anything that would run instead of open: executables, scripts, apps and installers, which an
+    /// agent could otherwise get launched with one click on a path it wrote.
+    static func canOpenWithDefaultApp(_ link: FileLink) -> Bool {
+        let path = link.path
+        if FileManager.default.isExecutableFile(atPath: path) { return false }
+        if path.split(separator: "/").contains(where: { $0.lowercased().hasSuffix(".app") }) { return false }
+        let ext = (path as NSString).pathExtension.lowercased()
+        let runnable: Set<String> = ["app", "command", "tool", "terminal", "sh", "bash", "zsh", "csh", "ksh", "py", "pl", "rb",
+                                     "scpt", "scptd", "applescript", "workflow", "action", "pkg", "mpkg", "dmg", "prefpane",
+                                     "kext", "plugin", "bundle", "webloc", "inetloc", "fileloc", "jar", "osascript", "url"]
+        if runnable.contains(ext) { return false }
+        if let type = UTType(filenameExtension: ext),
+           [UTType.executable, .application, .applicationBundle, .script, .shellScript, .unixExecutable].contains(where: { type.conforms(to: $0) }) {
+            return false
+        }
+        return true
+    }
+
+    /// "Open in" entries: each installed editor, then the default app for the file type (not for runnable files).
     static func openInItems(for link: FileLink) -> [FileLinkMenuItem] {
-        ExternalEditors.installed.map { editor in
+        let editors = ExternalEditors.installed.map { editor in
             FileLinkMenuItem(id: editor.bundleID, title: editor.name) { ExternalEditors.open(link, in: editor) }
-        } + [FileLinkMenuItem(id: "default-app", title: "Default app") { openWithDefaultApp(link) }]
+        }
+        guard canOpenWithDefaultApp(link) else { return editors }
+        return editors + [FileLinkMenuItem(id: "default-app", title: "Default app") { openWithDefaultApp(link) }]
     }
 
     /// The right-click menu of a file link.
