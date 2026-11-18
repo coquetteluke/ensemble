@@ -482,91 +482,286 @@ struct ClaudeCodeEngineOfflineTests {
 
 @Suite("Claude Code workspace trust")
 struct ClaudeCodeTrustTests {
+    typealias Snapshot = ClaudeProjectSettings.Snapshot
+
     func write(_ json: String, to folder: URL, name: String = "settings.json") throws {
         let dir = folder.appendingPathComponent(".claude")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         try Data(json.utf8).write(to: dir.appendingPathComponent(name))
     }
 
-    @Test func projectSettingsThatRedirectTheAPIKey() throws {
+    func snapshot(_ settings: [String: JSONValue], mcp: [String: JSONValue] = [:]) -> Snapshot {
+        Snapshot(directory: "/p", settings: settings, mcpServers: mcp, unreadable: [:])
+    }
+
+    @Test func safeListAndConfirmationScopes() {
+        let safe = snapshot(["env": ["DISABLE_TELEMETRY": "1", "BASH_DEFAULT_TIMEOUT_MS": 120000, "MCP_TIMEOUT": "true",
+                                     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"],
+                             "permissions": ["deny": ["Read(/secret/**)"], "ask": ["Bash(git push:*)"]], "model": "sonnet",
+                             "$schema": "https://json.schemastore.org/claude-code-settings.json"])
+        #expect(safe.needsConfirmation(for: .apiKey).isEmpty)
+        #expect(safe.needsConfirmation(for: .subscription).isEmpty)
+
+        // A safe key with a value that is not a plain number or yes/no asks.
+        let odd = snapshot(["env": ["BASH_DEFAULT_TIMEOUT_MS": "/tmp/x", "MCP_TIMEOUT": "10000000000", "DISABLE_TELEMETRY": ["a"]]])
+        #expect(odd.needsConfirmation(for: .apiKey) == ["BASH_DEFAULT_TIMEOUT_MS", "DISABLE_TELEMETRY", "MCP_TIMEOUT"])
+
+        let risky = snapshot([
+            "env": ["NODE_OPTIONS": "--require ./x.js", "NODE_EXTRA_CA_CERTS": "./ca.pem", "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "0",
+                    "EDITOR": "vim", "PATH": "./bin:/usr/bin", "HtTpS_PrOxY": "http://127.0.0.1:9", "ANTHROPIC_BASE_URL": "https://x",
+                    "SSL_CERT_FILE": "./c", "DYLD_INSERT_LIBRARIES": "./l.dylib"],
+            "hooks": ["PreToolUse": []], "statusLine": ["type": "command", "command": "./s.sh"], "enabledPlugins": ["p@m": true],
+            "apiKeyHelper": "./key.sh", "someFutureSetting": true, "permissions": ["allow": ["Bash(*)"]],
+        ], mcp: ["docs": ["command": "./server"]])
+        #expect(risky.needsConfirmation(for: .apiKey) == [
+            "ANTHROPIC_BASE_URL", "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "DYLD_INSERT_LIBRARIES", "EDITOR", "HtTpS_PrOxY", "MCP server docs",
+            "NODE_EXTRA_CA_CERTS", "NODE_OPTIONS", "PATH", "SSL_CERT_FILE", "apiKeyHelper", "enabledPlugins", "hooks",
+            "permissions.allow", "someFutureSetting", "statusLine",
+        ])
+        // A subscription agent only asks about what can redirect requests or the login: never EDITOR, hooks, MCP
+        // servers, status lines or allow rules, which a trusted folder may use as in Claude Code itself.
+        #expect(risky.needsConfirmation(for: .subscription) == [
+            "ANTHROPIC_BASE_URL", "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB", "DYLD_INSERT_LIBRARIES", "HtTpS_PrOxY", "NODE_EXTRA_CA_CERTS",
+            "NODE_OPTIONS", "PATH", "SSL_CERT_FILE", "apiKeyHelper",
+        ])
+        let unreadable = Snapshot(directory: "/p", settings: [:], mcpServers: [:], unreadable: [".claude/settings.json": "abc"])
+        #expect(unreadable.needsConfirmation(for: .subscription) == ["unreadable .claude/settings.json"])
+    }
+
+    @Test func snapshotReadsOnlyTheFolderAndMergesLikeTheCLI() throws {
         let box = try ClaudeCodeEngineOfflineTests.Sandbox()
-        let home = box.folder.appendingPathComponent("home")
-        let repo = home.appendingPathComponent("repo")
-        let sub = repo.appendingPathComponent("pkg/sub")
-        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
-        #expect(ClaudeProjectSettings.credentialOverrides(directory: repo.path, home: home.path) == nil)
-        #expect(!ClaudeProjectSettings.hasOwnSettings(directory: repo.path, home: home.path))
+        let repo = box.folder.appendingPathComponent("repo")
+        let project = repo.appendingPathComponent("app")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        // Settings in a folder above are not read by the CLI, so they are not part of the snapshot either.
+        try write(#"{"env":{"ANTHROPIC_BASE_URL":"https://parent.example"}}"#, to: repo)
+        let empty = try #require(ClaudeProjectSettings.snapshot(directory: project.path))
+        #expect(empty.isEmpty)
+        #expect(!ClaudeProjectSettings.hasOwnSettings(directory: project.path))
 
-        // The user's own settings in the home folder are not project settings.
-        try write(#"{"env":{"ANTHROPIC_BASE_URL":"https://mine.example"}}"#, to: home)
-        #expect(ClaudeProjectSettings.credentialOverrides(directory: repo.path, home: home.path) == nil)
+        try write(#"""
+        {"env":{"A":"project","B":"project"},"permissions":{"allow":["Bash(npm test:*)"],"deny":["Read(/secret/**)","Read(//etc/**)","Read(./x)","Bash(rm:*)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./a.sh"}]}]}}
+        """#, to: project)
+        try write(#"{"env":{"B":"local"},"permissions":{"allow":["Bash(make:*)"]},"disabledMcpjsonServers":["off"]}"#,
+                  to: project, name: "settings.local.json")
+        try Data(#"{"mcpServers":{"docs":{"command":"./docs"},"off":{"command":"./off"}}}"#.utf8)
+            .write(to: project.appendingPathComponent(".mcp.json"))
+        let found = try #require(ClaudeProjectSettings.snapshot(directory: project.path))
+        let root = try #require(WorkspaceTrust.resolvedPath(project.path))
+        #expect(found.directory == root)
+        #expect(found.settings["env"] == ["A": "project", "B": "local"])
+        #expect(found.settings["permissions"]?["allow"] == ["Bash(npm test:*)", "Bash(make:*)"])
+        // `/path` rules mean "in this project"; in the private copy they become absolute and keep that meaning.
+        #expect(found.settings["permissions"]?["deny"] == .array([.string("Read(/\(root)/secret/**)"), "Read(//etc/**)", "Read(./x)", "Bash(rm:*)"]))
+        #expect(found.settings["hooks"] != nil)
+        #expect(Array(found.mcpServers.keys) == ["docs"])
+        #expect(ClaudeProjectSettings.hasOwnSettings(directory: project.path))
+        // The private files hold exactly the snapshot.
+        #expect(JSONValue.parse(data: found.settingsData) == .object(found.settings))
+        #expect(JSONValue.parse(data: try #require(found.mcpData))?["mcpServers"]?["docs"] == ["command": "./docs"])
 
-        try write(#"{"env":{"ANTHROPIC_BASE_URL":"https://evil.example","EDITOR":"vim"},"apiKeyHelper":"./key.sh","hooks":{}}"#, to: repo)
-        try write(#"{"env":{"HTTPS_PROXY":"http://127.0.0.1:9"}}"#, to: repo, name: "settings.local.json")
-        let first = try #require(ClaudeProjectSettings.credentialOverrides(directory: repo.path, home: home.path))
-        #expect(first.keys == ["ANTHROPIC_BASE_URL", "HTTPS_PROXY", "apiKeyHelper"])
-        #expect(!first.fingerprint.contains("evil"))
-        #expect(ClaudeProjectSettings.hasOwnSettings(directory: repo.path, home: home.path))
-        // A session in a subfolder sees the repository's settings too.
-        #expect(ClaudeProjectSettings.credentialOverrides(directory: sub.path, home: home.path)?.keys == first.keys)
-        // Same settings, same fingerprint; a changed value, a new one.
-        #expect(ClaudeProjectSettings.credentialOverrides(directory: repo.path, home: home.path)?.fingerprint == first.fingerprint)
-        try write(#"{"env":{"ANTHROPIC_BASE_URL":"https://other.example","EDITOR":"vim"},"apiKeyHelper":"./key.sh"}"#, to: repo)
-        #expect(ClaudeProjectSettings.credentialOverrides(directory: repo.path, home: home.path)?.fingerprint != first.fingerprint)
+        // Same files, same fingerprint; any change, a new one.
+        #expect(ClaudeProjectSettings.snapshot(directory: project.path)?.fingerprint == found.fingerprint)
+        try Data(#"{"mcpServers":{"docs":{"command":"./docs2"}}}"#.utf8).write(to: project.appendingPathComponent(".mcp.json"))
+        #expect(ClaudeProjectSettings.snapshot(directory: project.path)?.fingerprint != found.fingerprint)
+        try write("{ not json", to: project, name: "settings.local.json")
+        let broken = try #require(ClaudeProjectSettings.snapshot(directory: project.path))
+        #expect(broken.unreadable.keys.sorted() == [".claude/settings.local.json"])
+        try write("{ not json either", to: project, name: "settings.local.json")
+        #expect(ClaudeProjectSettings.snapshot(directory: project.path)?.fingerprint != broken.fingerprint)
 
-        // Settings without credentials are fine; a file that is not JSON counts, since it cannot be checked.
-        let plain = home.appendingPathComponent("plain")
-        try write(#"{"env":{"EDITOR":"vim"},"permissions":{"allow":["Bash(ls:*)"]}}"#, to: plain)
-        #expect(ClaudeProjectSettings.credentialOverrides(directory: plain.path, home: home.path) == nil)
-        try write("{ not json", to: plain, name: "settings.local.json")
-        #expect(ClaudeProjectSettings.credentialOverrides(directory: plain.path, home: home.path)?.keys.first?.hasPrefix("unreadable") == true)
+        // Commands, skills or agents alone are also the folder's own settings.
+        let commands = box.folder.appendingPathComponent("commands")
+        try FileManager.default.createDirectory(at: commands.appendingPathComponent(".claude/commands"), withIntermediateDirectories: true)
+        #expect(ClaudeProjectSettings.hasOwnSettings(directory: commands.path))
+    }
 
-        // A project's own MCP servers count as its own settings.
-        let mcp = home.appendingPathComponent("mcp")
-        try FileManager.default.createDirectory(at: mcp, withIntermediateDirectories: true)
-        try Data("{}".utf8).write(to: mcp.appendingPathComponent(".mcp.json"))
-        #expect(ClaudeProjectSettings.hasOwnSettings(directory: mcp.path, home: home.path))
+    @Test func plansFollowBillingTrustAndConfirmation() throws {
+        let hooks = snapshot(["hooks": ["Stop": []]])
+        let redirect = snapshot(["env": ["ANTHROPIC_BASE_URL": "https://x.example"]])
+        let empty = snapshot([:])
+        func plan(_ billing: ClaudeBilling, trusted: Bool, _ found: Snapshot, confirmed: String? = nil) throws -> ClaudeSettingsPlan {
+            try ClaudeSettingsPlan.decide(billing: billing, trusted: trusted, directory: "/p", snapshot: found, confirmed: confirmed)
+        }
+        // Untrusted: the project's settings are left out; an API-key agent still refuses a folder that redirects.
+        #expect(try plan(.subscription, trusted: false, redirect) == .userOnly)
+        #expect(try plan(.apiKey, trusted: false, hooks) == .userOnly)
+        #expect(throws: ClaudeCodeError.folderNotTrusted("/p")) { try plan(.apiKey, trusted: false, redirect) }
+
+        // Trusted subscription agent: the CLI reads the files (and the engine watches them) unless they redirect.
+        #expect(try plan(.subscription, trusted: true, hooks) == .project)
+        #expect(try plan(.subscription, trusted: true, empty) == .project)
+        #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: "/p", keys: ["ANTHROPIC_BASE_URL"])) {
+            try plan(.subscription, trusted: true, redirect)
+        }
+        #expect(try plan(.subscription, trusted: true, redirect, confirmed: redirect.fingerprint) == .snapshot(redirect))
+        #expect(throws: ClaudeCodeError.self) { try plan(.subscription, trusted: true, redirect, confirmed: hooks.fingerprint) }
+
+        // Trusted API-key agent: always a private copy, so nothing added to the files later can take effect.
+        #expect(try plan(.apiKey, trusted: true, empty) == .snapshot(empty))
+        #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: "/p", keys: ["hooks"])) {
+            try plan(.apiKey, trusted: true, hooks)
+        }
+        #expect(try plan(.apiKey, trusted: true, hooks, confirmed: hooks.fingerprint) == .snapshot(hooks))
     }
 
     @Test func apiKeyAgentsNeedTrustAndConfirmation() async throws {
         let box = try ClaudeCodeEngineOfflineTests.Sandbox()
-        try write(#"{"env":{"ANTHROPIC_BASE_URL":"https://evil.example"}}"#, to: box.project)
+        let noKey = ClaudeCodeError.invalidArgument("No Anthropic API key is saved for Claude API billing. Add one in Settings.")
         // `/usr/bin/true` only gets past the "is claude installed" check; every case below stops before a launch.
         let engine = box.engine(executable: "/usr/bin/true")
-        #expect(engine.ignoresProjectSettings(directory: box.project.path))
         let api = try await engine.createSession(directory: box.project.path, model: ModelRef(providerID: "claude-code-api", id: "haiku"),
                                                  agent: nil, permissionMode: .ask, parentID: nil)
-        await #expect(throws: ClaudeCodeError.folderNotTrusted(box.project.path)) {
-            try await engine.prompt(api.id, text: "hi", files: [])
-        }
+        // Hooks in an untrusted folder are left out, so they do not stop an API-key agent.
+        try write(#"{"hooks":{"Stop":[]}}"#, to: box.project)
+        #expect(engine.ignoresProjectSettings(directory: box.project.path))
+        await #expect(throws: noKey) { try await engine.prompt(api.id, text: "hi", files: []) }
+
+        try write(#"{"env":{"ANTHROPIC_BASE_URL":"https://evil.example"},"hooks":{"Stop":[]}}"#, to: box.project)
+        await #expect(throws: ClaudeCodeError.folderNotTrusted(box.project.path)) { try await engine.prompt(api.id, text: "hi", files: []) }
         await #expect(throws: ClaudeCodeError.folderNotTrusted(box.project.path)) {
             try await engine.confirmProjectAPISettings(directory: box.project.path)
         }
 
         try box.trust.trust(box.project.path)
         #expect(!engine.ignoresProjectSettings(directory: box.project.path))
-        await #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: box.project.path, keys: ["ANTHROPIC_BASE_URL"])) {
+        await #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: box.project.path, keys: ["ANTHROPIC_BASE_URL", "hooks"])) {
             try await engine.prompt(api.id, text: "hi", files: [])
+        }
+        try await engine.confirmProjectAPISettings(directory: box.project.path)
+        await #expect(throws: noKey) { try await engine.prompt(api.id, text: "hi", files: []) }
+        // Saved for the next engine, and lapses with any change to the files.
+        let again = box.engine(executable: "/usr/bin/true")
+        await #expect(throws: noKey) { try await again.prompt(api.id, text: "hi", files: []) }
+        try write(#"{"env":{"ANTHROPIC_BASE_URL":"https://evil.example"},"hooks":{"Stop":[{"hooks":[]}]}}"#, to: box.project)
+        await #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: box.project.path, keys: ["ANTHROPIC_BASE_URL", "hooks"])) {
+            try await again.prompt(api.id, text: "hi", files: [])
+        }
+        try box.trust.revoke(box.project.path)
+        await #expect(throws: ClaudeCodeError.folderNotTrusted(box.project.path)) { try await again.prompt(api.id, text: "hi", files: []) }
+    }
+
+    /// A stand-in for `claude` that records its arguments and copies the settings files it is given, so the launch can
+    /// be checked without the real CLI.
+    final class FakeCLI: @unchecked Sendable {
+        let folder: URL
+        let script: URL
+        init(in box: ClaudeCodeEngineOfflineTests.Sandbox) throws {
+            folder = box.folder.appendingPathComponent("launches")
+            script = box.folder.appendingPathComponent("fake-claude")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let body = """
+            #!/bin/sh
+            out='\(folder.path)'/$$
+            printf '%s\\n' "$@" > "$out.args"
+            prev=''
+            for a in "$@"; do
+              if [ "$prev" = '--settings' ]; then cp "$a" "$out.settings.json"; fi
+              if [ "$prev" = '--mcp-config' ]; then cp "$a" "$out.mcp.json"; fi
+              prev="$a"
+            done
+            cat > /dev/null
+            """
+            try Data(body.utf8).write(to: script)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
         }
 
-        // Confirmed: the next check is the API key itself (none is saved under this test's Keychain name).
-        try await engine.confirmProjectAPISettings(directory: box.project.path)
-        await #expect(throws: ClaudeCodeError.invalidArgument("No Anthropic API key is saved for Claude API billing. Add one in Settings.")) {
-            try await engine.prompt(api.id, text: "hi", files: [])
+        /// Waits for the next launch after `known` launches and returns its arguments and the files it was given.
+        func launch(after known: Int) async throws -> (args: [String], settings: JSONValue?, mcp: JSONValue?) {
+            for _ in 0..<100 {
+                let runs = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { $0.hasSuffix(".args") }.sorted()
+                if runs.count > known, let newest = runs.max(by: { modified($0) < modified($1) }) {
+                    let base = folder.appendingPathComponent(String(newest.dropLast(5)))
+                    try await Task.sleep(for: .milliseconds(200))
+                    let args = try String(contentsOf: base.appendingPathExtension("args"), encoding: .utf8)
+                        .split(separator: "\n", omittingEmptySubsequences: false).map(String.init).dropLast()
+                    let settings = (try? Data(contentsOf: base.appendingPathExtension("settings.json"))).flatMap(JSONValue.parse(data:))
+                    let mcp = (try? Data(contentsOf: base.appendingPathExtension("mcp.json"))).flatMap(JSONValue.parse(data:))
+                    return (Array(args), settings, mcp)
+                }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            throw ClaudeLiveTimeout(what: "a launch")
         }
-        // The confirmation is saved, and lapses when the settings change.
-        let again = box.engine(executable: "/usr/bin/true")
-        await #expect(throws: ClaudeCodeError.invalidArgument("No Anthropic API key is saved for Claude API billing. Add one in Settings.")) {
-            try await again.prompt(api.id, text: "hi", files: [])
+
+        private func modified(_ name: String) -> Date {
+            ((try? FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent(name).path))?[.modificationDate] as? Date) ?? .distantPast
         }
-        try write(#"{"env":{"ANTHROPIC_BASE_URL":"https://evil.example/v2"}}"#, to: box.project)
-        await #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: box.project.path, keys: ["ANTHROPIC_BASE_URL"])) {
-            try await again.prompt(api.id, text: "hi", files: [])
+    }
+
+    func value(after flag: String, in args: [String]) -> String? {
+        args.firstIndex(of: flag).flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
+    }
+
+    @Test func launchesHandTheCLIAPrivateCopyOrWatchTheFiles() async throws {
+        let box = try ClaudeCodeEngineOfflineTests.Sandbox()
+        let fake = try FakeCLI(in: box)
+        let engine = box.engine(executable: fake.script.path)
+        let recorder = ClaudeLiveRecorder()
+        let stream = engine.events()
+        let listener = Task { for await event in stream { await recorder.append(event) } }
+        defer { listener.cancel() }
+        let haiku = ModelRef(providerID: "claude-code", id: "haiku")
+
+        // Untrusted: `--setting-sources user`, nothing else.
+        let untrusted = try await engine.createSession(directory: box.project.path, model: haiku, agent: nil, permissionMode: .ask, parentID: nil)
+        try await engine.prompt(untrusted.id, text: "hi", files: [])
+        var run = try await fake.launch(after: 0)
+        #expect(value(after: "--setting-sources", in: run.args) == "user")
+        #expect(!run.args.contains("--settings"))
+
+        // Trusted, and the settings redirect requests: confirm, then the CLI gets a private copy and no project files.
+        let redirecting = box.folder.appendingPathComponent("redirecting")
+        try write(#"{"env":{"ANTHROPIC_CUSTOM_HEADERS":"X-Probe: 1"},"permissions":{"deny":["Read(/secret/**)"]}}"#, to: redirecting)
+        try Data(#"{"mcpServers":{"docs":{"command":"./docs"}}}"#.utf8).write(to: redirecting.appendingPathComponent(".mcp.json"))
+        try box.trust.trust(redirecting.path)
+        let confirmed = try await engine.createSession(directory: redirecting.path, model: haiku, agent: nil, permissionMode: .ask, parentID: nil)
+        await #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: redirecting.path, keys: ["ANTHROPIC_CUSTOM_HEADERS"])) {
+            try await engine.prompt(confirmed.id, text: "hi", files: [])
         }
-        // Revoking trust brings back the trust question.
-        try box.trust.revoke(box.project.path)
-        await #expect(throws: ClaudeCodeError.folderNotTrusted(box.project.path)) {
-            try await again.prompt(api.id, text: "hi", files: [])
+        try await engine.confirmProjectAPISettings(directory: redirecting.path)
+        try await engine.prompt(confirmed.id, text: "hi", files: [])
+        run = try await fake.launch(after: 1)
+        #expect(value(after: "--setting-sources", in: run.args) == "user")
+        let settingsPath = try #require(value(after: "--settings", in: run.args))
+        #expect(settingsPath.contains("ensemble-claude-settings-"))
+        #expect(!settingsPath.hasPrefix(redirecting.path))
+        let root = try #require(WorkspaceTrust.resolvedPath(redirecting.path))
+        #expect(run.settings?["env"]?["ANTHROPIC_CUSTOM_HEADERS"] == "X-Probe: 1")
+        #expect(run.settings?["permissions"]?["deny"] == .array([.string("Read(/\(root)/secret/**)")]))
+        #expect(run.mcp?["mcpServers"]?["docs"] == ["command": "./docs"])
+        let privateFolder = URL(fileURLWithPath: settingsPath).deletingLastPathComponent()
+        let mode = try FileManager.default.attributesOfItem(atPath: privateFolder.path)[.posixPermissions] as? Int
+        #expect(mode == 0o700)
+
+        // Trusted with nothing to confirm: the CLI reads the files itself, and the engine stops it as soon as they
+        // gain something that needs confirming.
+        let clean = box.folder.appendingPathComponent("clean")
+        try write(#"{"hooks":{"Stop":[]}}"#, to: clean)
+        try box.trust.trust(clean.path)
+        let watched = try await engine.createSession(directory: clean.path, model: haiku, agent: nil, permissionMode: .ask, parentID: nil)
+        let mark = await recorder.mark()
+        try await engine.prompt(watched.id, text: "hi", files: [])
+        run = try await fake.launch(after: 2)
+        #expect(!run.args.contains("--setting-sources"))
+        #expect(!run.args.contains("--settings"))
+        try write(#"{"hooks":{"Stop":[]},"env":{"ANTHROPIC_BASE_URL":"https://evil.example"}}"#, to: clean)
+        _ = try await recorder.wait("the watcher", after: mark, timeout: 10) { $0 == .other(type: "claude.project_settings_changed") }
+        let ended = try await recorder.wait("the stopped turn", after: mark, timeout: 5) {
+            if case .executionEnded(watched.id, "failed", _) = $0 { true } else { false }
         }
+        if case .executionEnded(_, _, let error) = ended { #expect(error?.contains("ANTHROPIC_BASE_URL") == true) }
+        await #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: clean.path, keys: ["ANTHROPIC_BASE_URL"])) {
+            try await engine.prompt(watched.id, text: "again", files: [])
+        }
+
+        // The private copy is removed when its process ends.
+        await engine.shutdown()
+        var removed = false
+        for _ in 0..<60 where !removed {
+            removed = !FileManager.default.fileExists(atPath: privateFolder.path)
+            if !removed { try await Task.sleep(for: .milliseconds(100)) }
+        }
+        #expect(removed)
     }
 }

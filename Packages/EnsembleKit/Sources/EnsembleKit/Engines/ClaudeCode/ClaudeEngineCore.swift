@@ -16,6 +16,8 @@ actor ClaudeEngineCore {
         var launchedWithResumeAt = false
         /// Whether the folder was trusted (project settings loaded) when the process started.
         var trusted = false
+        /// The CLI reads the project's own settings files (`ClaudeSettingsPlan.project`), so they are watched.
+        var readsProjectFiles = false
     }
 
     struct TranscriptSource: Sendable {
@@ -93,16 +95,51 @@ actor ClaudeEngineCore {
 
     func currentPlanLimits() -> ClaudePlanLimits? { planLimits }
 
+    /// Confirms the folder's current settings (all of them, as `ClaudeProjectSettings.Snapshot` reads them). Any later
+    /// change to them needs a new confirmation before the next launch.
     func confirmProjectAPISettings(directory: String) throws {
         guard configuration.trust.isTrusted(directory) else { throw ClaudeCodeError.folderNotTrusted(directory) }
         let key = WorkspaceTrust.resolvedPath(directory) ?? directory
-        guard let overrides = ClaudeProjectSettings.credentialOverrides(directory: directory) else {
+        guard let snapshot = ClaudeProjectSettings.snapshot(directory: directory),
+              !snapshot.needsConfirmation(for: .apiKey).isEmpty else {
             store.confirmedAPISettings[key] = nil
             save()
             return
         }
-        store.confirmedAPISettings[key] = overrides.fingerprint
+        store.confirmedAPISettings[key] = snapshot.fingerprint
         save()
+    }
+
+    /// The settings plan for a session folder right now (throws when the user has to trust or confirm first).
+    private func settingsPlan(directory: String, billing: ClaudeBilling, trusted: Bool) throws -> ClaudeSettingsPlan {
+        let key = WorkspaceTrust.resolvedPath(directory) ?? directory
+        return try ClaudeSettingsPlan.decide(billing: billing, trusted: trusted, directory: directory,
+                                             snapshot: ClaudeProjectSettings.snapshot(directory: directory),
+                                             confirmed: store.confirmedAPISettings[key])
+    }
+
+    /// Called about once a second while the CLI reads a trusted folder's own settings files (the CLI reloads them while
+    /// it runs). When they now hold something that needs confirming, the process is stopped at once. Returns false
+    /// when there is nothing left to watch.
+    private func watchProjectSettings(root: String, generation: Int) -> Bool {
+        guard let session = live[root], session.process.generation == generation, session.readsProjectFiles,
+              let record = store[root] else { return false }
+        do {
+            _ = try settingsPlan(directory: record.directory, billing: record.billing,
+                                 trusted: configuration.trust.isTrusted(record.directory))
+            return true
+        } catch {
+            live[root] = nil
+            session.process.terminate()
+            failWaiters(root: root, message: "the project's Claude settings changed")
+            clearPending(root: root)
+            if session.turnsInFlight > 0 {
+                emit(.executionEnded(sessionID: root, outcome: "failed", error: error.localizedDescription))
+                emit(.activity(sessionID: root, .failed))
+            }
+            emit(.other(type: "claude.project_settings_changed"))
+            return false
+        }
     }
     func currentConnectors() -> [ConnectorInfo] { connectors }
 
@@ -319,8 +356,14 @@ actor ClaudeEngineCore {
         let record = try record(id)
         let trusted = configuration.trust.isTrusted(record.directory)
         if let session = live[id], session.process.isRunning {
-            // A trust change takes effect once the process is idle: the next prompt starts a new one.
-            if session.trusted == trusted || session.turnsInFlight > 0 { return }
+            if session.turnsInFlight > 0 { return }
+            // A trust change takes effect once the process is idle: the next prompt starts a new one. So does a change
+            // to project files the process reads that now needs confirming (checked again below, which throws).
+            var current = session.trusted == trusted
+            if current, session.readsProjectFiles {
+                current = (try? settingsPlan(directory: record.directory, billing: record.billing, trusted: trusted)) == .project
+            }
+            if current { return }
             stopProcess(id)
         }
         live[id] = nil
@@ -329,17 +372,10 @@ actor ClaudeEngineCore {
         guard FileManager.default.fileExists(atPath: record.directory, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw ClaudeCodeError.invalidArgument("The project folder does not exist: \(record.directory)")
         }
+        // What the project's own settings may do (see `ClaudeSettingsPlan`); throws when the user must trust or confirm.
+        let plan = try settingsPlan(directory: record.directory, billing: record.billing, trusted: trusted)
         var apiKey: String?
         if record.billing == .apiKey {
-            // A project's settings could send the key elsewhere (ANTHROPIC_BASE_URL, a proxy, apiKeyHelper). Checked
-            // even for an untrusted folder, whose settings the CLI would not load, so such a project is always shown.
-            if let overrides = ClaudeProjectSettings.credentialOverrides(directory: record.directory) {
-                guard trusted else { throw ClaudeCodeError.folderNotTrusted(record.directory) }
-                let key = WorkspaceTrust.resolvedPath(record.directory) ?? record.directory
-                guard store.confirmedAPISettings[key] == overrides.fingerprint else {
-                    throw ClaudeCodeError.projectOverridesAPISettings(directory: record.directory, keys: overrides.keys)
-                }
-            }
             guard let key = keychain.read() else {
                 throw ClaudeCodeError.invalidArgument("No Anthropic API key is saved for Claude API billing. Add one in Settings.")
             }
@@ -352,28 +388,50 @@ actor ClaudeEngineCore {
             start = record.started ? .resume : .new
         }
         let model = record.model.map(\.id).flatMap { $0 == "default" ? nil : $0 }
+        // A snapshot plan hands the CLI a private copy of the confirmed settings; it never reads the project's files.
+        var snapshotArguments: [String] = []
+        var snapshotFolder: URL?
+        if case .snapshot(let snapshot) = plan {
+            let written = try Self.writeSnapshot(snapshot)
+            snapshotFolder = written.folder
+            snapshotArguments = written.arguments
+        }
         let options = ClaudeLaunchOptions(sessionID: record.cliID, start: start, resumeAt: start == .new ? nil : record.resumeAt,
                                           model: model, effort: record.effort, permissionMode: record.permissionMode,
-                                          settingSources: configuration.settingSources.effective(trusted: trusted),
+                                          settingSources: configuration.settingSources.effective(trusted: plan == .project),
                                           thinkingDisplay: configuration.thinkingDisplay,
-                                          fastMode: record.fastMode, extraArguments: configuration.extraArguments)
+                                          fastMode: record.fastMode, extraArguments: configuration.extraArguments + snapshotArguments)
         let env = ClaudeCLI.environment(base: configuration.baseEnvironment, billing: record.billing, apiKey: apiKey,
                                         fileCheckpointing: configuration.fileCheckpointing)
         generation += 1
-        let process = try ClaudeProcess.launch(executable: exe, arguments: ClaudeCLI.arguments(options), environment: env,
+        let process: ClaudeProcess
+        do {
+            process = try ClaudeProcess.launch(executable: exe, arguments: ClaudeCLI.arguments(options), environment: env,
                                                directory: URL(fileURLWithPath: record.directory), generation: generation)
+        } catch {
+            if let snapshotFolder { try? FileManager.default.removeItem(at: snapshotFolder) }
+            throw error
+        }
         var decoder = ClaudeStreamDecoder(rootID: id, directory: record.directory, usage: record.usage)
         decoder.contextWindows = contextWindows
         decoder.lastContextTokens = record.lastContextTokens
         decoder.reportsCost = record.billing == .apiKey
         live[id] = Live(process: process, decoder: decoder, bypassAllowed: record.permissionMode == .bypass,
-                        launchedWithResumeAt: options.resumeAt != nil, trusted: trusted)
+                        launchedWithResumeAt: options.resumeAt != nil, trusted: trusted, readsProjectFiles: plan == .project)
         let gen = generation
         let lines = process.lines
         Task {
             for await line in lines { self.handle(line: line, root: id, generation: gen) }
             let status = await process.waitForExit()
+            if let snapshotFolder { try? FileManager.default.removeItem(at: snapshotFolder) }
             self.processExited(root: id, generation: gen, status: status)
+        }
+        if plan == .project {
+            Task {
+                repeat {
+                    try? await Task.sleep(for: .seconds(1))
+                } while self.watchProjectSettings(root: id, generation: gen)
+            }
         }
         // The CLI's initialize answer lists models, commands and fast mode; the account part is never read.
         let directory = record.directory
@@ -381,6 +439,31 @@ actor ClaudeEngineCore {
             if let response = try? await self.control(id, ["subtype": "initialize"], timeout: .seconds(30)) {
                 self.storeInitialize(ClaudeInitializeInfo(response: response), directory: directory)
             }
+        }
+    }
+
+    /// Writes a snapshot's `--settings` and `--mcp-config` files into a new folder only the user can read.
+    static func writeSnapshot(_ snapshot: ClaudeProjectSettings.Snapshot) throws -> (folder: URL, arguments: [String]) {
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent("ensemble-claude-settings-\(UUID().uuidString.lowercased())")
+        do {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            let settings = folder.appendingPathComponent("settings.json")
+            guard fm.createFile(atPath: settings.path, contents: snapshot.settingsData, attributes: [.posixPermissions: 0o600]) else {
+                throw ClaudeCodeError.processFailed("could not write the project's settings for the agent")
+            }
+            var arguments = ["--settings", settings.path]
+            if let mcp = snapshot.mcpData {
+                let file = folder.appendingPathComponent("mcp.json")
+                guard fm.createFile(atPath: file.path, contents: mcp, attributes: [.posixPermissions: 0o600]) else {
+                    throw ClaudeCodeError.processFailed("could not write the project's MCP servers for the agent")
+                }
+                arguments += ["--mcp-config", file.path]
+            }
+            return (folder, arguments)
+        } catch {
+            try? fm.removeItem(at: folder)
+            throw error
         }
     }
 

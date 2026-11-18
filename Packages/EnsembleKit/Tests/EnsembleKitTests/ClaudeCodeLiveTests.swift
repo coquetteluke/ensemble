@@ -258,5 +258,70 @@ struct ClaudeCodeLiveTests {
         #expect(ran(mcpMarker))
         await engine.shutdown()
     }
+
+    /// Confirmed project settings are pinned for the session: the CLI gets a private copy, so edits to the project's
+    /// files while it runs do nothing (without the copy, the raw CLI picks them up on the next prompt). And in a
+    /// trusted folder the CLI reads itself, the engine stops the process once the files start redirecting requests.
+    /// Three haiku turns.
+    @Test func confirmedSettingsArePinnedAndChangesAreWatched() async throws {
+        let harness = try ClaudeLiveHarness()
+        defer { harness.finish() }
+        let marker = harness.folder.appendingPathComponent("pin")
+        let lateMarker = harness.folder.appendingPathComponent("late-hook")
+        func settings(pin: String, lateHook: Bool) -> String {
+            var hooks = [#"{"type": "command", "command": "printf '%s\\n' \"$ENS_PIN\" >> '\#(marker.path)'"}"#]
+            if lateHook { hooks.append(#"{"type": "command", "command": "touch '\#(lateMarker.path)'"}"#) }
+            return #"{"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Ensemble-Probe: 1", "ENS_PIN": "\#(pin)"}, "#
+                + #""hooks": {"UserPromptSubmit": [{"hooks": [\#(hooks.joined(separator: ", "))]}]}}"#
+        }
+        let dotClaude = harness.project.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: dotClaude, withIntermediateDirectories: true)
+        try Data(settings(pin: "confirmed", lateHook: false).utf8).write(to: dotClaude.appendingPathComponent("settings.json"))
+        try harness.trust.trust(harness.project.path)
+
+        let engine = harness.engine()
+        let session = try await engine.createSession(directory: harness.project.path, model: ClaudeLive.haiku, agent: nil,
+                                                     permissionMode: .ask, parentID: nil)
+        await #expect(throws: ClaudeCodeError.self) { try await engine.prompt(session.id, text: "Reply with exactly: ok", files: []) }
+        try await engine.confirmProjectAPISettings(directory: harness.project.path)
+        var mark = await harness.recorder.mark()
+        try await engine.prompt(session.id, text: "Reply with exactly: ok", files: [])
+        #expect(try await harness.ended(session.id, after: mark) == "succeeded")
+        func pins() -> [String] {
+            ((try? String(contentsOf: marker, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        }
+        #expect(pins() == ["confirmed"])
+
+        // Edit the project's settings while the process runs: a new value and a new hook. Neither takes effect.
+        try Data(settings(pin: "changed", lateHook: true).utf8).write(to: dotClaude.appendingPathComponent("settings.json"))
+        try await Task.sleep(for: .seconds(4))
+        mark = await harness.recorder.mark()
+        try await engine.prompt(session.id, text: "Reply with exactly: ok", files: [])
+        #expect(try await harness.ended(session.id, after: mark) == "succeeded")
+        #expect(pins() == ["confirmed", "confirmed"])
+        #expect(!FileManager.default.fileExists(atPath: lateMarker.path))
+        // The next launch needs a new confirmation for the changed files.
+        await engine.shutdown()
+        await #expect(throws: ClaudeCodeError.self) { try await engine.prompt(session.id, text: "Reply with exactly: ok", files: []) }
+
+        // A trusted folder with nothing to confirm: the CLI reads its files, and the engine watches them.
+        let clean = harness.folder.appendingPathComponent("clean")
+        try FileManager.default.createDirectory(at: clean.appendingPathComponent(".claude"), withIntermediateDirectories: true)
+        try Data("{}".utf8).write(to: clean.appendingPathComponent(".claude/settings.json"))
+        try harness.trust.trust(clean.path)
+        let watched = try await engine.createSession(directory: clean.path, model: ClaudeLive.haiku, agent: nil,
+                                                     permissionMode: .ask, parentID: nil)
+        mark = await harness.recorder.mark()
+        try await engine.prompt(watched.id, text: "Reply with exactly: ok", files: [])
+        #expect(try await harness.ended(watched.id, after: mark) == "succeeded")
+        mark = await harness.recorder.mark()
+        // A closed local port: even if the CLI used it, nothing would leave the Mac.
+        try Data(#"{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}}"#.utf8).write(to: clean.appendingPathComponent(".claude/settings.json"))
+        _ = try await harness.recorder.wait("the watcher", after: mark, timeout: 10) { $0 == .other(type: "claude.project_settings_changed") }
+        await #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: clean.path, keys: ["ANTHROPIC_BASE_URL"])) {
+            try await engine.prompt(watched.id, text: "Reply with exactly: ok", files: [])
+        }
+        await engine.shutdown()
+    }
 }
 #endif

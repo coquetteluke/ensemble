@@ -21,8 +21,10 @@ public enum ClaudeCodeError: Error, LocalizedError, Equatable, Sendable {
     /// Claude settings set where requests go). The UI can ask "Trust this folder?", call `WorkspaceTrust.trust`, and
     /// try again.
     case folderNotTrusted(String)
-    /// A trusted folder's Claude settings set API endpoints or credentials (`ANTHROPIC_BASE_URL`, `apiKeyHelper`, ...)
-    /// and an API-key agent would send its key there. The UI shows the keys and, if the user agrees, calls
+    /// A trusted folder's own Claude settings hold something that needs the user's say first: for an API-key agent
+    /// any `env` value outside a short safe list, hooks, MCP servers, plugins, helpers or allow rules; for a
+    /// subscription agent anything that can redirect requests or the login (`ANTHROPIC_BASE_URL`, proxies, CA files,
+    /// `NODE_OPTIONS`, `apiKeyHelper`, ...). The UI shows the keys (never values) and, if the user agrees, calls
     /// `ClaudeCodeEngine.confirmProjectAPISettings(directory:)`.
     case projectOverridesAPISettings(directory: String, keys: [String])
 
@@ -49,7 +51,7 @@ public enum ClaudeCodeError: Error, LocalizedError, Equatable, Sendable {
         case .folderNotTrusted(let directory):
             "\(directory) is not a trusted folder. Its Claude settings change where requests and your API key go, so Ensemble only starts an API-key agent here after you trust the folder and confirm those settings."
         case .projectOverridesAPISettings(let directory, let keys):
-            "The Claude settings in \(directory) set \(keys.joined(separator: ", ")). An API-key agent would send your key according to them. Confirm them to start the agent, or use your subscription instead."
+            "The Claude settings in \(directory) set \(keys.joined(separator: ", ")). These can change where requests, your API key or your Claude login go, or run programs while the agent works. Confirm them to start the agent."
         }
     }
 }

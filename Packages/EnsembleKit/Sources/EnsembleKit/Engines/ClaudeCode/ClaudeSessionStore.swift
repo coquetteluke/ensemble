@@ -98,8 +98,8 @@ struct ClaudeSessionRecord: Codable, Hashable, Sendable {
 struct ClaudeSessionStore {
     let fileURL: URL
     private(set) var records: [String: ClaudeSessionRecord] = [:]
-    /// Trusted folders (resolved) whose API endpoint and credential settings the user agreed to for API-key agents,
-    /// with a hash of those settings (`ClaudeProjectSettings.Overrides.fingerprint`), never their values.
+    /// Trusted folders (resolved) whose own Claude settings the user confirmed, with a hash of exactly what was
+    /// confirmed (`ClaudeProjectSettings.Snapshot.fingerprint`), never the values.
     var confirmedAPISettings: [String: String] = [:]
 
     static var defaultURL: URL {

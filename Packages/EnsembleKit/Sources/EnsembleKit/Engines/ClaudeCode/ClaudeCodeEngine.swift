@@ -125,8 +125,9 @@ public final class ClaudeCodeEngine: OpenCodeAPI, EngineModelOptionsControl, Eng
         !configuration.trust.isTrusted(directory) && ClaudeProjectSettings.hasOwnSettings(directory: directory)
     }
 
-    /// Agrees to a trusted folder's API endpoint and credential settings for API-key agents (after
-    /// `ClaudeCodeError.projectOverridesAPISettings`). The agreement lapses when those settings change.
+    /// Agrees to a trusted folder's own Claude settings as they are now (after
+    /// `ClaudeCodeError.projectOverridesAPISettings`), for API-key and subscription agents. Agents then get a private
+    /// copy of exactly these values, so later edits to the files have no effect; the agreement lapses when they change.
     public func confirmProjectAPISettings(directory: String) async throws {
         try await core.confirmProjectAPISettings(directory: directory)
     }
