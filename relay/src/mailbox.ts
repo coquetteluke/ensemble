@@ -632,7 +632,8 @@ export class Mailbox extends DurableObject<Env> {
   }
 }
 
-async function verifyHost(hostKeyB64: string, sigB64: string, id: string, nonce: string): Promise<boolean> {
+/** Checks the host's Ed25519 signature over `ensemble-relay-host|<id>|<nonce>`. Exported for the shared vectors test. */
+export async function verifyHost(hostKeyB64: string, sigB64: string, id: string, nonce: string): Promise<boolean> {
   const keyBytes = fromB64url(hostKeyB64);
   const sig = fromB64url(sigB64);
   if (!keyBytes || !sig) return false;
@@ -644,7 +645,8 @@ async function verifyHost(hostKeyB64: string, sigB64: string, id: string, nonce:
   }
 }
 
-async function verifyPhone(accessKeyB64: string, proofB64: string, id: string, nonce: string): Promise<boolean> {
+/** Checks a phone's HMAC-SHA256 proof over `ensemble-relay-phone|<id>|<nonce>`. Exported for the shared vectors test. */
+export async function verifyPhone(accessKeyB64: string, proofB64: string, id: string, nonce: string): Promise<boolean> {
   const keyBytes = fromB64url(accessKeyB64);
   const mac = fromB64url(proofB64);
   if (!keyBytes || !mac) return false;

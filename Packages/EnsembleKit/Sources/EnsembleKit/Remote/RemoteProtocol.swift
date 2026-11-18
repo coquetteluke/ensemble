@@ -16,7 +16,21 @@ public let remoteDefaultPort = 47823
 
 /// What the iPhone needs to reach the Mac. Encoded in the pairing QR code as JSON.
 public struct RemotePairing: Codable, Hashable, Sendable {
-    /// Host names to try in order: the Tailscale MagicDNS name, the Tailscale IPs, then the LAN name.
+    /// The Mac's mailbox on a relay (`RelayHost`), for reaching it from any network.
+    public struct Relay: Codable, Hashable, Sendable {
+        /// `wss://` address of the relay.
+        public var url: String
+        /// The mailbox ID (`RelayIdentity.mailboxID`).
+        public var mailbox: String
+
+        public init(url: String, mailbox: String) {
+            self.url = url
+            self.mailbox = mailbox
+        }
+    }
+
+    /// Host names to try in order: the Tailscale MagicDNS name, the Tailscale IPs, then the LAN name. May be empty
+    /// when `relay` is set.
     public var hosts: [String]
     public var port: Int
     /// Random secret shared once through the QR code.
@@ -24,24 +38,33 @@ public struct RemotePairing: Codable, Hashable, Sendable {
     public var macName: String
     /// Protocol version of the Mac that made the code. Codes without it decode as version 1.
     public var protocolVersion: Int
+    /// The relay the Mac is reachable through. Codes without it pair direct only.
+    public var relay: Relay?
+    /// The relay the Mac used before `relay`, kept until a connection through the new one works.
+    public var previousRelay: Relay?
 
-    public init(hosts: [String], port: Int, token: String, macName: String, protocolVersion: Int = remoteProtocolVersion) {
+    public init(hosts: [String], port: Int, token: String, macName: String, protocolVersion: Int = remoteProtocolVersion,
+                relay: Relay? = nil, previousRelay: Relay? = nil) {
         self.hosts = hosts
         self.port = port
         self.token = token
         self.macName = macName
         self.protocolVersion = protocolVersion
+        self.relay = relay
+        self.previousRelay = previousRelay
     }
 
-    private enum CodingKeys: String, CodingKey { case hosts, port, token, macName, protocolVersion }
+    private enum CodingKeys: String, CodingKey { case hosts, port, token, macName, protocolVersion, relay, previousRelay }
 
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        hosts = try c.decode([String].self, forKey: .hosts)
+        hosts = try c.decodeIfPresent([String].self, forKey: .hosts) ?? []
         port = try c.decode(Int.self, forKey: .port)
         token = try c.decode(String.self, forKey: .token)
         macName = try c.decodeIfPresent(String.self, forKey: .macName) ?? "Mac"
         protocolVersion = try c.decodeIfPresent(Int.self, forKey: .protocolVersion) ?? 1
+        relay = try c.decodeIfPresent(Relay.self, forKey: .relay)
+        previousRelay = try c.decodeIfPresent(Relay.self, forKey: .previousRelay)
     }
 
     public enum CodeError: Error, Equatable, LocalizedError {
@@ -78,7 +101,9 @@ public struct RemotePairing: Codable, Hashable, Sendable {
         }
         guard let pairing = try? JSONDecoder().decode(RemotePairing.self, from: data) else { throw CodeError.unreadable }
         let hosts = pairing.hosts.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-        guard !hosts.isEmpty else { throw CodeError.missingHosts }
+        // A code may have no direct hosts when it has a relay.
+        let hasRelay = pairing.relay.map { !$0.url.isEmpty && !$0.mailbox.isEmpty } ?? false
+        guard !hosts.isEmpty || hasRelay else { throw CodeError.missingHosts }
         guard (1...65535).contains(pairing.port) else { throw CodeError.badPort }
         guard !pairing.token.isEmpty else { throw CodeError.missingToken }
         self = pairing

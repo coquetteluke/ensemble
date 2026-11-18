@@ -15,6 +15,11 @@ import Synchronization
 /// Connections that have not proved the token yet are limited separately (in total and per address) and are
 /// closed when the hello timeout runs out, whatever state they are in, so they can never use up the slots of
 /// paired phones.
+///
+/// Phones that come through the relay arrive as connections the Mac dialed out (`RelayHost` opens a data socket per
+/// phone and hands it to `adopt`). They take the same path as accepted ones, with the address `relay:<connection id>`,
+/// so failed relayed phones never block each other in the hello limiter. Their hello must name the relay identity
+/// (`relay:<relay host>/<mailbox>` on 443, registered with `addRelayChannelHost`), and a direct phone may not.
 public actor RemoteServer {
     public struct Configuration: Sendable {
         /// 0 picks a free port (tests). Several addresses with port 0 each get their own port.
@@ -96,7 +101,10 @@ public actor RemoteServer {
     private struct Peer {
         let id: Int
         let connection: NWConnection
+        /// The remote IP, or `relay:<connection id>` for a phone that came through the relay.
         let address: String
+        /// The relay's id for this phone, when it came through a relay host.
+        let relayConnection: String?
         let connectedAt: Date
         var ready = false
         var authenticated = false
@@ -111,6 +119,8 @@ public actor RemoteServer {
         var deviceName = ""
         var openSessions: Set<String> = []
         var lastSeen: Date
+        /// The relay identity a relayed phone dialed (normalised), once its hello was accepted.
+        var relayChannelHost: String?
     }
 
     private let host: any RemoteHost
@@ -127,6 +137,9 @@ public actor RemoteServer {
     private var updatesTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var statusContinuations: [UUID: AsyncStream<Status>.Continuation] = [:]
+    /// Relay identities phones may name, normalised, with how many relay hosts registered each.
+    private var relayChannelHosts: [String: Int] = [:]
+    private var relayFailureContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
     private let encoder = RemoteCoding.encoder()
     private let decoder = RemoteCoding.decoder()
 
@@ -203,6 +216,9 @@ public actor RemoteServer {
         peers = [:]
         publishStatus()
     }
+
+    /// Largest message a paired phone may send; a relay host opens its data sockets with this limit.
+    var maxMessageBytes: Int { config.maxMessageBytes }
 
     /// The port of the first listener that came up (useful with port 0).
     public var boundPort: UInt16? {
@@ -348,27 +364,7 @@ public actor RemoteServer {
     // MARK: - Connections
 
     private func accept(_ connection: NWConnection) {
-        let address = Self.remoteAddress(connection.endpoint)
-        guard running, !limiter.isBlocked(address) else {
-            connection.cancel()
-            return
-        }
-        // Handshakes in progress get their own small budget, so they cannot crowd out paired phones.
-        let pending = peers.values.filter { !$0.authenticated }
-        if pending.count >= config.maxPending || pending.count(where: { $0.address == address }) >= config.maxPendingPerAddress {
-            connection.cancel()
-            return
-        }
-        let id = nextPeerID
-        nextPeerID += 1
-        peers[id] = Peer(id: id, connection: connection, address: address, connectedAt: Date(), lastSeen: Date())
-        // The deadline starts now, not when the WebSocket upgrade finishes: a client that opens TCP and never
-        // sends the upgrade request is closed too.
-        let timeout = config.helloTimeout
-        Task { [weak self] in
-            try? await Task.sleep(for: timeout)
-            await self?.expireIfUnauthenticated(id)
-        }
+        guard let id = admit(connection, address: Self.remoteAddress(connection.endpoint), relayConnection: nil) else { return }
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
@@ -385,9 +381,102 @@ public actor RemoteServer {
         publishStatus()
     }
 
-    /// The WebSocket is open: send the challenge and start reading.
+    /// Takes a phone that came through the relay: a WebSocket the Mac dialed to the relay, already open and with the
+    /// relay's data token sent, so the Mac speaks first with the usual challenge. From here it is handled like an
+    /// accepted connection, with the address `relay:<id>` so the hello limiter counts each relayed phone on its own.
+    public func adopt(_ connection: NWConnection, relayConnection id: String) {
+        guard let peerID = admit(connection, address: "relay:\(id)", relayConnection: id) else { return }
+        connection.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .ready:
+                Task { await self?.peerReady(peerID) }
+            case .failed, .cancelled:
+                Task { await self?.dropPeer(peerID) }
+            case .waiting:
+                connection.cancel()
+            default:
+                break
+            }
+        }
+        // The handler above only hears changes from now on.
+        switch connection.state {
+        case .setup: connection.start(queue: queue)
+        case .ready: peerReady(peerID)
+        case .failed, .cancelled: dropPeer(peerID)
+        default: break
+        }
+        publishStatus()
+    }
+
+    /// Lets phones that came through a relay host name this relay identity (`RelayIdentity.channelHost`) in their
+    /// hello. Counted, so two relay hosts with the same identity can each add and remove it.
+    public func addRelayChannelHost(_ host: String) {
+        relayChannelHosts[RemoteChannel.normalizedHost(host), default: 0] += 1
+    }
+
+    /// Undoes one `addRelayChannelHost`. When no relay host uses the identity any more, phones connected through it
+    /// are closed.
+    public func removeRelayChannelHost(_ host: String) {
+        let key = RemoteChannel.normalizedHost(host)
+        guard let count = relayChannelHosts[key] else { return }
+        if count > 1 {
+            relayChannelHosts[key] = count - 1
+            return
+        }
+        relayChannelHosts[key] = nil
+        for (id, p) in peers where p.relayChannelHost == key {
+            p.connection.cancel()
+            peers[id] = nil
+        }
+        publishStatus()
+    }
+
+    /// Relay connection ids of relayed phones that failed the pairing check, so the relay host can report them
+    /// (`badHandshake`) and the relay can block the phone's address.
+    public func relayHandshakeFailures() -> AsyncStream<String> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingNewest(64))
+        relayFailureContinuations[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeRelayFailureContinuation(id) }
+        }
+        return stream
+    }
+
+    private func removeRelayFailureContinuation(_ id: UUID) {
+        relayFailureContinuations[id] = nil
+    }
+
+    /// Registers a new connection that has not proved the token, or closes it when the address is blocked or the
+    /// handshake budget is used up. Returns its peer id.
+    private func admit(_ connection: NWConnection, address: String, relayConnection: String?) -> Int? {
+        guard running, !limiter.isBlocked(address) else {
+            connection.cancel()
+            return nil
+        }
+        // Handshakes in progress get their own small budget, so they cannot crowd out paired phones.
+        let pending = peers.values.filter { !$0.authenticated }
+        if pending.count >= config.maxPending || pending.count(where: { $0.address == address }) >= config.maxPendingPerAddress {
+            connection.cancel()
+            return nil
+        }
+        let id = nextPeerID
+        nextPeerID += 1
+        peers[id] = Peer(id: id, connection: connection, address: address, relayConnection: relayConnection, connectedAt: Date(),
+                         lastSeen: Date())
+        // The deadline starts now, not when the WebSocket upgrade finishes: a client that opens TCP and never
+        // sends the upgrade request is closed too.
+        let timeout = config.helloTimeout
+        Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            await self?.expireIfUnauthenticated(id)
+        }
+        return id
+    }
+
+    /// The WebSocket is open: send the challenge and start reading. Once per connection.
     private func peerReady(_ id: Int) {
-        guard peers[id] != nil else { return }
+        guard let peer = peers[id], !peer.ready else { return }
         let nonce = RemoteHandshake.makeNonce()
         peers[id]?.ready = true
         peers[id]?.lastSeen = Date()
@@ -524,11 +613,14 @@ public actor RemoteServer {
               RemoteHandshake.isValidClientProof(proof, token: token, serverNonce: serverNonce, clientNonce: clientNonce,
                                                        macKey: macKey, phoneKey: phoneKey) else {
             limiter.recordFailure(peer.address)
+            if let relayConnection = peer.relayConnection {
+                for c in relayFailureContinuations.values { c.yield(relayConnection) }
+            }
             send(.error(RemoteError(.unauthorized, "This phone is not paired with this Mac. Scan the pairing code again.")),
                  replyTo: replyTo, to: id, thenClose: true)
             return
         }
-        guard isOwnAddress(hello.dialedHost, port: hello.dialedPort) else {
+        guard isOwnAddress(hello.dialedHost, port: hello.dialedPort, relayed: peer.relayConnection != nil) else {
             send(.error(RemoteError(.badRequest, "This phone dialed an address this Mac does not use. Scan the pairing code again.")),
                  replyTo: replyTo, to: id, thenClose: true)
             return
@@ -539,6 +631,7 @@ public actor RemoteServer {
         }
         limiter.recordSuccess(peer.address)
         peers[id]?.authenticated = true
+        if peer.relayConnection != nil { peers[id]?.relayChannelHost = RemoteChannel.normalizedHost(hello.dialedHost) }
         peers[id]?.deviceID = String(hello.deviceID.prefix(128))
         peers[id]?.deviceName = String(hello.deviceName.prefix(128))
         // From here on every frame is sealed, starting with the welcome, so a relay cannot splice in its own.
@@ -554,8 +647,12 @@ public actor RemoteServer {
     }
 
     /// True when `host:port` is one of this Mac's addresses: a bind address, `localhost`, or an accepted name,
-    /// on a port it listens on.
-    private func isOwnAddress(_ host: String, port: Int) -> Bool {
+    /// on a port it listens on. A phone that came through a relay must instead name a registered relay identity on
+    /// port 443, so keys made for one mailbox never open another's frames, and neither kind can pose as the other.
+    private func isOwnAddress(_ host: String, port: Int, relayed: Bool) -> Bool {
+        if relayed {
+            return port == RelayIdentity.channelPort && relayChannelHosts[RemoteChannel.normalizedHost(host)] != nil
+        }
         let names = Set((config.bindAddresses + config.acceptedHosts + ["localhost"]).map(RemoteChannel.normalizedHost))
         let ports = Set(listeningPorts.values.map(Int.init))
         return names.contains(RemoteChannel.normalizedHost(host)) && ports.contains(port)
