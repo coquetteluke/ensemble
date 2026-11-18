@@ -1,0 +1,37 @@
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+!Packages/**/*.xcworkspace/
+xcuserdata/
+DerivedData/
+build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Local and secret files
+.env
+.env.*
+*.local.json
+secrets/
+*.p12
+*.mobileprovision
+
+# Test output
+test-output/
+screenshots/tmp/
+
+# Personal signing team
+Config/Local.xcconfig
