@@ -2,7 +2,6 @@ import Foundation
 import Observation
 #if os(macOS)
 import Darwin
-import Security
 #endif
 
 /// Why the private OpenCode server for untrusted folders cannot take a session.
@@ -27,13 +26,22 @@ public enum PrivateOpenCodeError: Error, LocalizedError, Equatable, Sendable {
 /// background service cannot have it turned on without changing every folder, so Ensemble runs this second server
 /// with it, and `EngineRouter` sends new OpenCode sessions in untrusted folders here.
 ///
-/// - Started as `opencode serve --hostname 127.0.0.1 --port 0` with a random password (`OPENCODE_SERVER_PASSWORD`,
-///   never on the command line), its own data and state folders (`XDG_DATA_HOME`, `XDG_STATE_HOME`), so its database,
-///   sessions, snapshots and sockets are its own. The user's config folder and cache stay shared, so user-level
-///   config, providers and MCP servers are the same as in the shared service.
+/// - Started as `opencode serve --service --hostname 127.0.0.1 --port 0` with its own data and state folders
+///   (`XDG_DATA_HOME`, `XDG_STATE_HOME`), so its database, sessions, snapshots and sockets are its own. With `--service`
+///   OpenCode makes its own password and writes it, with the address, to `state/opencode/service.json` (0600), the way
+///   the shared service does. The password is never in the server's environment, which every command an agent runs
+///   inherits (checked live: `OPENCODE_SERVER_PASSWORD` would reach them).
+/// - What agent commands do inherit: `XDG_DATA_HOME` and `XDG_STATE_HOME` (paths only; see `dataDirectory` for what the
+///   folders hold), `OPENCODE_DISABLE_PROJECT_CONFIG`, and the app's own environment. Those folders are 0700 and the
+///   database and service file 0600; an agent command runs as the user, so like the shared service's own files
+///   (`~/.local/share/opencode`, `~/.local/state/opencode/service.json`) they are protected from other users, not from
+///   commands the user lets an agent run.
+/// - The user's config folder and cache stay shared, so user-level config, providers and MCP servers are the same as
+///   in the shared service.
 /// - Credentials live in each server's database. API keys and external credentials (cloud profiles) are copied from
 ///   the shared service and kept in step (`credentialSource`). Browser sign-ins (OAuth) are not copied: two servers
-///   refreshing one sign-in would log each other out, so those providers only work in trusted folders.
+///   refreshing one sign-in would log each other out, so those providers only work in trusted folders
+///   (`signInOnlyProviders`; `EngineRouter` refuses them there).
 /// - A small `/bin/sh` wrapper holds the server: when Ensemble stops it, quits or crashes, the wrapper's input closes
 ///   and it stops the server, so no server outlives the app.
 /// - Never touches the shared service.
@@ -41,7 +49,9 @@ public enum PrivateOpenCodeError: Error, LocalizedError, Equatable, Sendable {
 @Observable
 public final class PrivateOpenCodeServer {
     public struct Configuration: Sendable {
-        /// Holds `data/` and `state/` (`~/Library/Application Support/Ensemble/OpenCode untrusted`).
+        /// `~/Library/Application Support/Ensemble/OpenCode untrusted` (0700). `data/opencode/` holds the database
+        /// (sessions, transcripts, copied API keys), logs and snapshots of project files; `state/opencode/` holds
+        /// `service.json` (address, process id, password) and terminal sockets.
         public var dataDirectory: URL
         /// Added to the server's environment last (tests point `OPENCODE_CONFIG` at a user-level config).
         public var extraEnvironment: [String: String]
@@ -69,6 +79,9 @@ public final class PrivateOpenCodeServer {
     public private(set) var client: OpenCodeClient?
     /// Goes up each time a new server process answers for the first time (start and every restart).
     public private(set) var generation = 0
+    /// Providers signed in on the shared service only through a browser sign-in, which is not copied here, so they do
+    /// not work in untrusted folders. Updated with the credentials.
+    public private(set) var signInOnlyProviders: Set<String> = []
 
     @ObservationIgnored public let configuration: Configuration
     /// The shared service, whose API keys and external credentials are copied here (nil copies nothing).
@@ -77,6 +90,8 @@ public final class PrivateOpenCodeServer {
     @ObservationIgnored public var healthInterval: Duration = .seconds(15)
     /// Called with the new client each time a server process answers for the first time.
     @ObservationIgnored public var onReady: (@MainActor (OpenCodeClient) -> Void)?
+    /// Called when `signInOnlyProviders` changes.
+    @ObservationIgnored public var onSignInOnlyProvidersChanged: (@MainActor (Set<String>) -> Void)?
     @ObservationIgnored private var executable: URL?
     /// Checks in a row that the running server did not answer; it is restarted after three (a busy server gets time).
     @ObservationIgnored private var unhealthyChecks = 0
@@ -150,21 +165,23 @@ public final class PrivateOpenCodeServer {
         client = nil
         status = .starting
         do {
-            try FileManager.default.createDirectory(at: configuration.dataDirectory, withIntermediateDirectories: true)
-            let password = Self.randomPassword()
+            try Self.prepareFolders(configuration.dataDirectory)
+            // A service file left by an earlier run must not be mistaken for the new server's.
+            try? FileManager.default.removeItem(at: serviceFileURL)
             let environment = Self.environment(base: configuration.baseEnvironment, dataDirectory: configuration.dataDirectory,
-                                               password: password, executable: executable,
-                                               extra: configuration.extraEnvironment)
+                                               executable: executable, extra: configuration.extraEnvironment)
             let launched = try PrivateServerProcess.launch(executable: executable, environment: environment,
                                                            workingDirectory: configuration.dataDirectory)
             process = launched
-            guard let url = await launched.waitForURL(timeout: 30) else {
+            guard let url = await launched.waitForURL(timeout: 30),
+                  let service = await Self.waitForServiceFile(serviceFileURL, url: url, timeout: 10) else {
                 Task.detached { launched.stop(wait: 3) }
                 process = nil
                 status = .failed("the server did not report its address")
                 return false
             }
-            let candidate = OpenCodeClient(baseURL: url, password: password, defaultDirectory: configuration.defaultDirectory)
+            Self.lockDown(configuration.dataDirectory)
+            let candidate = OpenCodeClient(baseURL: url, password: service.password, defaultDirectory: configuration.defaultDirectory)
             var info: (version: String, url: URL)?
             for _ in 0..<40 {
                 if let answer = try? await candidate.serverInfo() { info = answer; break }
@@ -195,12 +212,17 @@ public final class PrivateOpenCodeServer {
 
     // MARK: Credentials
 
-    /// Brings this server's API keys and external credentials in step with `credentialSource`. Errors are dropped
-    /// (the next check tries again); secret values are never logged or shown.
+    /// Brings this server's API keys and external credentials in step with `credentialSource`, and updates
+    /// `signInOnlyProviders`. Errors are dropped (the next check tries again); secret values are never logged or shown.
     public func syncCredentials() async {
         guard let source = credentialSource, let target = client else { return }
         do {
             let wanted: Wire.DataEnvelope<[JSONValue]> = try await source.get("/api/credential")
+            let signInOnly = Self.signInOnlyProviders(in: wanted.data)
+            if signInOnly != signInOnlyProviders {
+                signInOnlyProviders = signInOnly
+                onSignInOnlyProvidersChanged?(signInOnly)
+            }
             let present: Wire.DataEnvelope<[JSONValue]> = try await target.get("/api/credential")
             let plan = Self.credentialPlan(source: wanted.data, target: present.data)
             for id in plan.remove {
@@ -212,6 +234,17 @@ public final class PrivateOpenCodeServer {
         } catch {
             return
         }
+    }
+
+    /// Integrations with a browser sign-in (OAuth) and no copyable credential (API key or external) on the shared service.
+    nonisolated static func signInOnlyProviders(in source: [JSONValue]) -> Set<String> {
+        var signIn = Set<String>()
+        var copyable = Set<String>()
+        for entry in source {
+            guard let integration = entry["integrationID"]?.stringValue, let type = entry["value"]?["type"]?.stringValue else { continue }
+            if type == "oauth" { signIn.insert(integration) } else if type == "key" || type == "external" { copyable.insert(integration) }
+        }
+        return signIn.subtracting(copyable)
     }
 
     /// What to change on this server so its copyable credentials match the shared service's: entries to remove (by id)
@@ -251,9 +284,59 @@ public final class PrivateOpenCodeServer {
 
     // MARK: Process setup
 
-    /// The server's environment: the app's own, without anything that would point it at the shared service's data,
-    /// plus the project-config switch, the password, and its own data and state folders.
-    nonisolated static func environment(base: [String: String], dataDirectory: URL, password: String, executable: URL,
+    /// `state/opencode/service.json`, written by the server.
+    var serviceFileURL: URL {
+        configuration.dataDirectory.appendingPathComponent("state/opencode/service.json")
+    }
+
+    /// The server process's id, once known (tests).
+    var serverProcessID: Int32? {
+        #if os(macOS)
+        return process?.serverProcessID
+        #else
+        return nil
+        #endif
+    }
+
+    /// Creates the folder, `data/` and `state/`, all 0700 (existing ones are tightened too).
+    nonisolated static func prepareFolders(_ directory: URL) throws {
+        let fm = FileManager.default
+        for folder in [directory, directory.appendingPathComponent("data"), directory.appendingPathComponent("state")] {
+            try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+        }
+    }
+
+    /// Tightens what the server created: its folders 0700, the database and service file 0600.
+    nonisolated static func lockDown(_ directory: URL) {
+        let fm = FileManager.default
+        for folder in ["data/opencode", "state/opencode"] {
+            let path = directory.appendingPathComponent(folder).path
+            if fm.fileExists(atPath: path) { try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path) }
+        }
+        for file in ["data/opencode/opencode.db", "data/opencode/opencode.db-wal", "data/opencode/opencode.db-shm",
+                     "state/opencode/service.json"] {
+            let path = directory.appendingPathComponent(file).path
+            if fm.fileExists(atPath: path) { try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path) }
+        }
+    }
+
+    /// Waits for the server's service file to name the address it printed.
+    nonisolated static func waitForServiceFile(_ url: URL, url address: URL, timeout: TimeInterval) async -> ServiceFile? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let file = try? ServiceFile.read(from: url), file.url.port == address.port, file.url.host == address.host,
+               !file.password.isEmpty {
+                return file
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return nil
+    }
+
+    /// The server's environment: the app's own, without anything that would point it at the shared service's data or
+    /// put a password in it, plus the project-config switch and its own data and state folders.
+    nonisolated static func environment(base: [String: String], dataDirectory: URL, executable: URL,
                                         extra: [String: String]) -> [String: String] {
         var environment = base
         for key in ["OPENCODE_DB", "OPENCODE_SERVER_PASSWORD", "OPENCODE_PASSWORD", "XDG_DATA_HOME", "XDG_STATE_HOME"] {
@@ -261,15 +344,17 @@ public final class PrivateOpenCodeServer {
         }
         environment["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
         environment["OPENCODE_CONFIG_PROJECT_DISABLE"] = "1"
-        environment["OPENCODE_SERVER_PASSWORD"] = password
+        environment["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
         environment["XDG_DATA_HOME"] = dataDirectory.appendingPathComponent("data", isDirectory: true).path
         environment["XDG_STATE_HOME"] = dataDirectory.appendingPathComponent("state", isDirectory: true).path
         let paths = [executable.deletingLastPathComponent().path, "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
         environment["PATH"] = (paths + [environment["PATH"] ?? ""]).filter { !$0.isEmpty }.joined(separator: ":")
         for (key, value) in extra { environment[key] = value }
-        // The switch cannot be turned off from outside.
+        // The switch cannot be turned off, and no password can be put in, from outside.
         environment["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
         environment["OPENCODE_CONFIG_PROJECT_DISABLE"] = "1"
+        environment["OPENCODE_SERVER_PASSWORD"] = nil
+        environment["OPENCODE_PASSWORD"] = nil
         return environment
     }
 
@@ -284,17 +369,6 @@ public final class PrivateOpenCodeServer {
         return nil
     }
 
-    nonisolated static func randomPassword() -> String {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        #if os(macOS)
-        if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
-            for index in bytes.indices { bytes[index] = UInt8.random(in: 0...255) }
-        }
-        #else
-        for index in bytes.indices { bytes[index] = UInt8.random(in: 0...255) }
-        #endif
-        return bytes.map { String(format: "%02x", $0) }.joined()
-    }
 }
 
 #if os(macOS)
@@ -304,7 +378,7 @@ final class PrivateServerProcess: @unchecked Sendable {
     /// `$0` is the opencode executable. Background jobs of a non-interactive shell read /dev/null, so the server
     /// never shares the wrapper's input.
     static let wrapperScript = """
-        "$0" serve --hostname 127.0.0.1 --port 0 &
+        "$0" serve --service --hostname 127.0.0.1 --port 0 &
         pid=$!
         echo "ensemble-private-pid $pid"
         read -r _
@@ -369,6 +443,9 @@ final class PrivateServerProcess: @unchecked Sendable {
     }
 
     var isRunning: Bool { process.isRunning }
+
+    /// The `opencode serve` process (not the wrapper), once it printed its id.
+    var serverProcessID: Int32? { lock.withLock { serverPID } }
 
     func waitForURL(timeout: TimeInterval) async -> URL? {
         let deadline = Date().addingTimeInterval(timeout)

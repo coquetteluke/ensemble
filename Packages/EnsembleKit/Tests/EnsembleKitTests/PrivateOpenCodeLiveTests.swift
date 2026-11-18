@@ -75,6 +75,27 @@ struct PrivateOpenCodeLiveTests {
         let privateClient = try #require(server.client, "the private server did not start: \(server.status)")
         let privateURL = privateClient.baseURL
 
+        // Its environment, which every agent command inherits, has the switch and no password; its files are owner-only.
+        let pid = try #require(server.serverProcessID)
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["eww", "-o", "command=", "-p", String(pid)]
+        let pipe = Pipe()
+        ps.standardOutput = pipe
+        try ps.run()
+        let processLine = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        ps.waitUntilExit()
+        #expect(processLine.contains("serve --service"))
+        #expect(processLine.contains("OPENCODE_DISABLE_PROJECT_CONFIG=1"))
+        #expect(!processLine.contains("OPENCODE_SERVER_PASSWORD"))
+        #expect(!processLine.contains(try ServiceFile.read(from: server.serviceFileURL).password))
+        func mode(_ relative: String) -> Int? {
+            let path = root.appendingPathComponent("private").appendingPathComponent(relative).path
+            return (try? fm.attributesOfItem(atPath: path)[.posixPermissions]) as? Int
+        }
+        for folder in ["", "data", "state", "data/opencode", "state/opencode"] { #expect(mode(folder) == 0o700, "\(folder)") }
+        for file in ["data/opencode/opencode.db", "state/opencode/service.json"] { #expect(mode(file) == 0o600, "\(file)") }
+
         let shared = try OpenCodeClient.fromServiceFile()
         let trust = WorkspaceTrust(fileURL: root.appendingPathComponent("trusted-folders.json"))
         let router = EngineRouter(fallback: shared, trust: trust)

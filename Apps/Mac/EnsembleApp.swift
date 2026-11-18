@@ -103,6 +103,10 @@ final class AppEngine {
     private func startPrivateOpenCode(router: EngineRouter, sharedClient: OpenCodeClient) {
         router.registerForUntrustedFolders(OpenCodeStandIn(reason: "starting"))
         privateOpenCode.credentialSource = sharedClient
+        // Browser sign-ins are not copied to the private server; the router refuses those models in untrusted folders.
+        privateOpenCode.onSignInOnlyProvidersChanged = { providers in
+            router.setProvidersNeedingTrustedFolders(providers)
+        }
         privateOpenCode.onReady = { [weak self] client in
             router.registerForUntrustedFolders(client)
             Task { await self?.store?.reloadSessions() }

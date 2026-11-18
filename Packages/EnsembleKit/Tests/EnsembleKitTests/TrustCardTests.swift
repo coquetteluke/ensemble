@@ -309,23 +309,157 @@ struct TrustCardTests {
         #expect(changed.create.compactMap { $0["id"]?.stringValue } == ["c1"])
     }
 
-    @Test func serverEnvironmentAlwaysDisablesProjectConfig() {
+    /// The server's environment is what every agent command inherits: no password, no pointer at the shared data.
+    @Test func serverEnvironmentDisablesProjectConfigAndCarriesNoPassword() {
         let data = URL(fileURLWithPath: "/tmp/ens-private")
         let env = PrivateOpenCodeServer.environment(
-            base: ["PATH": "/usr/bin", "OPENCODE_DB": "/shared.db", "XDG_DATA_HOME": "/shared", "OPENCODE_SERVER_PASSWORD": "old", "HOME": "/h"],
-            dataDirectory: data, password: "secret", executable: URL(fileURLWithPath: "/opt/homebrew/bin/opencode"),
-            extra: ["OPENCODE_DISABLE_PROJECT_CONFIG": "0", "OPENCODE_CONFIG": "/tmp/user.json"])
+            base: ["PATH": "/usr/bin", "OPENCODE_DB": "/shared.db", "XDG_DATA_HOME": "/shared", "OPENCODE_SERVER_PASSWORD": "old",
+                   "OPENCODE_PASSWORD": "old", "HOME": "/h"],
+            dataDirectory: data, executable: URL(fileURLWithPath: "/opt/homebrew/bin/opencode"),
+            extra: ["OPENCODE_DISABLE_PROJECT_CONFIG": "0", "OPENCODE_CONFIG": "/tmp/user.json", "OPENCODE_SERVER_PASSWORD": "x"])
         #expect(env["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1")
         #expect(env["OPENCODE_CONFIG_PROJECT_DISABLE"] == "1")
+        #expect(env["OPENCODE_DISABLE_AUTOUPDATE"] == "1")
         #expect(env["OPENCODE_DB"] == nil)
-        #expect(env["OPENCODE_SERVER_PASSWORD"] == "secret")
+        #expect(env["OPENCODE_SERVER_PASSWORD"] == nil)
+        #expect(env["OPENCODE_PASSWORD"] == nil)
         #expect(env["XDG_DATA_HOME"] == "/tmp/ens-private/data")
         #expect(env["XDG_STATE_HOME"] == "/tmp/ens-private/state")
         #expect(env["OPENCODE_CONFIG"] == "/tmp/user.json")
         #expect(env["HOME"] == "/h")
         #expect(env["PATH"]?.hasPrefix("/opt/homebrew/bin:") == true)
-        #expect(PrivateOpenCodeServer.randomPassword().count == 64)
-        #expect(PrivateOpenCodeServer.randomPassword() != PrivateOpenCodeServer.randomPassword())
+        #expect(PrivateServerProcess.wrapperScript.contains("serve --service --hostname 127.0.0.1 --port 0"))
+    }
+
+    @Test func foldersAreOwnerOnly() throws {
+        let box = try TrustBox()
+        defer { box.remove() }
+        let folder = box.root.appendingPathComponent("private")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o755])
+        try PrivateOpenCodeServer.prepareFolders(folder)
+        try box.write("data/opencode/opencode.db", in: folder, "db")
+        try box.write("state/opencode/service.json", in: folder)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644],
+                                              ofItemAtPath: folder.appendingPathComponent("data/opencode/opencode.db").path)
+        PrivateOpenCodeServer.lockDown(folder)
+        func mode(_ relative: String) -> Int? {
+            let path = relative.isEmpty ? folder.path : folder.appendingPathComponent(relative).path
+            return (try? FileManager.default.attributesOfItem(atPath: path)[.posixPermissions]) as? Int
+        }
+        for relative in ["", "data", "state", "data/opencode", "state/opencode"] { #expect(mode(relative) == 0o700, "\(relative)") }
+        #expect(mode("data/opencode/opencode.db") == 0o600)
+        #expect(mode("state/opencode/service.json") == 0o600)
+    }
+
+    @Test func signInOnlyProvidersAreTheOnesWithoutACopyableCredential() {
+        func entry(_ integration: String, _ type: String) -> JSONValue {
+            ["id": .string("\(integration)-\(type)"), "integrationID": .string(integration), "active": true,
+             "value": ["type": .string(type)]]
+        }
+        let source = [entry("openai", "oauth"), entry("xai", "oauth"), entry("xai", "key"), entry("amazon-bedrock", "external"),
+                      entry("github-copilot", "oauth")]
+        #expect(PrivateOpenCodeServer.signInOnlyProviders(in: source) == ["openai", "github-copilot"])
+        #expect(PrivateOpenCodeServer.signInOnlyProviders(in: []).isEmpty)
+    }
+
+    @Test func signInProvidersAreRefusedInUntrustedFoldersOnly() async throws {
+        let box = try TrustBox()
+        defer { box.remove() }
+        let shared = RouterFakeEngine(name: "shared")
+        let isolated = RouterFakeEngine(name: "private")
+        let router = EngineRouter(fallback: shared, trust: box.trust)
+        router.registerForUntrustedFolders(isolated)
+        router.setProvidersNeedingTrustedFolders(["openai"])
+        let signIn = ModelRef(providerID: "openai", id: "gpt-5.1")
+        await #expect(throws: EngineRouterError.signInNeedsTrustedFolder(providerID: "openai")) {
+            _ = try await router.createSession(directory: box.project.path, model: signIn, agent: nil, permissionMode: .ask, parentID: nil)
+        }
+        await #expect(throws: EngineRouterError.signInNeedsTrustedFolder(providerID: "openai")) {
+            _ = try await router.createSchedule(title: "t", prompt: "p", directory: box.project.path, schedule: "0 9 * * *", model: signIn)
+        }
+        #expect(EngineRouterError.signInNeedsTrustedFolder(providerID: "openai").errorDescription == SessionStore.signInNeedsTrustText)
+        #expect(shared.calls.isEmpty && isolated.calls.isEmpty)
+        // Other providers still run on the private server; trusted folders use the sign-in on the shared service.
+        _ = try await router.createSession(directory: box.project.path, model: ModelRef(providerID: "opencode", id: "big"),
+                                           agent: nil, permissionMode: .ask, parentID: nil)
+        #expect(isolated.calls.count == 1)
+        try box.trust.trust(box.project.path)
+        _ = try await router.createSession(directory: box.project.path, model: signIn, agent: nil, permissionMode: .ask, parentID: nil)
+        #expect(shared.calls.count == 1)
+    }
+
+    @MainActor
+    @Test func signInLineAndCardExplainTheRefusal() async throws {
+        let box = try TrustBox()
+        defer { box.remove() }
+        let shared = RouterFakeEngine(name: "shared")
+        let isolated = RouterFakeEngine(name: "private")
+        let router = EngineRouter(fallback: shared, trust: box.trust)
+        router.registerForUntrustedFolders(isolated)
+        let signIn = ModelRef(providerID: "openai", id: "gpt-5.1")
+        let store = SessionStore(engine: router)
+        // A session made before the shared service's sign-in was known.
+        let created = try await store.newSession(directory: box.project.path, model: signIn, permissionMode: .ask)
+        let session = try #require(store.session(created.id))
+        #expect(store.trustPrompt(for: session) == nil)
+        router.setProvidersNeedingTrustedFolders(["openai"])
+        let line = try #require(store.newSessionTrustLine(directory: box.project.path, model: signIn))
+        #expect(line == NewSessionTrustLine(text: SessionStore.signInNeedsTrustText, tone: .blocked, offersTrust: true))
+        let card = try #require(store.trustPrompt(for: session))
+        #expect(card.kind == .refused && card.message.hasPrefix("This provider's sign-in works only in trusted folders."))
+        #expect(card.message.contains("start a new session here"))
+        try box.trust.trust(box.project.path)
+        #expect(store.trustPrompt(for: session)?.kind == .keepsSkipping)
+        #expect(store.newSessionTrustLine(directory: box.project.path, model: signIn)?.tone == .trusted)
+    }
+
+    /// For an untrusted folder no call that names the folder reaches the shared service; for a trusted one none reaches
+    /// the private server.
+    @Test func folderScopedCallsNeverReachTheWrongServer() async throws {
+        let box = try TrustBox()
+        defer { box.remove() }
+        let trusted = box.home.appendingPathComponent("code/trusted", isDirectory: true)
+        try box.folder("", in: trusted)
+        try box.trust.trust(trusted.path)
+        let shared = FolderRecordingEngine(name: "shared")
+        let isolated = FolderRecordingEngine(name: "private")
+        let claude = FolderRecordingEngine(name: "claude")
+        let router = EngineRouter(fallback: shared, trust: box.trust)
+        router.register(claude, providers: ["claude-code"], id: "claude", name: "Claude")
+        router.registerForUntrustedFolders(isolated)
+        let free = ModelRef(providerID: "opencode", id: "big")
+
+        func exercise(_ folder: String) async throws {
+            _ = try await router.models(directory: folder)
+            _ = try await router.commands(directory: folder)
+            _ = try await router.createSession(directory: folder, model: free, agent: nil, permissionMode: .ask, parentID: nil)
+            _ = try await router.createSession(directory: folder, model: nil, agent: nil, permissionMode: .ask, parentID: nil)
+            _ = try await router.createSchedule(title: "t", prompt: "p", directory: folder, schedule: "0 9 * * *", model: free)
+            _ = try await router.createSchedule(title: "t", prompt: "p", directory: folder, schedule: "0 9 * * *", model: nil)
+        }
+        try await exercise(box.project.path)
+        #expect(!shared.calls.contains { $0.contains(box.project.path) || $0.hasPrefix("create") }, "\(shared.calls)")
+        #expect(isolated.calls.filter { $0.contains(box.project.path) }.count == 2)
+        #expect(isolated.calls.filter { $0.hasPrefix("create") }.count == 4)
+        // Engines that do not load project config there still answer for the folder.
+        #expect(claude.calls.contains("models:\(box.project.path)"))
+
+        try await exercise(trusted.path)
+        #expect(!isolated.calls.contains { $0.contains(trusted.path) })
+        #expect(isolated.calls.filter { $0.hasPrefix("create") }.count == 4)
+        #expect(shared.calls.filter { $0.contains(trusted.path) }.count == 2)
+
+        // App-wide lists never ask the private server.
+        _ = try await router.models()
+        _ = try await router.providers()
+        _ = try await router.connectors()
+        _ = try await router.commands(directory: nil)
+        _ = try await router.modelBilling()
+        for call in ["models()", "providers()", "connectors()", "commands:nil"] {
+            #expect(!isolated.calls.contains(call), "\(call)")
+            #expect(shared.calls.contains(call), "\(call)")
+        }
     }
 
     @Test func listeningAddressIsLoopbackOnly() {
@@ -334,5 +468,35 @@ struct TrustCardTests {
         #expect(PrivateOpenCodeServer.listeningURL(in: "Server listening on http://0.0.0.0:4096") == nil)
         #expect(PrivateOpenCodeServer.listeningURL(in: "Server listening on http://127.0.0.1") == nil)
         #expect(PrivateOpenCodeServer.listeningURL(in: "starting") == nil)
+    }
+}
+
+/// A fake engine that records every call that names a folder (`models:<folder>`, `commands:<folder>`).
+final class FolderRecordingEngine: RouterFakeEngine, EngineCommandsControl, EngineFolderModels, @unchecked Sendable {
+    func commands(directory: String?) async throws -> [EngineCommand] {
+        log("commands:\(directory ?? "nil")")
+        return []
+    }
+
+    func runCommand(_ sessionID: String, name: String, arguments: String) async throws { log("command:\(sessionID)") }
+
+    func models(directory: String?) async throws -> [ModelInfo] {
+        log("models:\(directory ?? "nil")")
+        return []
+    }
+
+    override func models() async throws -> [ModelInfo] {
+        log("models()")
+        return try await super.models()
+    }
+
+    override func providers() async throws -> [ProviderInfo] {
+        log("providers()")
+        return try await super.providers()
+    }
+
+    override func connectors() async throws -> [ConnectorInfo] {
+        log("connectors()")
+        return try await super.connectors()
     }
 }

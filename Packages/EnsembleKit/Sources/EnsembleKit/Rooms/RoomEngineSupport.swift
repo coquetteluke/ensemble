@@ -89,9 +89,10 @@ extension OpenCodeClient: EngineWorktreeAccess {
 extension EngineRouter: EngineFolderModels {
     /// Every engine's models for the folder, the fallback engine's first (its default model leads); a model two
     /// engines list appears once. Engines without per-folder lists give their usual list. Fails only when every
-    /// engine fails.
+    /// engine fails. Engines are picked with `registrations(forFolder:)`, so the shared OpenCode service never loads an
+    /// untrusted folder's config (the private server answers for it).
     public func models(directory: String?) async throws -> [ModelInfo] {
-        let list = registrations
+        let list = registrations(forFolder: directory)
         let results = await withTaskGroup(of: (Int, Result<[ModelInfo], any Error>).self) { group in
             for (index, registration) in list.enumerated() {
                 group.addTask {

@@ -78,6 +78,11 @@ enum TrustSnapshots {
                 message: "Gemini loads a folder's own hooks, rules and plugins and cannot be told to skip them, so Ensemble "
                     + "does not start it in a folder you have not trusted."),
                  error: WorkspaceTrustError.tooBroad("/Users/sam").errorDescription),
+            Case(title: "OpenCode, a model whose browser sign-in only the shared service has", prompt: TrustPrompt(
+                kind: .refused, folder: folder, engineName: "OpenCode", files: [],
+                title: "This session cannot use its model's sign-in",
+                message: "This provider's sign-in works only in trusted folders. Trust this folder, then start a new "
+                    + "session here to use it.")),
             Case(title: "After trusting, a refused message", prompt: TrustPrompt(
                 kind: .retry, folder: folder, engineName: "Gemini", files: [], title: "Folder trusted",
                 message: "Gemini can start here now. Send the message it refused again.")),
@@ -113,6 +118,8 @@ enum TrustSnapshots {
                 text: "Not trusted. This folder has no agent settings of its own.", tone: .untrusted, offersTrust: false)),
             LineCase(title: "Gemini model", line: NewSessionTrustLine(
                 text: "Not trusted. Gemini only starts in folders you trust.", tone: .blocked, offersTrust: true)),
+            LineCase(title: "OpenCode model with a browser sign-in", line: NewSessionTrustLine(
+                text: SessionStore.signInNeedsTrustText, tone: .blocked, offersTrust: true)),
             LineCase(title: "Trust refused", line: NewSessionTrustLine(
                 text: "Not trusted. Gemini only starts in folders you trust.", tone: .blocked, offersTrust: true),
                      error: WorkspaceTrustError.tooBroad("/Users/sam").errorDescription),

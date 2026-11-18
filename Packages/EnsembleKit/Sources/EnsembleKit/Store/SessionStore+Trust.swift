@@ -214,6 +214,9 @@ extension SessionStore {
                                    + "\(ProjectTrustFiles.list(files.claude)). Trust it to load \(Self.them(files.claude)) "
                                    + "from your next message.")
         case .openCodePrivate:
+            if let provider = session.info.model?.providerID, providersNeedingTrustedFolders.contains(provider) {
+                return signInPrompt(folder: folder, trusted: trusted)
+            }
             guard !files.openCode.isEmpty else { return nil }
             let list = ProjectTrustFiles.list(files.openCode)
             if trusted {
@@ -241,6 +244,27 @@ extension SessionStore {
 
     /// "it" for one file, "them" for several.
     static func them(_ files: [String]) -> String { files.count == 1 ? "it" : "them" }
+
+    /// The sentence for a model whose provider is signed in with a browser sign-in the private server does not have.
+    nonisolated public static let signInNeedsTrustText = "This provider's sign-in works only in trusted folders. Trust this folder to use it."
+
+    /// Providers whose browser sign-in only the shared OpenCode service has (empty without a router).
+    var providersNeedingTrustedFolders: Set<String> { (engine as? EngineRouter)?.providersNeedingTrustedFolders ?? [] }
+
+    /// An OpenCode session on the private server whose model's provider needs a sign-in it does not have. Trusting
+    /// helps new sessions only; this one stays on the private server.
+    private func signInPrompt(folder: String, trusted: Bool) -> TrustPrompt {
+        if trusted {
+            return TrustPrompt(kind: .keepsSkipping, folder: folder, engineName: "OpenCode", files: [],
+                               title: "This session cannot use its model's sign-in",
+                               message: "It started before you trusted this folder, and this provider's sign-in works only "
+                                   + "in trusted folders. Start a new session here to use it.")
+        }
+        return TrustPrompt(kind: .refused, folder: folder, engineName: "OpenCode", files: [],
+                           title: "This session cannot use its model's sign-in",
+                           message: "This provider's sign-in works only in trusted folders. Trust this folder, then start a "
+                               + "new session here to use it.")
+    }
 
     private func retryPrompt(_ refusal: TrustRefusal, name: String, folder: String) -> TrustPrompt {
         TrustPrompt(kind: .retry, folder: folder, engineName: name, files: [], title: "Folder trusted",
@@ -313,6 +337,10 @@ extension SessionStore {
         let kind = trustEngineKind(sessionID: nil, model: model ?? defaultModel, directory: directory)
         if case .refusing(let name) = kind {
             return NewSessionTrustLine(text: "Not trusted. \(name) only starts in folders you trust.", tone: .blocked, offersTrust: true)
+        }
+        if kind == .openCodePrivate, let provider = (model ?? defaultModel)?.providerID,
+           providersNeedingTrustedFolders.contains(provider) {
+            return NewSessionTrustLine(text: Self.signInNeedsTrustText, tone: .blocked, offersTrust: true)
         }
         let skipped: [String]
         switch kind {
