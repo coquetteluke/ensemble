@@ -236,15 +236,16 @@ struct ToolDetailBox<Content: View>: View {
     }
 }
 
-/// Monospaced tool output, trimmed to 14 lines until expanded.
+/// Monospaced tool output, trimmed to 14 lines until expanded (shown whole in the Verbose transcript view).
 struct OutputText: View {
     let text: String
     @Environment(\.theme) private var theme
+    @Environment(\.transcriptViewMode) private var mode
     @State private var showAll = false
 
     var body: some View {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        let limit = 14
+        let limit = mode == .verbose ? Int.max : 14
         VStack(alignment: .leading, spacing: theme.z(6)) {
             Text(showAll || lines.count <= limit ? text : lines.prefix(limit).joined(separator: "\n"))
                 .font(theme.font(size: 12, design: .monospaced))

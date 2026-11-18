@@ -39,6 +39,104 @@ public struct TranscriptActions: Sendable {
 
 public extension EnvironmentValues {
     @Entry var transcriptActions: TranscriptActions = .none
+    /// Forces a view mode (snapshots); nil uses the saved setting (`TranscriptViewMode.storageKey`).
+    @Entry var transcriptViewMode: TranscriptViewMode? = nil
+    /// A message to scroll to and flash, set when a search result is opened.
+    @Entry var transcriptFocus: TranscriptFocus? = nil
+}
+
+/// How much of a transcript is shown. Control-O cycles through them; the choice is saved.
+public enum TranscriptViewMode: String, CaseIterable, Identifiable, Sendable {
+    /// Tool calls collapsed into activity groups, thinking collapsed.
+    case normal
+    /// Thinking shown in full between the tool calls.
+    case thinking
+    /// Every tool call on its own row, opened, with its full output. No activity groups.
+    case verbose
+
+    public static let storageKey = "transcriptViewMode"
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .normal: "Normal"
+        case .thinking: "Thinking"
+        case .verbose: "Verbose"
+        }
+    }
+
+    /// One line on what the mode shows.
+    public var summary: String {
+        switch self {
+        case .normal: "Tool calls grouped, thinking collapsed"
+        case .thinking: "Thinking shown in full"
+        case .verbose: "Every tool call opened, with full output"
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .normal: "text.alignleft"
+        case .thinking: "lightbulb"
+        case .verbose: "list.bullet.rectangle"
+        }
+    }
+
+    public var next: TranscriptViewMode {
+        let all = Self.allCases
+        return all[((all.firstIndex(of: self) ?? 0) + 1) % all.count]
+    }
+
+    /// The saved mode.
+    public static func saved(_ defaults: UserDefaults = .standard) -> TranscriptViewMode {
+        defaults.string(forKey: storageKey).flatMap(TranscriptViewMode.init(rawValue:)) ?? .normal
+    }
+
+    /// Saves the next mode (Control-O). Views reading `@AppStorage(TranscriptViewMode.storageKey)` follow.
+    @discardableResult
+    public static func cycle(_ defaults: UserDefaults = .standard) -> TranscriptViewMode {
+        let next = saved(defaults).next
+        defaults.set(next.rawValue, forKey: storageKey)
+        return next
+    }
+
+    /// Rows as drawn in this mode.
+    public func blocks(_ items: [TranscriptItem], resolutions: [String: PermissionResolution]) -> [TranscriptBlock] {
+        switch self {
+        case .normal:
+            return TranscriptGrouping.blocks(items, resolutions: resolutions)
+        case .thinking:
+            // Thinking stands on its own row, so groups form only from the tool calls between thoughts.
+            var blocks: [TranscriptBlock] = []
+            var segment: [TranscriptItem] = []
+            for item in items {
+                if case .reasoning = item {
+                    blocks += TranscriptGrouping.blocks(segment, resolutions: resolutions)
+                    segment.removeAll()
+                    blocks.append(.single(item))
+                } else {
+                    segment.append(item)
+                }
+            }
+            return blocks + TranscriptGrouping.blocks(segment, resolutions: resolutions)
+        case .verbose:
+            return items.map { .single($0) }
+        }
+    }
+}
+
+/// A message to bring into view. `token` changes for every request, so opening the same result twice scrolls twice.
+public struct TranscriptFocus: Equatable, Sendable {
+    public var sessionID: String
+    public var itemID: String
+    public var token: Int
+
+    public init(sessionID: String, itemID: String, token: Int) {
+        self.sessionID = sessionID
+        self.itemID = itemID
+        self.token = token
+    }
 }
 
 /// All rows of a transcript, spaced like the reference app. The caller provides the scroll container.
@@ -48,6 +146,11 @@ public struct TranscriptList: View {
     let agents: [UUID: AgentSpec]
     @Environment(\.isSnapshot) private var isSnapshot
     @Environment(\.theme) private var theme
+    @Environment(\.transcriptViewMode) private var forcedMode
+    @Environment(\.transcriptFocus) private var focus
+    @AppStorage(TranscriptViewMode.storageKey) private var savedMode = TranscriptViewMode.normal.rawValue
+    @State private var appliedFocusToken: Int?
+    @State private var highlightedBlockID: String?
 
     public init(items: [TranscriptItem], resolutions: [String: PermissionResolution] = [:], agents: [UUID: AgentSpec] = [:]) {
         self.items = items
@@ -55,17 +158,28 @@ public struct TranscriptList: View {
         self.agents = agents
     }
 
+    private var mode: TranscriptViewMode { forcedMode ?? TranscriptViewMode(rawValue: savedMode) ?? .normal }
+
     public var body: some View {
+        let blocks = mode.blocks(items, resolutions: resolutions)
         if isSnapshot {
-            VStack(alignment: .leading, spacing: 0) { rows }
+            VStack(alignment: .leading, spacing: 0) { rows(blocks) }
+                .environment(\.transcriptViewMode, mode)
         } else {
-            LazyVStack(alignment: .leading, spacing: 0) { rows }
+            ScrollViewReader { proxy in
+                LazyVStack(alignment: .leading, spacing: 0) { rows(blocks) }
+                    // Rows keep their own open or closed state; a new mode starts them over.
+                    .id(mode)
+                    .environment(\.transcriptViewMode, mode)
+                    .onAppear { applyFocus(blocks, proxy: proxy) }
+                    .onChange(of: focus) { applyFocus(blocks, proxy: proxy) }
+                    .onChange(of: items.count) { applyFocus(blocks, proxy: proxy) }
+            }
         }
     }
 
-    private var rows: some View {
-        let blocks = TranscriptGrouping.blocks(items, resolutions: resolutions)
-        return ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
+    private func rows(_ blocks: [TranscriptBlock]) -> some View {
+        ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
             let previous = index > 0 ? blocks[index - 1] : nil
             Group {
                 switch block {
@@ -75,7 +189,37 @@ public struct TranscriptList: View {
                     ActivityGroupView(items: steps, resolutions: resolutions)
                 }
             }
+            .background {
+                if highlightedBlockID == block.id {
+                    RoundedRectangle(cornerRadius: theme.z(9), style: .continuous)
+                        .fill(theme.accent.opacity(0.13))
+                        .padding(.horizontal, -theme.z(10))
+                        .padding(.vertical, -theme.z(6))
+                        .transition(.opacity)
+                }
+            }
+            .id(block.id)
             .padding(.top, index == 0 ? 0 : spacing(before: block, after: previous))
+        }
+    }
+
+    /// Scrolls to the focused message once it is loaded, then flashes its row.
+    private func applyFocus(_ blocks: [TranscriptBlock], proxy: ScrollViewProxy) {
+        guard let focus, focus.token != appliedFocusToken,
+              let block = blocks.first(where: { $0.contains(itemID: focus.itemID) }) else { return }
+        appliedFocusToken = focus.token
+        let target = block.id
+        Task { @MainActor in
+            // Let the conversation finish its own scroll to the newest message first.
+            try? await Task.sleep(for: .milliseconds(120))
+            proxy.scrollTo(target, anchor: .center)
+            try? await Task.sleep(for: .milliseconds(80))
+            proxy.scrollTo(target, anchor: .center)
+            withAnimation(.easeOut(duration: 0.2)) { highlightedBlockID = target }
+            try? await Task.sleep(for: .seconds(1.6))
+            withAnimation(.easeOut(duration: 0.6)) {
+                if highlightedBlockID == target { highlightedBlockID = nil }
+            }
         }
     }
 
@@ -110,6 +254,14 @@ extension TranscriptBlock {
         case .activity(_, let items): items.last
         }
     }
+
+    /// True when the item is this row or one of its steps.
+    public func contains(itemID: String) -> Bool {
+        switch self {
+        case .single(let item): item.id == itemID
+        case .activity(_, let items): items.contains { $0.id == itemID }
+        }
+    }
 }
 
 enum TranscriptRowKind {
@@ -136,6 +288,7 @@ public struct TranscriptItemView: View {
     let previous: TranscriptItem?
     let resolution: PermissionResolution?
     let agents: [UUID: AgentSpec]
+    @Environment(\.transcriptViewMode) private var mode
 
     public init(item: TranscriptItem, previous: TranscriptItem? = nil, resolution: PermissionResolution? = nil, agents: [UUID: AgentSpec] = [:]) {
         self.item = item
@@ -151,12 +304,12 @@ public struct TranscriptItemView: View {
         case .agentText(_, let text, let agentID, let streaming):
             AgentTextRow(text: text, agent: agentID.flatMap { agents[$0] }, showHeader: showsAgentHeader(agentID), streaming: streaming)
         case .reasoning(_, let text, let streaming):
-            ReasoningRow(text: text, streaming: streaming)
+            ReasoningRow(text: text, streaming: streaming, expanded: (mode ?? .normal) != .normal)
         case .tool(let tool):
             if ToolCategory(tool.name) == .subagent {
                 SubagentCardView(tool: tool)
             } else {
-                ToolCardView(tool: tool)
+                ToolCardView(tool: tool, expanded: mode == .verbose)
             }
         case .permission(let request):
             PermissionCardView(request: request, resolution: resolution)
@@ -375,9 +528,10 @@ public struct ReasoningRow: View {
     @State private var hovering = false
     @Environment(\.theme) private var theme
 
-    public init(text: String, streaming: Bool) {
+    public init(text: String, streaming: Bool, expanded: Bool = false) {
         self.text = text
         self.streaming = streaming
+        self._expanded = State(initialValue: expanded)
     }
 
     public var body: some View {

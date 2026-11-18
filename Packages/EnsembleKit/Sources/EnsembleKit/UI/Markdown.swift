@@ -201,7 +201,8 @@ public enum MarkdownParser {
 
 public enum MarkdownInline {
     /// Inline Markdown (bold, italic, code, links) as an attributed string with Ensemble's code style.
-    public static func attributed(_ source: String, theme: Theme, size: CGFloat) -> AttributedString {
+    /// With `fileBase` (the session's folder), file paths inside it become `ensemble-file` links.
+    public static func attributed(_ source: String, theme: Theme, size: CGFloat, fileBase: String? = nil) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(
             allowsExtendedAttributes: false,
             interpretedSyntax: .inlineOnlyPreservingWhitespace,
@@ -218,7 +219,160 @@ public enum MarkdownInline {
                 attributed[run.range].foregroundColor = theme.accent
             }
         }
+        if let fileBase, !fileBase.isEmpty { addFileLinks(&attributed, base: fileBase, theme: theme) }
         return attributed
+    }
+
+    /// Marks file paths that exist inside `base`: a whole code span holding a path, or paths in plain text.
+    /// Text that already is a link is left alone.
+    static func addFileLinks(_ attributed: inout AttributedString, base: String, theme: Theme) {
+        var found: [(Range<AttributedString.Index>, FileLink)] = []
+        for run in attributed.runs where run.link == nil {
+            let text = String(attributed[run.range].characters)
+            if let intent = run.inlinePresentationIntent, intent.contains(.code) {
+                if let link = FilePathDetector.link(forCode: text, base: base) { found.append((run.range, link)) }
+                continue
+            }
+            for match in FilePathDetector.matches(in: text, base: base) {
+                let start = text.distance(from: text.startIndex, to: match.range.lowerBound)
+                let length = text.distance(from: match.range.lowerBound, to: match.range.upperBound)
+                let lower = attributed.characters.index(run.range.lowerBound, offsetBy: start)
+                let upper = attributed.characters.index(lower, offsetBy: length)
+                found.append((lower..<upper, match.link))
+            }
+        }
+        for (range, link) in found {
+            attributed[range].link = link.url
+            attributed[range].foregroundColor = theme.accent
+        }
+    }
+}
+
+/// Inline Markdown text. File links in it get a hit area each, so a click opens the file and a right-click
+/// shows the file's menu (from `\.fileLinkActions`); other text stays selectable around them.
+struct InlineMarkdownText: View {
+    let attributed: AttributedString
+    @Environment(\.fileLinkActions) private var actions
+
+    init(_ attributed: AttributedString) { self.attributed = attributed }
+
+    var body: some View {
+        let parts = FileLinkText(attributed)
+        if let actions, !parts.links.isEmpty {
+            parts.text
+                .overlayPreferenceValue(Text.LayoutKey.self) { layouts in
+                    FileLinkHitAreas(layouts: layouts, links: parts.links, actions: actions)
+                }
+        } else {
+            Text(attributed)
+        }
+    }
+}
+
+/// The text split at file links, each link tagged so its position can be found after layout.
+private struct FileLinkText {
+    var text: Text
+    var links: [FileLink] = []
+
+    init(_ attributed: AttributedString) {
+        var text = Text(verbatim: "")
+        var links: [FileLink] = []
+        for (url, range) in attributed.runs[\.link] {
+            var piece = Text(AttributedString(attributed[range]))
+            if let url, let link = FileLink(url: url) {
+                piece = piece.customAttribute(FileLinkTextAttribute(index: links.count))
+                links.append(link)
+            }
+            text = Text("\(text)\(piece)")
+        }
+        self.text = text
+        self.links = links
+    }
+}
+
+private struct FileLinkTextAttribute: TextAttribute {
+    let index: Int
+}
+
+/// Clear boxes over each laid-out file link run, for the click, the pointer and the right-click menu.
+private struct FileLinkHitAreas: View {
+    let layouts: Text.LayoutKey.Value
+    let links: [FileLink]
+    let actions: FileLinkActions
+    @Environment(\.sessionDirectory) private var base
+    @Environment(\.showsFileLinkAreas) private var showsAreas
+
+    private struct Area: Identifiable {
+        let id: Int
+        let rect: CGRect
+        let link: FileLink
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ForEach(areas(proxy)) { area in
+                (showsAreas ? Color.red.opacity(0.35) : Color.clear)
+                    .contentShape(Rectangle())
+                    .frame(width: area.rect.width, height: area.rect.height)
+                    .position(x: area.rect.midX, y: area.rect.midY)
+                    .onTapGesture { actions.open(area.link) }
+                    .contextMenu { FileLinkMenuContent(items: actions.menu(area.link)) }
+                    .help("Open \(area.link.display(base: base))")
+                    .accessibilityElement()
+                    .accessibilityLabel("Open \(area.link.display(base: base))")
+                    .accessibilityAddTraits(.isLink)
+                    .linkPointer()
+            }
+        }
+    }
+
+    private func areas(_ proxy: GeometryProxy) -> [Area] {
+        var areas: [Area] = []
+        for anchored in layouts {
+            let origin = proxy[anchored.origin]
+            for line in anchored.layout {
+                for run in line {
+                    guard let tag = run[FileLinkTextAttribute.self], tag.index < links.count else { continue }
+                    let rect = run.typographicBounds.rect.offsetBy(dx: origin.x, dy: origin.y)
+                    areas.append(Area(id: areas.count, rect: rect, link: links[tag.index]))
+                }
+            }
+        }
+        return areas
+    }
+}
+
+/// The right-click menu of a file link.
+struct FileLinkMenuContent: View {
+    let items: [FileLinkMenuItem]
+
+    var body: some View {
+        ForEach(items) { item in
+            if item.children.isEmpty {
+                Button {
+                    item.action?()
+                } label: {
+                    if let symbol = item.symbol { Label(item.title, systemImage: symbol) } else { Text(item.title) }
+                }
+                .disabled(item.action == nil)
+            } else {
+                Menu {
+                    FileLinkMenuContent(items: item.children)
+                } label: {
+                    if let symbol = item.symbol { Label(item.title, systemImage: symbol) } else { Text(item.title) }
+                }
+            }
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder func linkPointer() -> some View {
+        #if os(macOS)
+        pointerStyle(.link)
+        #else
+        self
+        #endif
     }
 }
 
@@ -234,6 +388,8 @@ public struct MarkdownView: View {
     /// Agent writing uses the serif (`MessageType`); false keeps the interface sans, as for thinking text.
     var serif: Bool
     @Environment(\.theme) private var theme
+    @Environment(\.fileLinkActions) private var fileLinkActions
+    @Environment(\.sessionDirectory) private var sessionDirectory
 
     public init(_ text: String, fontSize: CGFloat = 14, textColor: Color? = nil, streaming: Bool = false, serif: Bool = true) {
         self.text = text
@@ -251,9 +407,25 @@ public struct MarkdownView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .environment(\.openURL, OpenURLAction { [fileLinkActions] url in
+            guard let link = FileLink(url: url) else { return .systemAction }
+            fileLinkActions?.open(link)
+            return .handled
+        })
     }
 
     private var color: Color { textColor ?? theme.textPrimary }
+
+    /// The session folder file paths are looked up in: only when the app handles file links, and not while the
+    /// text is still arriving.
+    private var fileBase: String? {
+        guard fileLinkActions != nil, !streaming, !sessionDirectory.isEmpty else { return nil }
+        return sessionDirectory
+    }
+
+    private func inline(_ text: String, size: CGFloat) -> InlineMarkdownText {
+        InlineMarkdownText(MarkdownInline.attributed(text, theme: theme, size: size, fileBase: fileBase))
+    }
 
     private func bodyFont(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
         serif ? theme.messageFont(size: size, weight: weight) : theme.font(size: size, weight: weight)
@@ -266,7 +438,7 @@ public struct MarkdownView: View {
     @ViewBuilder private func blockView(_ block: MarkdownBlock, isLast: Bool) -> some View {
         switch block {
         case .heading(let level, let text):
-            Text(MarkdownInline.attributed(text, theme: theme, size: headingSize(level)))
+            inline(text, size: headingSize(level))
                 .font(bodyFont(headingSize(level), weight: .semibold))
                 .tracking(tracking(headingSize(level)))
                 .foregroundStyle(color)
@@ -275,7 +447,7 @@ public struct MarkdownView: View {
                 .selectableText()
 
         case .paragraph(let text):
-            Text(MarkdownInline.attributed(text, theme: theme, size: fontSize))
+            inline(text, size: fontSize)
                 .font(bodyFont(fontSize))
                 .tracking(tracking(fontSize))
                 .foregroundStyle(color)
@@ -297,7 +469,7 @@ public struct MarkdownView: View {
                                 .foregroundStyle(theme.textSecondary)
                                 .frame(minWidth: theme.z(12), alignment: .trailing)
                         }
-                        Text(MarkdownInline.attributed(item.text, theme: theme, size: fontSize))
+                        inline(item.text, size: fontSize)
                             .font(bodyFont(fontSize))
                             .tracking(tracking(fontSize))
                             .foregroundStyle(color)
@@ -323,7 +495,7 @@ public struct MarkdownView: View {
         case .quote(let text):
             HStack(spacing: theme.z(10)) {
                 RoundedRectangle(cornerRadius: theme.z(1)).fill(theme.border).frame(width: theme.z(3))
-                Text(MarkdownInline.attributed(text, theme: theme, size: fontSize))
+                inline(text, size: fontSize)
                     .font(bodyFont(fontSize))
                     .tracking(tracking(fontSize))
                     .foregroundStyle(theme.textSecondary)
@@ -337,7 +509,7 @@ public struct MarkdownView: View {
             HLine().padding(.vertical, theme.z(4))
 
         case .table(let header, let rows):
-            MarkdownTable(header: header, rows: rows, fontSize: fontSize - 1, serif: serif)
+            MarkdownTable(header: header, rows: rows, fontSize: fontSize - 1, serif: serif, fileBase: fileBase)
         }
     }
 
@@ -356,6 +528,7 @@ private struct MarkdownTable: View {
     let rows: [[String]]
     let fontSize: CGFloat
     let serif: Bool
+    var fileBase: String?
     @Environment(\.theme) private var theme
 
     private func cellFont(weight: Font.Weight = .regular) -> Font {
@@ -367,7 +540,7 @@ private struct MarkdownTable: View {
         Grid(alignment: .leading, horizontalSpacing: theme.z(16), verticalSpacing: theme.z(6)) {
             GridRow {
                 ForEach(0..<columns, id: \.self) { c in
-                    Text(MarkdownInline.attributed(c < header.count ? header[c] : "", theme: theme, size: fontSize))
+                    InlineMarkdownText(MarkdownInline.attributed(c < header.count ? header[c] : "", theme: theme, size: fontSize, fileBase: fileBase))
                         .font(cellFont(weight: .semibold))
                         .foregroundStyle(theme.textPrimary)
                 }
@@ -376,7 +549,7 @@ private struct MarkdownTable: View {
             ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                 GridRow {
                     ForEach(0..<columns, id: \.self) { c in
-                        Text(MarkdownInline.attributed(c < row.count ? row[c] : "", theme: theme, size: fontSize))
+                        InlineMarkdownText(MarkdownInline.attributed(c < row.count ? row[c] : "", theme: theme, size: fontSize, fileBase: fileBase))
                             .font(cellFont())
                             .foregroundStyle(theme.textPrimary)
                     }
