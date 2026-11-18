@@ -80,10 +80,10 @@
       "tool": {
         "name": "shell",
         "arguments": {
-          "command": "git status --short"
+          "command": "ls -a"
         }
       },
-      "then": "Git status ran."
+      "then": "Listed the folder."
     },
     {
       "match": [
@@ -300,6 +300,95 @@
         }
       },
       "then": "Ran git show in sub."
+    },
+    {
+      "match": [
+        "run git status"
+      ],
+      "tool": {
+        "name": "shell",
+        "arguments": {
+          "command": "git status --short"
+        }
+      },
+      "then": "Ran git status."
+    },
+    {
+      "match": [
+        "cd and git status"
+      ],
+      "tool": {
+        "name": "shell",
+        "arguments": {
+          "command": "cd sub && git status"
+        }
+      },
+      "then": "Ran git status in sub."
+    },
+    {
+      "match": [
+        "write mixed case opencode json"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "OpenCode.json",
+          "content": "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"model\": \"mock/mock-1\",\n  \"providers\": {\n    \"mock\": {\n      \"name\": \"Mock LLM\",\n      \"package\": \"@opencode/ai/providers/openai-compatible\",\n      \"settings\": {\n        \"baseURL\": \"http://127.0.0.1:__PORT__/v1\",\n        \"apiKey\": \"mock\"\n      },\n      \"models\": {\n        \"mock-1\": {\n          \"name\": \"Mock 1\",\n          \"limit\": {\n            \"context\": 128000,\n            \"output\": 4096\n          },\n          \"capabilities\": {\n            \"tools\": true\n          }\n        }\n      }\n    }\n  },\n  \"experimental\": {\n    \"schedules\": true\n  },\n  \"formatter\": {\n    \"ensemble-probe\": {\n      \"command\": [\n        \"touch\",\n        \"__PROJECT_DIR__/formatter-ran\"\n      ],\n      \"extensions\": [\n        \".txt\"\n      ]\n    }\n  }\n}\n"
+        }
+      },
+      "then": "Wrote OpenCode.json."
+    },
+    {
+      "match": [
+        "write opencode jsonc"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "OpEnCoDe.jsonc",
+          "content": "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"model\": \"mock/mock-1\",\n  \"providers\": {\n    \"mock\": {\n      \"name\": \"Mock LLM\",\n      \"package\": \"@opencode/ai/providers/openai-compatible\",\n      \"settings\": {\n        \"baseURL\": \"http://127.0.0.1:__PORT__/v1\",\n        \"apiKey\": \"mock\"\n      },\n      \"models\": {\n        \"mock-1\": {\n          \"name\": \"Mock 1\",\n          \"limit\": {\n            \"context\": 128000,\n            \"output\": 4096\n          },\n          \"capabilities\": {\n            \"tools\": true\n          }\n        }\n      }\n    }\n  },\n  \"experimental\": {\n    \"schedules\": true\n  },\n  \"formatter\": {\n    \"ensemble-probe\": {\n      \"command\": [\n        \"touch\",\n        \"__PROJECT_DIR__/formatter-ran\"\n      ],\n      \"extensions\": [\n        \".txt\"\n      ]\n    }\n  }\n}\n"
+        }
+      },
+      "then": "Wrote OpEnCoDe.jsonc."
+    },
+    {
+      "match": [
+        "write nested opencode json"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "sub/opencode.json",
+          "content": "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"model\": \"mock/mock-1\",\n  \"providers\": {\n    \"mock\": {\n      \"name\": \"Mock LLM\",\n      \"package\": \"@opencode/ai/providers/openai-compatible\",\n      \"settings\": {\n        \"baseURL\": \"http://127.0.0.1:__PORT__/v1\",\n        \"apiKey\": \"mock\"\n      },\n      \"models\": {\n        \"mock-1\": {\n          \"name\": \"Mock 1\",\n          \"limit\": {\n            \"context\": 128000,\n            \"output\": 4096\n          },\n          \"capabilities\": {\n            \"tools\": true\n          }\n        }\n      }\n    }\n  },\n  \"experimental\": {\n    \"schedules\": true\n  },\n  \"formatter\": {\n    \"ensemble-probe\": {\n      \"command\": [\n        \"touch\",\n        \"__PROJECT_DIR__/formatter-ran\"\n      ],\n      \"extensions\": [\n        \".txt\"\n      ]\n    }\n  }\n}\n"
+        }
+      },
+      "then": "Wrote sub/opencode.json."
+    },
+    {
+      "match": [
+        "write opencode plugin"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": ".opencode/plugins/probe.ts",
+          "content": "export default async () => ({})\n"
+        }
+      },
+      "then": "Wrote the plugin."
+    },
+    {
+      "match": [
+        "write text after config"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "after-config.txt",
+          "content": "hello\n"
+        }
+      },
+      "then": "Wrote after-config.txt."
     },
     {
       "match": [

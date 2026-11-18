@@ -38,6 +38,20 @@ public struct PermissionRule: Codable, Hashable, Sendable {
 /// - The shell tool checks each command of a line on its own (`a && b`, `a | b`, and commands inside `$(...)` and
 ///   `<(...)`), against the command text with any `VAR=value` prefix kept. It never checks `cd` (only whether the
 ///   folder is outside the project) or the tool's `workdir` argument, so a command can run in any project subfolder.
+/// - Project files OpenCode reads, from the session's folder and every folder above it: `opencode.json` and
+///   `opencode.jsonc` (found by a case-insensitive directory listing, so `OpenCode.json` counts), `.opencode/`
+///   (config, agents, modes, commands, plugins, tools, skills), `.claude/` and `.agents/` (skills), and `AGENTS.md`
+///   (instructions). Config is reloaded as soon as a loaded file changes, and it can run code without any further
+///   permission: a `formatter` command runs after the next file edit (checked live), local MCP servers and LSP
+///   servers are started, plugins load into the engine, commands can run shell lines, custom tools run. `AGENTS.md`
+///   only adds instructions.
+/// - The only switch for project config is the engine process's environment: `OPENCODE_DISABLE_PROJECT_CONFIG=1`
+///   (alias `OPENCODE_CONFIG_PROJECT_DISABLE`) stops all of the above being read from project folders (checked live
+///   with a private `opencode serve`). It is read once at start and applies to every folder that process serves;
+///   there is no per-session or per-folder setting. For the background service: `opencode service set env
+///   OPENCODE_DISABLE_PROJECT_CONFIG 1`, then `opencode service restart`.
+/// - OpenCode's own git calls pass `-c core.fsmonitor=false`, `core.hooksPath=/dev/null` and `--no-ext-diff`;
+///   a `git` command the agent runs gets none of that.
 /// - Code Mode (`execute`) is only blocked by `deny`; with `ask` it runs, and each tool it calls is checked on its own
 ///   (its `fetch` asks as `webfetch`).
 /// - A subagent's child session copies the parent's ruleset when it is created (no race), but does not follow later
@@ -47,22 +61,19 @@ public enum PermissionRules {
     /// (or an agent's edit) controls. Every other command asks.
     ///
     /// Left out on purpose:
+    /// - Every `git` command. A repository's config can make git run programs (`core.fsmonitor` on `git status`,
+    ///   textconv, external diff and signature helpers on `git diff`, `git log` and `git show`, filters, pagers),
+    ///   and no `-c` list can switch them all off. Ordinary files (`HEAD`, `config`, `refs/`,
+    ///   `objects/info/alternates`, `info/attributes`) make any folder a repository, and `cd folder && git show` then
+    ///   runs its helpers (reproduced) because OpenCode does not check `cd`.
     /// - Build, test and task runners (`make`, `npm test`, `swift build`, `xcodebuild`, `pytest`, `cargo test`,
     ///   `go test`, `gradle`, ...). They run code the project defines, and an edit to their build file is allowed
     ///   in Auto when the name is spelt in a case `protectedFileNames` does not list (`PaCkAgE.json`), so the
     ///   command is where Ensemble asks.
-    /// - `git diff`, `git log` and `git show`. They run helpers named in the repository config (textconv, external
-    ///   diff, signature checks). Ordinary files (`HEAD`, `config`, `refs/`, `objects/info/alternates`,
-    ///   `info/attributes`) make any folder a bare repository, and `cd folder && git show` then runs its helpers.
-    ///   `git status` stays: in such a folder it stops for lack of a work tree before running anything (checked with
-    ///   git 2.54 and 2.56). Neither it nor the listed `git branch` forms run diff or signature helpers.
     ///
     /// A pattern ending in ` *` also matches the bare command.
     public static let autoAllowedShell: [String] = [
         "ls *", "pwd", "which *", "cat *", "head *", "tail *", "wc *", "echo *", "grep *", "rg *", "find *",
-        "git status *",
-        "git branch", "git branch -a", "git branch -r", "git branch -v", "git branch -vv", "git branch --list",
-        "git branch --show-current",
     ]
 
     /// Forms of the allowed commands that can still change things or run other programs; these ask again (checked
@@ -75,6 +86,24 @@ public enum PermissionRules {
         "*>*",
         "*$(*", "*`*",
     ]
+
+    /// `edit` patterns for OpenCode's own config in the session's folder, `opencode.json` and `opencode.jsonc`, in
+    /// every spelling: any 8-character name with a 4- or 5-character extension. OpenCode finds these names
+    /// without regard to case and reloads them at once, and a changed config can run commands (see the type notes),
+    /// so the usual spellings are not enough. `?` stands for any one character, so the shape is the only thing a
+    /// pattern can pin down. Other names of that shape at the top of the folder ask too (`firebase.json`,
+    /// `manifest.json`), except `configLookalikesAllowed`.
+    ///
+    /// Only the top of the folder: OpenCode reads config from the session's folder and the folders above it (those
+    /// are outside the project, so their edits ask anyway). Configs in subfolders only matter to a session started
+    /// in that subfolder; they ask in their usual spellings (`protectedFileNames`). The same shape in every subfolder
+    /// would also catch `Contents.json` in every asset catalogue and any `MainView.swift`. `.opencode/`, `.claude/`
+    /// and `.agents/` ask through the dot rule.
+    public static let opencodeConfigEditPatterns: [String] = ["????????.????", "????????.?????"]
+
+    /// Exact names of the `opencodeConfigEditPatterns` shape that are common and cannot be OpenCode's config in any
+    /// spelling, so their edits stay allowed.
+    public static let configLookalikesAllowed: [String] = ["tsconfig.json", "jsconfig.json"]
 
     /// `edit` patterns for any path with a segment that starts with a dot: `.git`, `.github`, `.husky`, `.vscode`,
     /// `.devcontainer`, `.idea`, `.circleci`, `.cargo`, `.envrc`, `.gitlab-ci.yml`, `.pre-commit-config.yaml`,
@@ -115,6 +144,8 @@ public enum PermissionRules {
         "azure-pipelines.yml", "bitbucket-pipelines.yml",
         // Environment and toolchain managers
         "mise.toml", "Brewfile", "flake.nix", "shell.nix", "devbox.json",
+        // OpenCode config in subfolders (any spelling at the top of the folder: `opencodeConfigEditPatterns`)
+        "opencode.json", "opencode.jsonc",
     ]
 
     /// `edit` patterns for the protected files: each name at the top of the folder and in any subfolder (the
@@ -141,8 +172,8 @@ public enum PermissionRules {
     ///
     /// - Ask: reads and searches run; edits, commands, web access, Code Mode, image generation, work outside the
     ///   project folder and any other tool (MCP included) ask.
-    /// - Accept edits: as Ask, but file edits inside the project run, except paths with a segment that starts with a
-    ///   dot and the protected build files.
+    /// - Accept edits: as Ask, but file edits inside the project run, except OpenCode's config (any spelling), paths
+    ///   with a segment that starts with a dot, and the protected build files.
     /// - Auto: safe commands run, everything else asks. As Accept edits, plus the read-only commands in
     ///   `autoAllowedShell` run (minus the forms in `autoAskAgainShell`).
     /// - Bypass: everything runs.
@@ -193,6 +224,10 @@ public enum PermissionRules {
             PermissionRule("external_directory", "*", "ask"),
         ]
         if editsAllowed {
+            // Order matters (the last match wins): the lookalike exceptions only undo the config shape, and every
+            // later ask still applies to them.
+            rules += opencodeConfigEditPatterns.map { PermissionRule("edit", $0, "ask") }
+            rules += configLookalikesAllowed.map { PermissionRule("edit", $0, "allow") }
             rules += (dotPathEditPatterns + ignorableCharacterEditPatterns + protectedEditPatterns)
                 .map { PermissionRule("edit", $0, "ask") }
         }

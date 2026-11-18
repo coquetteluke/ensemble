@@ -28,8 +28,25 @@ import Testing
         "swift build", "swift build -c release", "swift test", "swift run", "xcodebuild -scheme App build",
         "go test ./...", "go build ./...", "go run .", "go vet ./...", "gradle build", "./gradlew test", "gradlew build",
         "mvn test", "./mvnw package",
-        // Run helpers named in a repository's config; a planted bare repository makes these run code.
-        "git diff", "git diff HEAD~1", "git log --oneline -5", "git log -p", "git show HEAD", "git show --stat",
+    ]
+
+    /// Git runs programs named in a repository's config (`core.fsmonitor`, textconv, external diff, filters).
+    static let gitCommands = [
+        "git status", "git status --short", "git branch", "git branch -a", "git branch --show-current", "git diff",
+        "git diff HEAD~1", "git log --oneline -5", "git log -p", "git show HEAD", "git show --stat", "git rev-parse HEAD",
+        "git -c core.fsmonitor=false status", "git -c core.fsmonitor=false -c core.hooksPath=/dev/null status",
+    ]
+
+    /// Every spelling of OpenCode's config at the top of the folder, nested configs in their usual spellings, and the
+    /// project folders OpenCode loads plugins, commands, tools, agents and skills from.
+    static let opencodeConfigPaths = [
+        "opencode.json", "opencode.jsonc", "OpenCode.json", "OPENCODE.JSON", "OpEnCoDe.jsonc", "OPENCODE.JSONC",
+        "opencode.JSON", "opencode.j\u{17F}on", "\u{200C}opencode.json",
+        "sub/opencode.json", "sub/OPENCODE.JSON", "sub/Opencode.json", "packages/a/opencode.jsonc", "/Users/me/opencode.json",
+        ".opencode/opencode.json", ".OpenCode/opencode.jsonc", ".opencode/plugins/x.ts", ".opencode/plugin/x.js",
+        ".opencode/command/deploy.md", ".opencode/commands/x.md", ".opencode/tools/t.ts", ".opencode/agent/a.md",
+        ".opencode/skills/x/SKILL.md", ".claude/skills/x/SKILL.md", ".Claude/commands/x.md", ".agents/skills/x/SKILL.md",
+        "sub/.opencode/plugins/x.ts",
     ]
 
     /// Dot paths in many spellings, at the top, nested and absolute.
@@ -109,7 +126,7 @@ import Testing
             "rm -r -f x", "rm -rf x", "/bin/rm -rf x", "python3 -c \"import os; os.remove('x')\"", "node -e \"1\"", "perl -e 1",
             "find . -delete", "find . -name '*.tmp' -delete", "find . -exec rm {} ;", "git push origin +main", "git push --force",
             "git reset --hard", "git branch -D main", "sudo ls", "curl https://example.com", "sh", "echo hi > out.txt",
-            "git status --output=/tmp/x", "rg --pre ./script foo", "make install", "npm install", "chmod -R 777 .",
+            "ls --output=/tmp/x", "rg --pre ./script foo", "make install", "npm install", "chmod -R 777 .",
             "git -c core.fsmonitor=./x status", "git --git-dir=evil status", "git -C evil show HEAD", "env GIT_DIR=evil git status",
             "sh ./script.sh", "./script.sh", "bash -c 'ls'", "npx vitest", "node scripts/build.js",
         ] {
@@ -130,20 +147,23 @@ import Testing
             #expect(shell(command, .acceptEdits) == "ask")
             #expect(shell(command, .ask) == "ask")
         }
-        // Nothing on the allow list is a build, test or task runner.
+        // Nothing on the allow list is a build, test or task runner, or git.
         for pattern in PermissionRules.autoAllowedShell {
             let tool = pattern.split(separator: " ").first.map(String.init) ?? ""
-            #expect(["ls", "pwd", "which", "cat", "head", "tail", "wc", "echo", "grep", "rg", "find", "git"].contains(tool), "\(pattern)")
-            if tool == "git" {
-                #expect(pattern.hasPrefix("git status") || pattern.hasPrefix("git branch"), "\(pattern)")
-            }
+            #expect(["ls", "pwd", "which", "cat", "head", "tail", "wc", "echo", "grep", "rg", "find"].contains(tool), "\(pattern)")
         }
+    }
+
+    @Test func autoAsksForEveryGitCommand() {
+        for command in Self.gitCommands {
+            #expect(shell(command, .auto) == "ask", "\(command) should ask in Auto")
+        }
+        #expect(!PermissionRules.autoAllowedShell.contains { $0.hasPrefix("git") })
     }
 
     @Test func autoRunsReadOnlyCommands() {
         for command in [
-            "git status", "git status --short", "git branch", "git branch -a", "git branch --show-current", "ls", "ls -la",
-            "pwd", "cat README.md", "head -5 a.txt", "tail -n 2 a.txt", "grep -rn foo .", "rg foo", "find . -name '*.swift'",
+            "ls", "ls -la", "pwd", "cat README.md", "head -5 a.txt", "tail -n 2 a.txt", "grep -rn foo .", "rg foo", "find . -name '*.swift'",
             "echo hello", "wc -l file.txt", "which swift",
         ] {
             #expect(shell(command, .auto) == "allow", "\(command) should run in Auto")
@@ -160,6 +180,33 @@ import Testing
                 #expect(effect("edit", path, mode) == "allow", "\(path) should be editable in \(mode)")
             }
         }
+    }
+
+    @Test func opencodeConfigAsksInEverySpelling() {
+        for mode in [PermissionMode.acceptEdits, .auto] {
+            for path in Self.opencodeConfigPaths {
+                #expect(effect("edit", path, mode) == "ask", "\(path) should ask in \(mode)")
+            }
+            // Other names of the same shape at the top of the folder ask too; that is the cost of matching any case.
+            for path in ["firebase.json", "manifest.json", "renovate.json", "metadata.jsonc"] {
+                #expect(effect("edit", path, mode) == "ask", "\(path) should ask in \(mode)")
+            }
+            // Common lookalikes, and the same shape in subfolders, stay editable.
+            for path in ["tsconfig.json", "jsconfig.json", "AGENTS.md", "sub/AGENTS.md", "Assets.xcassets/Contents.json",
+                         "Sources/App/MainView.swift", "packages/web/tsconfig.json", "docs/opencode.md", "opencode.json.bak",
+                         "sub/manifest.json"] {
+                #expect(effect("edit", path, mode) == "allow", "\(path) should be editable in \(mode)")
+            }
+        }
+        // Outside the project the edit also needs external_directory, which asks.
+        #expect(effect("external_directory", "/Users/me/*", .auto) == "ask")
+        // The lookalike exceptions sit after the config shape and before every other ask.
+        let rules = PermissionRules.ruleset(for: .auto)
+        let shape = rules.lastIndex(of: PermissionRule("edit", "????????.????", "ask"))
+        let lookalike = rules.firstIndex(of: PermissionRule("edit", "tsconfig.json", "allow"))
+        let dot = rules.firstIndex(of: PermissionRule("edit", ".*", "ask"))
+        #expect(shape != nil && lookalike != nil && dot != nil)
+        if let shape, let lookalike, let dot { #expect(shape < lookalike && lookalike < dot) }
     }
 
     /// HFS+ drops these characters from names, so `\u{200C}.git` is `.git` there.
@@ -236,18 +283,26 @@ import Testing
         #expect(PermissionRules.mode(for: []) == nil)
     }
 
-    /// Rulesets from before the dot-path rule and the shorter Auto list are recognised so the client can reapply them.
+    /// Rulesets from earlier versions are recognised so the client can reapply them: the first one (build commands
+    /// allowed, no dot rule) and the previous one (git status and branch allowed, no OpenCode config rule).
     @Test func recognisesOutdatedRulesets() {
-        let newEditRules = Set((PermissionRules.dotPathEditPatterns + PermissionRules.ignorableCharacterEditPatterns)
+        let configRules = Set(PermissionRules.opencodeConfigEditPatterns.map { PermissionRule("edit", $0, "ask") }
+            + PermissionRules.configLookalikesAllowed.map { PermissionRule("edit", $0, "allow") })
+        let dotRules = Set((PermissionRules.dotPathEditPatterns + PermissionRules.ignorableCharacterEditPatterns)
             .map { PermissionRule("edit", $0, "ask") })
-        let oldAcceptEdits = PermissionRules.ruleset(for: .acceptEdits).filter { !newEditRules.contains($0) }
-        let oldAuto = PermissionRules.ruleset(for: .auto).filter { !newEditRules.contains($0) }
+        let gitAllows = ["git status *", "git branch", "git branch -a", "git branch -r", "git branch -v", "git branch -vv",
+                         "git branch --list", "git branch --show-current"].map { PermissionRule("shell", $0, "allow") }
+        let previousAcceptEdits = PermissionRules.ruleset(for: .acceptEdits).filter { !configRules.contains($0) }
+        let previousAuto = PermissionRules.ruleset(for: .auto).filter { !configRules.contains($0) } + gitAllows
+        let firstAcceptEdits = previousAcceptEdits.filter { !dotRules.contains($0) }
+        let firstAuto = PermissionRules.ruleset(for: .auto).filter { !configRules.contains($0) && !dotRules.contains($0) }
             + ["make", "npm test *", "swift build *", "git diff *"].map { PermissionRule("shell", $0, "allow") }
         let oldAsk = PermissionRules.ruleset(for: .ask) + [PermissionRule("edit", "Makefile", "ask")]
-        #expect(PermissionRules.mode(for: oldAuto) == nil)
-        #expect(PermissionRules.outdatedMode(for: oldAuto) == .auto)
-        #expect(PermissionRules.outdatedMode(for: oldAcceptEdits) == .acceptEdits)
-        #expect(PermissionRules.outdatedMode(for: oldAsk) == .ask)
+        for (rules, mode) in [(previousAuto, PermissionMode.auto), (firstAuto, .auto), (previousAcceptEdits, .acceptEdits),
+                              (firstAcceptEdits, .acceptEdits), (oldAsk, .ask)] {
+            #expect(PermissionRules.mode(for: rules) == nil)
+            #expect(PermissionRules.outdatedMode(for: rules) == mode)
+        }
         // Rules Ensemble did not write are left alone.
         #expect(PermissionRules.outdatedMode(for: []) == nil)
         #expect(PermissionRules.outdatedMode(for: [PermissionRule("*", "*", "allow"), PermissionRule("shell", "rm *", "deny")]) == nil)

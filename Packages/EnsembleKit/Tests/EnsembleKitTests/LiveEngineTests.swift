@@ -106,6 +106,10 @@ final class LiveHarness: @unchecked Sendable {
             try? FileManager.default.removeItem(at: directory)
             throw LiveTimeout(what: "mock model to start")
         }
+        // Scripted config files name the mock's port; the mock reloads its script when the file changes.
+        try String(contentsOf: scriptCopy, encoding: .utf8)
+            .replacingOccurrences(of: "__PORT__", with: port)
+            .write(to: scriptCopy, atomically: true, encoding: .utf8)
 
         // Project config: the mock provider, mock as default model, schedules on.
         let template = try String(contentsOf: LiveConfig.repoRoot.appendingPathComponent("tools/mock-llm/opencode.json.example"), encoding: .utf8)
@@ -201,6 +205,17 @@ final class LiveHarness: @unchecked Sendable {
         mock.terminate()
         await LiveHarness.waitForExit(mock, timeout: 5)
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    /// Runs `/usr/bin/git` in the project folder.
+    func git(_ arguments: [String]) async throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = ["-C", directory.path] + arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        await LiveHarness.waitForExit(process, timeout: 10)
     }
 
     /// `Process.waitUntilExit()` can hang inside Swift concurrency, so poll instead and kill after the timeout.
@@ -300,7 +315,7 @@ struct LiveEngineTests {
             let session = try await h.createSession(.auto)
             #expect(try await h.run(session.id, "auto safe please") == "succeeded")
             let safeAsk = await h.recorder.first { if case .permissionAsked(let r) = $0 { r.sessionID == session.id } else { false } }
-            #expect(safeAsk == nil, "git status should run without asking in Auto")
+            #expect(safeAsk == nil, "ls should run without asking in Auto")
 
             let beforeRisky = await h.recorder.mark()
             try await h.client.prompt(session.id, text: "auto risky please", files: [])
@@ -567,6 +582,81 @@ struct LiveEngineTests {
             }
             // Read-only commands still run.
             #expect(try await h.promptUntilAskOrEnd(session.id, "auto safe please") == .ended("succeeded"))
+        }
+    }
+
+    /// A repository's config can make `git status` run a program, so every git command asks in Auto, also after a
+    /// `cd`, which OpenCode does not check.
+    @Test func autoAsksForEveryGitCommand() async throws {
+        try await withHarness { h in
+            let marker = h.directory.appendingPathComponent("fsmonitor-ran")
+            try await h.git(["config", "core.fsmonitor", "touch '\(marker.path)'; false"])
+            try FileManager.default.createDirectory(at: h.directory.appendingPathComponent("sub"), withIntermediateDirectories: true)
+            let session = try await h.createSession(.auto)
+            for (prompt, resource) in [("run git status", "git status --short"), ("cd and git status", "git status")] {
+                let result = try await h.promptUntilAskOrEnd(session.id, "please \(prompt)")
+                guard case .asked(let request) = result else {
+                    Issue.record("\(prompt) did not ask: \(result)")
+                    continue
+                }
+                #expect(request.kind == "shell")
+                #expect(request.title == resource)
+                try await h.reject(request)
+            }
+            #expect(!FileManager.default.fileExists(atPath: marker.path), "the planted fsmonitor ran")
+            // Control: the planted config does run a program when git status runs.
+            try await h.git(["status", "--short"])
+            #expect(FileManager.default.fileExists(atPath: marker.path), "the planted fsmonitor should run on git status")
+        }
+    }
+
+    /// OpenCode reads `opencode.json` and `opencode.jsonc` in any case and reloads them at once, so every spelling
+    /// asks, and so do nested configs and `.opencode/`.
+    @Test func opencodeConfigEditsAskInEverySpelling() async throws {
+        try await withHarness { h in
+            for mode in [PermissionMode.auto, .acceptEdits] {
+                let session = try await h.createSession(mode)
+                for (prompt, resource) in [("write mixed case opencode json", "OpenCode.json"),
+                                           ("write opencode jsonc", "OpEnCoDe.jsonc"),
+                                           ("write nested opencode json", "sub/opencode.json"),
+                                           ("write opencode plugin", ".opencode/plugins/probe.ts")] {
+                    let result = try await h.promptUntilAskOrEnd(session.id, "please \(prompt)")
+                    guard case .asked(let request) = result else {
+                        Issue.record("\(prompt) did not ask in \(mode): \(result)")
+                        continue
+                    }
+                    #expect(request.kind == "edit")
+                    #expect(request.title == resource)
+                    try await h.reject(request)
+                }
+                // Ordinary edits still run, and no planted formatter runs after them.
+                #expect(try await h.promptUntilAskOrEnd(session.id, "please write text after config") == .ended("succeeded"))
+            }
+            let config = try String(contentsOf: h.directory.appendingPathComponent("opencode.json"), encoding: .utf8)
+            #expect(!config.contains("formatter"))
+            for name in ["opencode.jsonc", "sub/opencode.json", ".opencode/plugins/probe.ts", "formatter-ran"] {
+                #expect(!FileManager.default.fileExists(atPath: h.directory.appendingPathComponent(name).path), "\(name) exists")
+            }
+        }
+    }
+
+    /// Evidence for the rule above: with edits allowed, writing `OpenCode.json` replaces `opencode.json` on this disk,
+    /// OpenCode reloads it at once, and the formatter it names runs after the next ordinary edit, with no prompt.
+    @Test func projectConfigEditsLoadAtOnceAndRunCommands() async throws {
+        try await withHarness { h in
+            let session = try await h.createSession(.ask)
+            let rules = [PermissionRule("*", "*", "ask"), PermissionRule("edit", "*", "allow")]
+            try await h.client.sendIgnoringBody("PATCH", "/api/session/\(session.id)", body: ["permissions": try JSONValue(encoding: rules)])
+            #expect(try await h.promptUntilAskOrEnd(session.id, "please write mixed case opencode json") == .ended("succeeded"))
+            let config = try String(contentsOf: h.directory.appendingPathComponent("opencode.json"), encoding: .utf8)
+            #expect(config.contains("ensemble-probe"))
+            #expect(try await h.promptUntilAskOrEnd(session.id, "please write text after config") == .ended("succeeded"))
+            let marker = h.directory.appendingPathComponent("formatter-ran")
+            let deadline = Date().addingTimeInterval(5)
+            while !FileManager.default.fileExists(atPath: marker.path), Date() < deadline {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            #expect(FileManager.default.fileExists(atPath: marker.path), "the formatter from OpenCode.json did not run")
         }
     }
 
