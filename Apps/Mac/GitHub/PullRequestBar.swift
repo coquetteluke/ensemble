@@ -66,9 +66,13 @@ struct PullRequestBar: View {
             NoteRow(symbol: "terminal", title: "GitHub CLI not installed", lead: "Install it with", code: "brew install gh",
                     trail: nil, controller: controller)
         case .signedOut(let host, let problem):
-            NoteRow(symbol: "person.crop.circle.badge.exclamationmark", title: problem ?? "Not signed in to \(host == "github.com" ? "GitHub" : host)",
-                    lead: "Sign in with", code: host == "github.com" ? "gh auth login" : "gh auth login -h \(host)", trail: "in Terminal",
-                    controller: controller)
+            // The host comes from the repository's remote URL, so it is shown in a command only when it is a plain
+            // host name (see `GitHubParsing.isSafeHost`).
+            let safeHost = GitHubParsing.isSafeHost(host) ? host : nil
+            NoteRow(symbol: "person.crop.circle.badge.exclamationmark",
+                    title: problem ?? "Not signed in to \(safeHost.map { $0 == "github.com" ? "GitHub" : $0 } ?? "GitHub")",
+                    lead: "Sign in with", code: safeHost.map { $0 == "github.com" ? "gh auth login" : "gh auth login -h \($0)" } ?? "gh auth login",
+                    trail: "in Terminal", controller: controller)
         case .failed(let message):
             FailedRow(controller: controller, message: message)
         case .loading, .hidden:

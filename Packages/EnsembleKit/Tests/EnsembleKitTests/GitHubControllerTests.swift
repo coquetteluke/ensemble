@@ -155,6 +155,123 @@ import Testing
         #expect(!gh.calls().contains { $0.starts(with: ["auth", "token"]) })
     }
 
+    // MARK: Pull requests from forks
+
+    /// `gh pr list --head` also returns forks' branches of the same name; none of them is shown, merged, fixed
+    /// or archived on.
+    @Test func aSameNamedBranchFromAnotherForkIsNeverPickedMergedOrArchived() async throws {
+        let repo = try GitHubTestRepo()
+        let gh = try FakeGH()
+        try gh.signedIn()
+        try gh.respond("run_view_1001", fixture: "run-log-failed.txt")
+        try gh.respond("pr_list", fixture: "pr-list-fork-same-name.json")
+        try repo.git(["switch", "-q", "-c", "ensemble/fix-the-readme"])
+        try repo.commit("a.txt", "a\n", message: "Add a")
+        let recorder = Recorder()
+        let controller = GitHubPullRequestController(sessionID: "s", hooks: hooks(repo.work, recorder), service: repo.service(gh),
+                                                     setting: setting())
+        controller.autoArchive = true
+        await controller.refresh()
+        #expect(controller.state == .noPullRequest(branch: "ensemble/fix-the-readme", base: "main"))
+        await controller.fixFailingChecks()
+        await controller.requestMerge()
+        await controller.refresh(network: false)
+        #expect(controller.confirmation == nil && recorder.sent.isEmpty && recorder.archived == 0)
+        #expect(gh.calls("pr", "merge").isEmpty && gh.calls("run", "view").isEmpty)
+
+        try gh.respond("pr_list", fixture: "pr-list-mixed.json")
+        await controller.refresh()
+        #expect(controller.state.pullRequest?.number == 42, "the branch's own pull request, not the newer one from the fork")
+    }
+
+    /// The match is checked again right before each action, so a pull request that stopped matching is left alone.
+    @Test func everyActionRechecksThatThePullRequestStillMatches() async throws {
+        let repo = try GitHubTestRepo()
+        let gh = try FakeGH()
+        try gh.signedIn()
+        try gh.respond("run_view_1001", fixture: "run-log-failed.txt")
+        try repo.git(["switch", "-q", "-c", "ensemble/fix-the-readme"])
+        try repo.commit("a.txt", "a\n", message: "Add a")
+        let recorder = Recorder()
+        let controller = GitHubPullRequestController(sessionID: "s", hooks: hooks(repo.work, recorder), service: repo.service(gh),
+                                                     setting: setting())
+
+        // Fix failing checks.
+        try gh.respond("pr_list", fixture: "pr-list-failing.json")
+        await controller.refresh()
+        #expect(controller.state.pullRequest?.number == 42)
+        try gh.respond("pr_list", fixture: "pr-list-fork-same-name.json")
+        await controller.fixFailingChecks()
+        #expect(recorder.sent.isEmpty && gh.calls("run", "view").isEmpty)
+        #expect(controller.actionError == GitHubPullRequestController.mismatch)
+
+        // Merge when ready: refused at the request, and again at the confirmation.
+        try gh.respond("pr_list", fixture: "pr-list-passing.json")
+        await controller.refresh()
+        try gh.respond("pr_list", fixture: "pr-list-fork-same-name.json")
+        await controller.requestMerge()
+        #expect(controller.confirmation == nil)
+        try gh.respond("pr_list", fixture: "pr-list-passing.json")
+        await controller.refresh()
+        await controller.requestMerge()
+        #expect(controller.confirmation != nil)
+        try gh.respond("pr_list", fixture: "pr-list-fork-same-name.json")
+        await controller.confirm()
+        #expect(gh.calls("pr", "merge").isEmpty && controller.actionError == GitHubPullRequestController.mismatch)
+
+        // The push destination changes after the bar showed the pull request.
+        try gh.respond("pr_list", fixture: "pr-list-failing.json")
+        await controller.refresh()
+        try repo.git(["config", "remote.origin.pushurl", "git@github.com:evil/widgets.git"])
+        await controller.fixFailingChecks()
+        #expect(recorder.sent.isEmpty && controller.actionError == GitHubPullRequestController.mismatch)
+        try repo.git(["config", "--unset-all", "remote.origin.pushurl"])
+
+        // Auto-archive.
+        try gh.respond("pr_list", fixture: "pr-list-merged.json")
+        await controller.refresh()
+        #expect(controller.state.pullRequest?.state == .merged)
+        controller.autoArchive = true
+        try gh.respond("pr_list", fixture: "pr-list-fork-same-name.json")
+        await controller.refresh(network: false)
+        #expect(recorder.archived == 0, "not archived on a pull request that no longer matches")
+        try gh.respond("pr_list", fixture: "pr-list-merged.json")
+        await controller.refresh(network: false)
+        #expect(recorder.archived == 1)
+        #expect(gh.calls().allSatisfy(isSafeCommand))
+    }
+
+    /// Pushed to your fork: the fork is the head and its parent the base.
+    @Test func aBranchInAForkOpensItsPullRequestInTheParent() async throws {
+        let repo = try GitHubTestRepo(remoteURL: "git@github.com:octocat/widgets.git")
+        let gh = try FakeGH()
+        try gh.signedIn()
+        try gh.respond("repo_view_octocat_widgets", fixture: "repo-view-fork.json")
+        try gh.respond("repo_view_acme_widgets", fixture: "repo-view.json")
+        try gh.respond("pr_create", out: "https://github.com/acme/widgets/pull/51\n")
+        try repo.git(["switch", "-q", "-c", "feature"])
+        try repo.commit("a.txt", "a\n", message: "Add a")
+        let controller = GitHubPullRequestController(sessionID: "s", hooks: hooks(repo.work, Recorder()), service: repo.service(gh),
+                                                     setting: setting())
+        await controller.refresh()
+        #expect(controller.headRepository?.slug == "octocat/widgets" && controller.baseRepository?.slug == "acme/widgets")
+        #expect(controller.state == .noPullRequest(branch: "feature", base: "main"))
+        #expect(gh.calls("pr", "list").last?.starts(with: ["pr", "list", "--repo", "acme/widgets", "--head", "feature"]) == true)
+
+        await controller.beginPullRequest()
+        #expect(controller.form?.remote.slug == "acme/widgets" && controller.form?.headRemote?.slug == "octocat/widgets")
+        await controller.requestCreatePullRequest()
+        let message = try #require(controller.confirmation?.message)
+        #expect(message.contains("Pushes feature to origin (octocat/widgets on github.com)"))
+        #expect(message.contains("in acme/widgets from octocat:feature into main"))
+        try gh.respond("pr_list", fixture: "pr-list-from-fork.json")
+        await controller.confirm()
+        #expect(repo.loggingGit.sshLog() == ["git@github.com git-receive-pack 'octocat/widgets.git'"], "pushed to the fork")
+        #expect(gh.calls("pr", "create").last?.prefix(8) == ["pr", "create", "--repo", "acme/widgets", "--base", "main",
+                                                             "--head", "octocat:feature"])
+        #expect(controller.state.pullRequest?.number == 51, "the fork's own pull request, not another fork's same-named branch")
+    }
+
     @Test func autoArchiveIsRememberedPerSession() {
         let setting = setting()
         let hooks = GitHubSessionHooks.inert()
@@ -174,7 +291,7 @@ import Testing
         let recorder = Recorder()
 
         let noGH = GitHubPullRequestController(sessionID: "s", hooks: hooks(repo.work, recorder),
-                                               service: GitHubService(locateGH: { nil }), setting: setting())
+                                               service: GitHubService(locateGH: { nil }, isTrusted: { _ in true }), setting: setting())
         await noGH.refresh()
         #expect(noGH.state == .needsCLI && noGH.isVisible)
         noGH.isDismissed = true
@@ -236,7 +353,9 @@ import Testing
         #expect(gh.calls("repo", "view").count == 2)
     }
 
-    @Test func aPushURLElsewhereIsRefusedBeforeTheConfirmation() async throws {
+    /// The confirmation names the repository git really pushes to (its push URL), and a remote whose push URLs
+    /// name different repositories offers no push at all.
+    @Test func theConfirmationNamesWhereGitReallyPushes() async throws {
         let repo = try GitHubTestRepo()
         let gh = try FakeGH()
         try gh.signedIn()
@@ -246,11 +365,17 @@ import Testing
         let controller = GitHubPullRequestController(sessionID: "s", hooks: hooks(repo.work, Recorder()), service: repo.service(gh),
                                                      setting: setting())
         await controller.refresh()
-        #expect(controller.state == .noPullRequest(branch: "feature", base: "main"), "the bar shows the fetch remote's repository")
+        #expect(controller.headRepository?.slug == "evil/widgets")
         await controller.beginPullRequest()
         await controller.requestCreatePullRequest()
-        #expect(controller.confirmation == nil, "no confirmation for a push that would go elsewhere")
-        #expect(controller.formError?.contains("git@github.com:evil/widgets.git") == true)
+        #expect(controller.confirmation?.message.contains("to origin (evil/widgets on github.com)") == true)
+        controller.cancelConfirmation()
+        controller.cancelPullRequest()
+
+        try repo.git(["config", "--add", "remote.origin.pushurl", "git@github.com:acme/widgets.git"])
+        await controller.refresh()
+        #expect(controller.state == .failed("origin pushes to both evil/widgets and acme/widgets"))
+        #expect(controller.pushPlan == nil)
         #expect(repo.loggingGit.pushes().isEmpty && gh.calls("pr", "create").isEmpty)
     }
 
@@ -274,16 +399,34 @@ import Testing
         #expect(gh.calls("pr", "create").isEmpty, "no pull request without the push")
     }
 
-    @Test func untrustedFoldersDoNotPush() async throws {
+    @Test func untrustedFoldersRunNoGitOrGHAtAll() async throws {
+        let repo = try GitHubTestRepo()
+        let gh = try FakeGH()
+        try gh.signedIn()
+        try repo.git(["switch", "-q", "-c", "feature"])
+        let controller = GitHubPullRequestController(sessionID: "s", hooks: hooks(repo.work, Recorder()),
+                                                     service: repo.service(gh, trusted: false), setting: setting())
+        await controller.refresh()
+        #expect(controller.state == .hidden(.untrusted) && !controller.isVisible)
+        #expect(repo.loggingGit.calls().isEmpty && gh.calls().isEmpty)
+    }
+
+    /// Trust taken away while the bar is on screen: the push is refused before any confirmation.
+    @Test func aFolderNoLongerTrustedDoesNotPush() async throws {
+        final class Trust: @unchecked Sendable { var trusted = true }
+        let trust = Trust()
         let repo = try GitHubTestRepo()
         let gh = try FakeGH()
         try gh.signedIn()
         try repo.git(["switch", "-q", "-c", "feature"])
         try repo.commit("a.txt", "a\n", message: "Add a")
-        let controller = GitHubPullRequestController(sessionID: "s", hooks: hooks(repo.work, Recorder()),
-                                                     service: repo.service(gh, trusted: false), setting: setting())
+        let ghPath = gh.path
+        let service = GitHubService(git: repo.loggingGit.runner, locateGH: { ghPath }, isTrusted: { _ in trust.trusted })
+        let controller = GitHubPullRequestController(sessionID: "s", hooks: hooks(repo.work, Recorder()), service: service,
+                                                     setting: setting())
         await controller.refresh()
         await controller.beginPullRequest()
+        trust.trusted = false
         await controller.requestCreatePullRequest()
         #expect(controller.confirmation == nil && controller.formError?.contains("trusted") == true)
         #expect(repo.loggingGit.pushes().isEmpty)

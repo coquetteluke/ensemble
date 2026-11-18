@@ -36,15 +36,18 @@ public struct GitHubRepoInfo: Hashable, Sendable {
     public var squashAllowed: Bool
     public var mergeCommitAllowed: Bool
     public var rebaseAllowed: Bool
+    /// The repository this one was forked from, when it is a fork. Pull requests from a fork go there.
+    public var parent: GitHubRemote?
 
     public init(nameWithOwner: String, url: String, defaultBranch: String?, squashAllowed: Bool = true,
-                mergeCommitAllowed: Bool = true, rebaseAllowed: Bool = true) {
+                mergeCommitAllowed: Bool = true, rebaseAllowed: Bool = true, parent: GitHubRemote? = nil) {
         self.nameWithOwner = nameWithOwner
         self.url = url
         self.defaultBranch = defaultBranch
         self.squashAllowed = squashAllowed
         self.mergeCommitAllowed = mergeCommitAllowed
         self.rebaseAllowed = rebaseAllowed
+        self.parent = parent
     }
 
     /// The method Merge when ready uses: squash when the repository allows it, then a merge commit, then rebase.
@@ -153,8 +156,13 @@ public struct GitHubLocalRepo: Hashable, Sendable {
     public var branch: String?
     /// The remote the bar works with: the branch's upstream remote, else `origin`, else the first GitHub one.
     public var remoteName: String?
-    /// That remote as a repository, when its URL names one.
+    /// That remote as a repository, when its URL names one (where it fetches from).
     public var remote: GitHubRemote?
+    /// The one repository every push URL of that remote names (after `pushurl`, `pushInsteadOf` and `insteadOf`):
+    /// where this branch is pushed, and so the head of its pull request. Nil when they disagree or name no
+    /// GitHub repository; `pushProblem` says why.
+    public var pushRemote: GitHubRemote?
+    public var pushProblem: String?
     /// The remote's default branch as last fetched (`refs/remotes/<remote>/HEAD`), or the hint given.
     public var defaultBranch: String?
     /// True when the remote has a branch of this name (as last fetched or pushed).
@@ -167,7 +175,8 @@ public struct GitHubLocalRepo: Hashable, Sendable {
     public var uncommitted: Int
 
     public init(root: String, branch: String?, remoteName: String?, remote: GitHubRemote?, defaultBranch: String?,
-                published: Bool = false, unpushed: Int? = nil, ahead: Int? = nil, uncommitted: Int = 0) {
+                published: Bool = false, unpushed: Int? = nil, ahead: Int? = nil, uncommitted: Int = 0,
+                pushRemote: GitHubRemote? = nil, pushProblem: String? = nil) {
         self.root = root
         self.branch = branch
         self.remoteName = remoteName
@@ -177,6 +186,9 @@ public struct GitHubLocalRepo: Hashable, Sendable {
         self.unpushed = unpushed
         self.ahead = ahead
         self.uncommitted = uncommitted
+        // Without a push remote or a problem, the branch is pushed where it is fetched from.
+        self.pushRemote = pushRemote ?? (pushProblem == nil ? remote : nil)
+        self.pushProblem = pushProblem
     }
 }
 
@@ -276,10 +288,16 @@ public struct GitHubPullRequest: Hashable, Sendable {
     public var headRefName: String
     public var baseRefName: String
     public var checks: [GitHubCheck]
+    /// The repository the pull request's commits come from (owner login and name), and whether that is another
+    /// repository than the one it merges into.
+    public var headRepositoryOwner: String?
+    public var headRepositoryName: String?
+    public var isCrossRepository: Bool
 
     public init(number: Int, title: String, url: String, state: State, isDraft: Bool = false,
                 reviewDecision: ReviewDecision? = nil, autoMergeEnabled: Bool = false, headRefName: String,
-                baseRefName: String, checks: [GitHubCheck] = []) {
+                baseRefName: String, checks: [GitHubCheck] = [], headRepositoryOwner: String? = nil,
+                headRepositoryName: String? = nil, isCrossRepository: Bool = false) {
         self.number = number
         self.title = title
         self.url = url
@@ -290,6 +308,17 @@ public struct GitHubPullRequest: Hashable, Sendable {
         self.headRefName = headRefName
         self.baseRefName = baseRefName
         self.checks = checks
+        self.headRepositoryOwner = headRepositoryOwner
+        self.headRepositoryName = headRepositoryName
+        self.isCrossRepository = isCrossRepository
+    }
+
+    /// True when this is the pull request of `branch` pushed to `head` and merging into `base`: the same branch
+    /// name in exactly that repository. A fork's branch of the same name never matches.
+    public func isFrom(branch: String, head: GitHubRemote, base: GitHubRemote) -> Bool {
+        guard headRefName == branch, let owner = headRepositoryOwner, let name = headRepositoryName else { return false }
+        guard owner.lowercased() == head.owner.lowercased(), name.lowercased() == head.name.lowercased() else { return false }
+        return isCrossRepository == !head.isSameRepository(as: base)
     }
 
     public var checkSummary: GitHubCheckSummary { GitHubCheckSummary(checks) }
@@ -311,6 +340,8 @@ public struct GitHubPullRequest: Hashable, Sendable {
 /// Why the bar is not shown for a session.
 public enum GitHubHiddenReason: Hashable, Sendable {
     case notRepository, noRemote, notGitHub, detached
+    /// The folder is not trusted, so no git or gh runs for it.
+    case untrusted
 }
 
 /// What the pull request bar shows. Worked out by `derive` from the folder's git facts, gh's sign-in and the
@@ -423,24 +454,35 @@ public struct GitHubPushPlan: Hashable, Sendable {
 
 /// Opening a pull request with gh. The branch is pushed first, so gh never pushes on its own.
 public struct GitHubPullRequestRequest: Hashable, Sendable {
+    /// The repository the pull request is opened in (it merges into `base` there).
     public var remote: GitHubRemote
     public var base: String
+    /// The branch, in `headRemote` (the repository it is pushed to; nil is `remote` itself).
     public var head: String
+    public var headRemote: GitHubRemote?
     public var title: String
     public var body: String
     public var draft: Bool
 
-    public init(remote: GitHubRemote, base: String, head: String, title: String, body: String, draft: Bool = false) {
+    public init(remote: GitHubRemote, base: String, head: String, headRemote: GitHubRemote? = nil, title: String, body: String,
+                draft: Bool = false) {
         self.remote = remote
         self.base = base
         self.head = head
+        self.headRemote = headRemote
         self.title = title
         self.body = body
         self.draft = draft
     }
 
+    /// True when the branch lives in a fork rather than in the repository the pull request goes to.
+    public var isCrossRepository: Bool { headRemote.map { !$0.isSameRepository(as: remote) } ?? false }
+
+    /// "feature", or "octocat:feature" from a fork.
+    public var headLabel: String { isCrossRepository ? "\(headRemote?.owner ?? ""):\(head)" : head }
+
     public var arguments: [String] {
-        var args = ["pr", "create", "--repo", remote.repoArgument, "--base", base, "--head", head,
+        var args = ["pr", "create", "--repo", remote.repoArgument, "--base", base, "--head", headLabel,
                     "--title=\(title)", "--body=\(body)"]
         if draft { args.append("--draft") }
         return args
@@ -474,11 +516,12 @@ public struct GitHubConfirmation: Hashable, Sendable, Identifiable {
             if let push {
                 title = "Push and open a pull request?"
                 message = "Pushes \(push.branch) to \(push.remoteName) (\(push.remote.slug) on \(push.remote.host)), then opens a pull request "
-                    + "from \(request.head) into \(request.base) titled \u{201C}\(request.title)\u{201D}. Nothing is force-pushed."
+                    + "in \(request.remote.slug) from \(request.headLabel) into \(request.base) titled \u{201C}\(request.title)\u{201D}. "
+                    + "Nothing is force-pushed."
                 confirmTitle = request.draft ? "Push and open draft" : "Push and open"
             } else {
                 title = "Open a pull request?"
-                message = "Opens a pull request in \(request.remote.slug) from \(request.head) into \(request.base) titled "
+                message = "Opens a pull request in \(request.remote.slug) from \(request.headLabel) into \(request.base) titled "
                     + "\u{201C}\(request.title)\u{201D}."
                 confirmTitle = request.draft ? "Open draft" : "Open pull request"
             }

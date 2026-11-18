@@ -27,12 +27,25 @@ public enum GitHubParsing {
         }
         host = host.lowercased()
         if host == "ssh.github.com" || host == "www.github.com" { host = "github.com" }
-        guard !host.isEmpty, host != "localhost" else { return nil }
-        var parts = path.split(separator: "/").map(String.init)
+        guard isSafeHost(host), host != "localhost" else { return nil }
+        var parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        if parts.first == "" { parts.removeFirst() }
+        if parts.last == "" { parts.removeLast() }
         guard parts.count == 2 else { return nil }
         if parts[1].hasSuffix(".git") { parts[1].removeLast(4) }
-        guard !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+        guard isSafeName(parts[0]), isSafeName(parts[1]) else { return nil }
         return GitHubRemote(host: host, owner: parts[0], name: parts[1])
+    }
+
+    /// A host name of letters, digits, hyphens and dots only (lowercase). A remote URL is written by the
+    /// repository, so nothing else may reach text that is shown as a command.
+    public static func isSafeHost(_ host: String) -> Bool {
+        host.range(of: "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$", options: .regularExpression) != nil
+    }
+
+    /// An owner or repository name of letters, digits, dots, underscores and hyphens, not starting with a hyphen.
+    public static func isSafeName(_ name: String) -> Bool {
+        !name.hasPrefix("-") && name.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil
     }
 
     /// A remote URL to show: any user name or password removed, and anything shaped like a token replaced.
@@ -83,7 +96,8 @@ public enum GitHubParsing {
     // MARK: Pull requests
 
     /// Fields asked of `gh pr list` and `gh pr view`.
-    public static let pullRequestFields = "number,title,url,state,isDraft,reviewDecision,autoMergeRequest,headRefName,baseRefName,statusCheckRollup"
+    public static let pullRequestFields = "number,title,url,state,isDraft,reviewDecision,autoMergeRequest,headRefName,baseRefName,"
+        + "statusCheckRollup,headRepositoryOwner,headRepository,isCrossRepository"
 
     struct PullRequestJSON: Decodable {
         var number: Int
@@ -96,7 +110,13 @@ public enum GitHubParsing {
         var headRefName: String?
         var baseRefName: String?
         var statusCheckRollup: [RollupJSON]?
+        var headRepositoryOwner: OwnerJSON?
+        var headRepository: RepositoryJSON?
+        var isCrossRepository: Bool?
     }
+
+    struct OwnerJSON: Decodable { var login: String? }
+    struct RepositoryJSON: Decodable { var name: String? }
 
     struct AutoMergeJSON: Decodable {
         var mergeMethod: String?
@@ -134,11 +154,20 @@ public enum GitHubParsing {
         return GitHubPullRequest(number: json.number, title: json.title, url: json.url, state: state, isDraft: json.isDraft ?? false,
                                  reviewDecision: decision, autoMergeEnabled: json.autoMergeRequest != nil,
                                  headRefName: json.headRefName ?? "", baseRefName: json.baseRefName ?? "",
-                                 checks: checks(json.statusCheckRollup ?? []))
+                                 checks: checks(json.statusCheckRollup ?? []), headRepositoryOwner: json.headRepositoryOwner?.login,
+                                 headRepositoryName: json.headRepository?.name, isCrossRepository: json.isCrossRepository ?? false)
     }
 
-    /// The pull request the bar follows for a branch: the newest open one, else the newest of the rest.
-    public static func pick(_ pullRequests: [GitHubPullRequest]) -> GitHubPullRequest? {
+    /// The pull request of `branch` pushed to `head` and merging into `base`: only pull requests from exactly that
+    /// repository count (`gh pr list --head` also returns forks' branches of the same name), then the newest open
+    /// one, else the newest of the rest.
+    public static func pick(_ pullRequests: [GitHubPullRequest], branch: String, head: GitHubRemote,
+                            base: GitHubRemote) -> GitHubPullRequest? {
+        pick(pullRequests.filter { $0.isFrom(branch: branch, head: head, base: base) })
+    }
+
+    /// The newest open pull request, else the newest of the rest.
+    static func pick(_ pullRequests: [GitHubPullRequest]) -> GitHubPullRequest? {
         let sorted = pullRequests.sorted { $0.number > $1.number }
         return sorted.first { $0.state == .open } ?? sorted.first
     }
@@ -189,22 +218,39 @@ public enum GitHubParsing {
 
     struct RepoJSON: Decodable {
         struct Ref: Decodable { var name: String? }
+        struct Parent: Decodable {
+            var name: String?
+            var nameWithOwner: String?
+            var owner: OwnerJSON?
+        }
         var nameWithOwner: String
         var url: String
         var defaultBranchRef: Ref?
         var squashMergeAllowed: Bool?
         var mergeCommitAllowed: Bool?
         var rebaseMergeAllowed: Bool?
+        var isFork: Bool?
+        var parent: Parent?
     }
 
-    public static let repoFields = "nameWithOwner,url,defaultBranchRef,squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed"
+    public static let repoFields = "nameWithOwner,url,defaultBranchRef,squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed,isFork,parent"
 
-    public static func repoInfo(_ data: Data) throws -> GitHubRepoInfo {
+    /// `gh repo view --json` for a repository on `host` (its parent, for a fork, is on the same host).
+    public static func repoInfo(_ data: Data, host: String = "github.com") throws -> GitHubRepoInfo {
         let json = try JSONDecoder().decode(RepoJSON.self, from: data)
         let branch = json.defaultBranchRef?.name.flatMap { $0.isEmpty ? nil : $0 }
+        var parent: GitHubRemote?
+        if json.isFork == true, let p = json.parent {
+            let parts = p.nameWithOwner?.split(separator: "/").map(String.init)
+            let owner = p.owner?.login ?? parts?.first
+            let name = p.name ?? (parts?.count == 2 ? parts?[1] : nil)
+            if let owner, let name, isSafeName(owner), isSafeName(name) {
+                parent = GitHubRemote(host: host, owner: owner, name: name)
+            }
+        }
         return GitHubRepoInfo(nameWithOwner: json.nameWithOwner, url: json.url, defaultBranch: branch,
                               squashAllowed: json.squashMergeAllowed ?? true, mergeCommitAllowed: json.mergeCommitAllowed ?? true,
-                              rebaseAllowed: json.rebaseMergeAllowed ?? true)
+                              rebaseAllowed: json.rebaseMergeAllowed ?? true, parent: parent)
     }
 
     // MARK: Links

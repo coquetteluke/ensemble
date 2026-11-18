@@ -9,7 +9,7 @@ import Testing
     // MARK: gh and the sign-in
 
     @Test func noGHMeansNotInstalled() async {
-        let service = GitHubService(locateGH: { nil })
+        let service = GitHubService(locateGH: { nil }, isTrusted: { _ in true })
         #expect(await service.cliStatus() == .notInstalled)
     }
 
@@ -46,7 +46,7 @@ import Testing
     // MARK: Local facts
 
     @Test func localFactsForEveryKindOfFolder() async throws {
-        let service = GitHubService(locateGH: { nil })
+        let service = GitHubService(locateGH: { nil }, isTrusted: { _ in true })
         let plain = try GitHubFolders.make("ensemble-plain")
         #expect(await service.localRepository(plain.path) == nil)
 
@@ -61,6 +61,14 @@ import Testing
         #expect(local.branch == "main" && local.remoteName == "origin")
         #expect(local.remote == GitHubRemote(host: "github.com", owner: "acme", name: "widgets"))
         #expect(local.defaultBranch == "main" && local.published && local.unpushed == 0 && local.ahead == 0)
+        #expect(local.pushRemote == local.remote && local.pushProblem == nil)
+        try repo.git(["config", "remote.origin.pushurl", "git@github.com:evil/widgets.git"])
+        local = try #require(await service.localRepository(repo.work.path))
+        #expect(local.pushRemote?.owner == "evil", "the head is where git pushes, not where it fetches")
+        try repo.git(["config", "--add", "remote.origin.pushurl", "git@github.com:acme/widgets.git"])
+        local = try #require(await service.localRepository(repo.work.path))
+        #expect(local.pushRemote == nil && local.pushProblem?.contains("both") == true)
+        try repo.git(["config", "--unset-all", "remote.origin.pushurl"])
 
         try repo.git(["switch", "-q", "-c", "ensemble/x"])
         try repo.commit("a.txt", "a\n", message: "Add a")
@@ -77,7 +85,7 @@ import Testing
 
     @Test func defaultBranchFallsBackToTheHintWithoutRemoteHead() async throws {
         let repo = try GitHubTestRepo(setHead: false)
-        let service = GitHubService(locateGH: { nil })
+        let service = GitHubService(locateGH: { nil }, isTrusted: { _ in true })
         try repo.git(["switch", "-q", "-c", "feature"])
         try repo.commit("a.txt", "a\n", message: "Add a")
         var local = try #require(await service.localRepository(repo.work.path))
@@ -90,7 +98,7 @@ import Testing
         let repo = try GitHubTestRepo()
         try repo.git(["remote", "add", "fork", "git@github.com:octocat/widgets.git"])
         try repo.git(["config", "branch.main.remote", "fork"])
-        let local = try #require(await GitHubService(locateGH: { nil }).localRepository(repo.work.path))
+        let local = try #require(await GitHubService(locateGH: { nil }, isTrusted: { _ in true }).localRepository(repo.work.path))
         #expect(local.remoteName == "fork" && local.remote?.owner == "octocat")
     }
 
@@ -98,7 +106,7 @@ import Testing
 
     @Test func createBranchKeepsChangesAndRefusesBadNames() async throws {
         let repo = try GitHubTestRepo()
-        let service = GitHubService(locateGH: { nil })
+        let service = GitHubService(locateGH: { nil }, isTrusted: { _ in true })
         try repo.helper.write("changed\n", "README.md", in: repo.work)
         try await service.createBranch("ensemble/fix", root: repo.work.path)
         #expect(try repo.git(["symbolic-ref", "--short", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines) == "ensemble/fix")
@@ -204,7 +212,7 @@ import Testing
     }
 
     @Test func theGlobalCredentialHelperIsReadFromYourOwnConfigOnly() async throws {
-        let service = GitHubService(locateGH: { nil })
+        let service = GitHubService(locateGH: { nil }, isTrusted: { _ in true })
         let home = try GitHubFolders.make("ensemble-home")
         let env = ["HOME": home.path, "PATH": "/usr/bin:/bin", "XDG_CONFIG_HOME": home.appendingPathComponent(".config").path]
         #expect(await service.hasGlobalCredentialHelper(environment: env) == false, "no global config")
@@ -237,12 +245,17 @@ import Testing
         try gh.signedIn()
         let service = gh.service
         let remote = GitHubRemote(host: "github.com", owner: "acme", name: "widgets")
-        #expect(try await service.pullRequest(branch: "ensemble/fix", remote: remote) == nil)
+        let branch = "ensemble/fix-the-readme"
+        #expect(try await service.pullRequest(branch: branch, head: remote, base: remote) == nil)
         try gh.respond("pr_list", fixture: "pr-list-failing.json")
-        let pr = try #require(try await service.pullRequest(branch: "ensemble/fix", remote: remote))
+        let pr = try #require(try await service.pullRequest(branch: branch, head: remote, base: remote))
         #expect(pr.number == 42)
-        #expect(gh.calls("pr", "list").last == ["pr", "list", "--repo", "acme/widgets", "--head", "ensemble/fix", "--state", "all",
-                                                 "--limit", "10", "--json", GitHubParsing.pullRequestFields])
+        #expect(gh.calls("pr", "list").last == ["pr", "list", "--repo", "acme/widgets", "--head", branch, "--state", "all",
+                                                 "--limit", "30", "--json", GitHubParsing.pullRequestFields])
+        #expect(GitHubParsing.pullRequestFields.contains("headRepositoryOwner,headRepository,isCrossRepository"))
+        try gh.respond("pr_list", fixture: "pr-list-fork-same-name.json")
+        #expect(try await service.pullRequest(branch: branch, head: remote, base: remote) == nil, "forks' branches of the same name")
+        try gh.respond("pr_list", fixture: "pr-list-failing.json")
 
         let info = try await service.repoInfo(remote)
         #expect(info.defaultBranch == "main")
@@ -283,7 +296,7 @@ import Testing
         try gh.respond("pr_list", err: "HTTP 401: Bad credentials (\(token))\nmore\n", code: 1)
         let remote = GitHubRemote(host: "github.com", owner: "acme", name: "widgets")
         do {
-            _ = try await gh.service.pullRequest(branch: "x", remote: remote)
+            _ = try await gh.service.pullRequest(branch: "x", head: remote, base: remote)
             Issue.record("expected an error")
         } catch {
             #expect(error.localizedDescription.hasPrefix("HTTP 401: Bad credentials"))

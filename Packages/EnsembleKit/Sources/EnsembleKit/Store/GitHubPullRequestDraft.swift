@@ -108,8 +108,10 @@ extension SessionStore {
         return text
     }
 
-    /// The hidden-copy question behind Write description: the agent's text after the question, and the last
-    /// error when it wrote none.
+    /// Asks a hidden copy of the session one question and returns the agent's text after it (and the last error
+    /// when it wrote none). Shared by Write message (`draftCommitMessage`) and Write description. The copy (or, when
+    /// the engine cannot copy sessions, a new hidden session in `directory`) runs in Ask mode with every permission
+    /// prompt rejected, never shows in the sidebar, and is deleted afterwards.
     func askHiddenCopy(_ prompt: String, title: String, sessionID: String?, directory: String,
                        timeout: Duration) async throws -> (text: String, error: String?) {
         let source = sessionID.flatMap { byID[$0] }
@@ -134,7 +136,7 @@ extension SessionStore {
         do {
             try await engine.setPermissionMode(info.id, mode: .ask)
         } catch {
-            throw GitHubError("Could not set the copy to Ask: \(error.localizedDescription)")
+            throw HiddenCopyError("Could not set the copy to Ask: \(error.localizedDescription)")
         }
         try? await engine.renameSession(info.id, title: title)
         await deliver(prompt, to: info.id)
@@ -144,7 +146,7 @@ extension SessionStore {
         while helper.isWorking, clock.now < deadline {
             try? await Task.sleep(for: .milliseconds(250))
         }
-        if helper.isWorking { throw GitHubError("The agent took too long to answer") }
+        if helper.isWorking { throw HiddenCopyError("The agent took too long to answer") }
         let afterQuestion = helper.items.lastIndex { if case .user = $0 { true } else { false } }
             .map { helper.items.index(after: $0) } ?? helper.items.endIndex
         let text = helper.items[afterQuestion...].compactMap { item -> String? in
@@ -167,4 +169,11 @@ extension SessionStore {
             // Stays hidden and on the list of copies; the next launch deletes it.
         }
     }
+}
+
+/// Why a hidden-copy question got no answer.
+public struct HiddenCopyError: Error, LocalizedError, Sendable {
+    public var message: String
+    public init(_ message: String) { self.message = message }
+    public var errorDescription: String? { message }
 }

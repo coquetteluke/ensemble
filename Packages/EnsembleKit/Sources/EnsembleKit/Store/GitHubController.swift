@@ -68,15 +68,20 @@ public struct GitHubPullRequestForm: Hashable, Sendable {
     public var draft: Bool
     public var base: String
     public var head: String
+    /// Where the pull request is opened.
     public var remote: GitHubRemote
+    /// Where the branch is pushed (a fork), when that is not `remote`.
+    public var headRemote: GitHubRemote?
 
-    public init(title: String, body: String = "", draft: Bool = false, base: String, head: String, remote: GitHubRemote) {
+    public init(title: String, body: String = "", draft: Bool = false, base: String, head: String, remote: GitHubRemote,
+                headRemote: GitHubRemote? = nil) {
         self.title = title
         self.body = body
         self.draft = draft
         self.base = base
         self.head = head
         self.remote = remote
+        self.headRemote = headRemote
     }
 
     public var trimmedTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -95,7 +100,10 @@ public final class GitHubPullRequestController {
     public private(set) var state: GitHubBarState = .loading
     public private(set) var local: GitHubLocalRepo?
     public private(set) var cli: GitHubCLIStatus?
+    /// The settings of the repository the branch is pushed to.
     public private(set) var repoInfo: GitHubRepoInfo?
+    /// The settings of the repository a fork's pull requests go to (its parent).
+    public private(set) var parentInfo: GitHubRepoInfo?
     public private(set) var busy: Set<GitHubBusy> = []
     public private(set) var isRefreshing = false
     /// The last action that failed, in a line.
@@ -125,6 +133,7 @@ public final class GitHubPullRequestController {
     @ObservationIgnored let setting: GitHubAutoArchiveSetting
     @ObservationIgnored private var cliCheckedAt: Date?
     @ObservationIgnored private var repoInfoCheckedAt: Date?
+    @ObservationIgnored private var parentInfoCheckedAt: Date?
     @ObservationIgnored private var lastPullRequest: GitHubPullRequest?
     @ObservationIgnored private var generation = 0
 
@@ -161,9 +170,27 @@ public final class GitHubPullRequestController {
 
     public var isVisible: Bool { state.isVisible && !(isDismissed && state.isDismissible) }
 
+    /// Where this branch is pushed: the head repository of its pull request.
+    public var headRepository: GitHubRemote? { local?.pushRemote }
+
+    /// Where its pull request goes: the head's parent when the head is a fork, else the head itself.
+    public var baseRepository: GitHubRemote? { headRepository.map(base(for:)) }
+
+    /// The repository pull requests from `head` go to: its parent when it is a fork.
+    func base(for head: GitHubRemote) -> GitHubRemote {
+        if let info = repoInfo, info.nameWithOwner.lowercased() == head.slug.lowercased(), let parent = info.parent { return parent }
+        return head
+    }
+
+    /// The settings of the base repository (merge methods and default branch).
+    public var baseRepoInfo: GitHubRepoInfo? {
+        guard let base = baseRepository, let head = headRepository else { return nil }
+        return base.isSameRepository(as: head) ? repoInfo : parentInfo
+    }
+
     /// Pushing the branch as it is now, or nil when the remote already has every commit.
     public var pushPlan: GitHubPushPlan? {
-        guard let local, let branch = local.branch, let remoteName = local.remoteName, let remote = local.remote else { return nil }
+        guard let local, let branch = local.branch, let remoteName = local.remoteName, let remote = local.pushRemote else { return nil }
         if local.published, (local.unpushed ?? 0) == 0 { return nil }
         return GitHubPushPlan(root: local.root, remoteName: remoteName, branch: branch, remote: remote,
                               commits: local.published ? local.unpushed : nil)
@@ -177,7 +204,7 @@ public final class GitHubPullRequestController {
     }
 
     public var pullRequestURL: URL? {
-        guard let pr = state.pullRequest, let host = local?.remote?.host, GitHubParsing.isWebLink(pr.url, on: host) else { return nil }
+        guard let pr = state.pullRequest, let host = baseRepository?.host, GitHubParsing.isWebLink(pr.url, on: host) else { return nil }
         return URL(string: pr.url)
     }
 
@@ -206,6 +233,12 @@ public final class GitHubPullRequestController {
             repoInfoCheckedAt = nil
         }
         let directory = hooks.directory()
+        if let repository = service.repositoryFolder(directory), !repository.trusted {
+            local = nil
+            lastPullRequest = nil
+            state = .hidden(.untrusted)
+            return
+        }
         var local = await service.localRepository(directory, baseHint: repoInfo?.defaultBranch)
         guard current == generation else { return }
         guard let found = local, found.remoteName != nil, let remote = found.remote else {
@@ -225,12 +258,18 @@ public final class GitHubPullRequestController {
             return
         }
 
+        // The pull request's head is where the branch is pushed; nothing is looked up when that is unclear.
+        guard let head = found.pushRemote, head.host.lowercased() == remote.host.lowercased() else {
+            apply(local: local, pullRequest: nil, error: found.pushProblem ?? "\(found.remoteName ?? "The remote") pushes to another host")
+            return
+        }
+
         var lookupError: String?
         let repoStale = repoInfoCheckedAt.map { now.timeIntervalSince($0) > GitHubRefreshPolicy.repoInfoLifetime } ?? true
-        let repoMoved = repoInfo.map { $0.nameWithOwner.lowercased() != remote.slug.lowercased() } ?? false
+        let repoMoved = repoInfo.map { $0.nameWithOwner.lowercased() != head.slug.lowercased() } ?? false
         if network, repoInfo == nil || repoStale || repoMoved {
             do {
-                let info = try await service.repoInfo(remote)
+                let info = try await service.repoInfo(head)
                 guard current == generation else { return }
                 repoInfo = info
                 repoInfoCheckedAt = now
@@ -242,18 +281,32 @@ public final class GitHubPullRequestController {
                 lookupError = error.localizedDescription
             }
         }
+        if network, let parent = repoInfo?.parent {
+            let parentStale = parentInfoCheckedAt.map { now.timeIntervalSince($0) > GitHubRefreshPolicy.repoInfoLifetime } ?? true
+            let parentMoved = parentInfo.map { $0.nameWithOwner.lowercased() != parent.slug.lowercased() } ?? true
+            if parentStale || parentMoved {
+                do {
+                    parentInfo = try await service.repoInfo(parent)
+                    parentInfoCheckedAt = now
+                } catch {
+                    lookupError = error.localizedDescription
+                }
+                guard current == generation else { return }
+            }
+        }
 
         var pullRequest: GitHubPullRequest?
         if let branch = local?.branch, branch != local?.defaultBranch {
+            let base = base(for: head)
             if network {
                 do {
-                    pullRequest = try await service.pullRequest(branch: branch, remote: remote)
+                    pullRequest = try await service.pullRequest(branch: branch, head: head, base: base)
                     lookupError = nil
                 } catch {
                     lookupError = error.localizedDescription
                 }
                 guard current == generation else { return }
-            } else if let last = lastPullRequest, last.headRefName == branch {
+            } else if let last = lastPullRequest, last.isFrom(branch: branch, head: head, base: base) {
                 pullRequest = last
                 lookupError = nil
             }
@@ -265,8 +318,13 @@ public final class GitHubPullRequestController {
     private func apply(local: GitHubLocalRepo?, pullRequest: GitHubPullRequest?, error: String?) {
         self.local = local
         lastPullRequest = pullRequest
-        let next = GitHubBarState.derive(local: local, cli: cli, defaultBranch: local?.defaultBranch, pullRequest: pullRequest,
+        var next = GitHubBarState.derive(local: local, cli: cli, defaultBranch: local?.defaultBranch, pullRequest: pullRequest,
                                          lookupError: error)
+        // A fork's pull request goes into its parent's default branch.
+        if case .noPullRequest(let branch, _) = next, let parent = parentInfo, let head = headRepository,
+           baseRepository.map({ !$0.isSameRepository(as: head) }) == true {
+            next = .noPullRequest(branch: branch, base: parent.defaultBranch)
+        }
         if !next.isDismissible { isDismissed = false }
         state = next
     }
@@ -274,9 +332,23 @@ public final class GitHubPullRequestController {
     /// Archives the session when the switch is on, its pull request is merged and its agent is not working.
     func archiveIfMerged() async {
         guard Self.shouldArchive(enabled: autoArchive, pullRequest: state.pullRequest, agentWorking: hooks.isAgentWorking(),
-                                 alreadyArchived: archivedAfterMerge) else { return }
+                                 alreadyArchived: archivedAfterMerge), let shown = state.pullRequest else { return }
+        guard let fresh = await recheck(shown), fresh.state == .merged, !hooks.isAgentWorking(), !archivedAfterMerge else { return }
         archivedAfterMerge = true
         await hooks.archive()
+    }
+
+    static let mismatch = "That pull request no longer comes from this branch's repository, so nothing was done"
+
+    /// Looks the branch's pull request up again right before acting on it. Returns it only when the same pull
+    /// request still comes from exactly the repository this branch is pushed to.
+    func recheck(_ pullRequest: GitHubPullRequest) async -> GitHubPullRequest? {
+        guard let service, let branch = local?.branch, let head = headRepository, let base = baseRepository else { return nil }
+        guard let fresh = await service.localRepository(hooks.directory(), baseHint: repoInfo?.defaultBranch),
+              fresh.branch == branch, let freshHead = fresh.pushRemote, freshHead.isSameRepository(as: head) else { return nil }
+        guard let found = try? await service.pullRequest(branch: branch, head: freshHead, base: base),
+              found.number == pullRequest.number, found.isFrom(branch: branch, head: freshHead, base: base) else { return nil }
+        return found
     }
 
     nonisolated public static func shouldArchive(enabled: Bool, pullRequest: GitHubPullRequest?, agentWorking: Bool, alreadyArchived: Bool) -> Bool {
@@ -329,10 +401,12 @@ public final class GitHubPullRequestController {
 
     /// Opens the form with the session title (or the only commit's subject) as the title.
     public func beginPullRequest() async {
-        guard case .noPullRequest(let branch, let base) = state, let local, let remote = local.remote else { return }
-        let target = base ?? repoInfo?.defaultBranch ?? "main"
+        guard case .noPullRequest(let branch, let base) = state, let local, let head = headRepository,
+              let remote = baseRepository else { return }
+        let target = base ?? baseRepoInfo?.defaultBranch ?? "main"
         let title = hooks.sessionTitle()
-        form = GitHubPullRequestForm(title: title, base: target, head: branch, remote: remote)
+        form = GitHubPullRequestForm(title: title, base: target, head: branch, remote: remote,
+                                     headRemote: head.isSameRepository(as: remote) ? nil : head)
         formError = nil
         guard let service else { return }
         let context = await service.pullRequestContext(local, base: target)
@@ -365,7 +439,8 @@ public final class GitHubPullRequestController {
     /// the repository shown is refused here, before any confirmation, and checked again when it runs.
     public func requestCreatePullRequest() async {
         guard let form, !form.trimmedTitle.isEmpty else { return }
-        let request = GitHubPullRequestRequest(remote: form.remote, base: form.base, head: form.head, title: form.trimmedTitle,
+        let request = GitHubPullRequestRequest(remote: form.remote, base: form.base, head: form.head, headRemote: form.headRemote,
+                                               title: form.trimmedTitle,
                                                body: form.body.trimmingCharacters(in: .whitespacesAndNewlines), draft: form.draft)
         let push = pushPlan
         if let push, let service {
@@ -398,11 +473,13 @@ public final class GitHubPullRequestController {
 
     /// Asks to turn on auto-merge with the repository's allowed method.
     public func requestMerge() async {
-        guard let pr = state.pullRequest, pr.isOpen, let local, let remote = local.remote else { return }
-        if repoInfo == nil, let service {
-            repoInfo = try? await service.repoInfo(remote)
+        guard let shown = state.pullRequest, shown.isOpen, let remote = baseRepository else { return }
+        guard let pr = await recheck(shown), pr.isOpen else {
+            actionError = Self.mismatch
+            await refresh()
+            return
         }
-        guard let method = repoInfo?.mergeMethod else {
+        guard let method = baseRepoInfo?.mergeMethod else {
             actionError = "Could not read which merge methods \(remote.slug) allows"
             return
         }
@@ -445,6 +522,11 @@ public final class GitHubPullRequestController {
         case .merge(let number, let method, let remote, _):
             busy.insert(.merging)
             defer { busy.remove(.merging) }
+            guard let shown = state.pullRequest, shown.number == number, baseRepository.map({ $0.isSameRepository(as: remote) }) == true,
+                  await recheck(shown) != nil else {
+                actionError = Self.mismatch
+                break
+            }
             do {
                 try await service.enableAutoMerge(number: number, method: method, remote: remote)
                 actionError = nil
@@ -458,10 +540,15 @@ public final class GitHubPullRequestController {
 
     /// Turns auto-merge off again (no confirmation: it only stops a merge).
     public func disableAutoMerge() async {
-        guard let pr = state.pullRequest, pr.autoMergeEnabled, let local, let remote = local.remote, let service,
+        guard let pr = state.pullRequest, pr.autoMergeEnabled, let remote = baseRepository, let service,
               !busy.contains(.merging) else { return }
         busy.insert(.merging)
         defer { busy.remove(.merging) }
+        guard await recheck(pr) != nil else {
+            actionError = Self.mismatch
+            await refresh()
+            return
+        }
         do {
             try await service.disableAutoMerge(number: pr.number, remote: remote)
             actionError = nil
@@ -474,10 +561,19 @@ public final class GitHubPullRequestController {
 
     /// Fetches the failed runs' logs and sends them to the agent as one message (queued while it works).
     public func fixFailingChecks() async {
-        guard let pr = state.pullRequest, !pr.failingChecks.isEmpty, let local, let remote = local.remote,
+        guard let shown = state.pullRequest, !shown.failingChecks.isEmpty, let remote = baseRepository,
               let service, !busy.contains(.fixing) else { return }
         busy.insert(.fixing)
         defer { busy.remove(.fixing) }
+        guard let pr = await recheck(shown) else {
+            actionError = Self.mismatch
+            await refresh()
+            return
+        }
+        guard !pr.failingChecks.isEmpty else {
+            await refresh()
+            return
+        }
         let logs = await service.failedLogs(for: pr.failingChecks, remote: remote)
         let message = GitHubParsing.fixChecksMessage(pullRequest: pr, logs: logs)
         let waiting = hooks.isAgentWorking()

@@ -35,6 +35,39 @@ import Testing
         #expect(!"\(remote)".contains(secret))
     }
 
+    /// A remote URL is written by the repository; anything that could turn the sign-in hint into another command
+    /// makes the remote not GitHub.
+    @Test func hostileRemotesAreNotGitHub() {
+        let hostile = [
+            "git@github.com;touch x:acme/widgets.git",
+            "git@$(touch x):acme/widgets.git",
+            "git@`touch x`:acme/widgets.git",
+            "git@github .com:acme/widgets.git",
+            "git@-oProxyCommand=x:acme/widgets.git",
+            "git@github.com\n:acme/widgets.git",
+            "ssh://git@evil.com;rm%20-rf/acme/widgets.git",
+            "https://github.com/acme;touch x/widgets.git",
+            "https://github.com/acme/$(touch x).git",
+            "https://github.com/-acme/widgets.git",
+            "https://github.com/acme/-widgets.git",
+            "https://github.com/acme/wid gets.git",
+            "https://github.com/ac`me`/widgets.git",
+            "git@github.com:acme/widgets.git\nrm -rf ~",
+            "https://-github.com/acme/widgets.git",
+            "https://github-.com/acme/widgets.git",
+            "https://github..com/acme/widgets.git",
+            "https://github.com//acme/widgets.git",
+        ]
+        for url in hostile {
+            #expect(GitHubParsing.remote(fromURL: url) == nil, "\(url)")
+        }
+        #expect(GitHubParsing.isSafeHost("github.com") && GitHubParsing.isSafeHost("git.example-corp.co.uk"))
+        for host in ["github.com;x", "$(x)", "`x`", "a b", "-x", "x-", "x\ny", "", "a..b"] {
+            #expect(!GitHubParsing.isSafeHost(host), "\(host)")
+        }
+        #expect(GitHubParsing.isSafeName("my.repo_name-2") && !GitHubParsing.isSafeName("-x") && !GitHubParsing.isSafeName("a;b"))
+    }
+
     @Test func githubHostsAreGitHubComEnterpriseCloudAndSignedInHosts() {
         #expect(GitHubParsing.isGitHubHost("github.com", signedInHosts: []))
         #expect(GitHubParsing.isGitHubHost("work.ghe.com", signedInHosts: []))
@@ -114,6 +147,52 @@ import Testing
         #expect(pr.checkSummary.overall == .passing)
         #expect(pr.checkSummary.label == "3 checks passing")
         #expect(prs[1].reviewDecision == nil, "an empty review decision is none")
+    }
+
+    @Test func onlyPullRequestsFromTheBranchesOwnRepositoryArePicked() throws {
+        let acme = GitHubRemote(host: "github.com", owner: "acme", name: "widgets")
+        let octocat = GitHubRemote(host: "github.com", owner: "octocat", name: "widgets")
+        let branch = "ensemble/fix-the-readme"
+        let forks = try GitHubParsing.pullRequests(Fixtures.data("github/pr-list-fork-same-name.json"))
+        #expect(forks.count == 2 && forks.allSatisfy { $0.headRepositoryOwner == "mallory" && $0.isCrossRepository })
+        #expect(GitHubParsing.pick(forks, branch: branch, head: acme, base: acme) == nil, "a fork's branch of the same name never counts")
+        let mixed = try GitHubParsing.pullRequests(Fixtures.data("github/pr-list-mixed.json"))
+        #expect(GitHubParsing.pick(mixed, branch: branch, head: acme, base: acme)?.number == 42, "even when the fork's is newer")
+        #expect(GitHubParsing.pick(mixed, branch: "other", head: acme, base: acme) == nil)
+
+        let fromFork = try GitHubParsing.pullRequests(Fixtures.data("github/pr-list-from-fork.json"))
+        #expect(GitHubParsing.pick(fromFork, branch: "feature", head: octocat, base: acme)?.number == 51)
+        #expect(GitHubParsing.pick(fromFork, branch: "feature", head: acme, base: acme) == nil)
+        // A pull request whose head is the right repository but claims the wrong cross-repository flag does not count.
+        var odd = try #require(mixed.last)
+        odd.isCrossRepository = true
+        #expect(!odd.isFrom(branch: branch, head: acme, base: acme))
+        var noHead = try #require(mixed.last)
+        noHead.headRepositoryName = nil
+        #expect(!noHead.isFrom(branch: branch, head: acme, base: acme), "a deleted head repository never matches")
+    }
+
+    @Test func aForkKnowsItsParent() throws {
+        let fork = try GitHubParsing.repoInfo(Fixtures.data("github/repo-view-fork.json"))
+        #expect(fork.parent == GitHubRemote(host: "github.com", owner: "acme", name: "widgets"))
+        #expect(try GitHubParsing.repoInfo(Fixtures.data("github/repo-view.json")).parent == nil)
+        let enterprise = try GitHubParsing.repoInfo(Fixtures.data("github/repo-view-fork.json"), host: "work.ghe.com")
+        #expect(enterprise.parent?.host == "work.ghe.com")
+    }
+
+    @Test func aPullRequestFromAForkNamesItsHeadByOwner() {
+        let acme = GitHubRemote(host: "github.com", owner: "acme", name: "widgets")
+        let octocat = GitHubRemote(host: "github.com", owner: "octocat", name: "widgets")
+        let request = GitHubPullRequestRequest(remote: acme, base: "main", head: "feature", headRemote: octocat, title: "Fix", body: "")
+        #expect(request.isCrossRepository && request.headLabel == "octocat:feature")
+        #expect(request.arguments == ["pr", "create", "--repo", "acme/widgets", "--base", "main", "--head", "octocat:feature",
+                                      "--title=Fix", "--body="])
+        let same = GitHubPullRequestRequest(remote: acme, base: "main", head: "feature", headRemote: acme, title: "Fix", body: "")
+        #expect(!same.isCrossRepository && same.headLabel == "feature")
+        let plan = GitHubPushPlan(root: "/r", remoteName: "origin", branch: "feature", remote: octocat, commits: nil)
+        let confirmation = GitHubConfirmation(action: .createPullRequest(push: plan, request: request))
+        #expect(confirmation.message.contains("Pushes feature to origin (octocat/widgets on github.com)"))
+        #expect(confirmation.message.contains("in acme/widgets from octocat:feature into main"))
     }
 
     @Test func autoMergeAndMergedStates() throws {

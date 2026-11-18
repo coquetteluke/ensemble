@@ -68,11 +68,18 @@ public struct GitHubService: Sendable {
 
     // MARK: Local facts
 
+    /// The repository folder holding `directory`, found without running git, and whether it is trusted. Git runs
+    /// on its own (the bar's refresh) only in trusted folders.
+    public func repositoryFolder(_ directory: String) -> (folder: String, trusted: Bool)? {
+        guard let folder = GitSafety.repositoryFolder(containing: directory) else { return nil }
+        return (folder, isTrusted(folder))
+    }
+
     /// The folder's branch, remote, default branch and how far the branch is ahead. Nil when `directory` is not
-    /// in a git work tree. `baseHint` is the default branch from GitHub, used when the folder has no
+    /// in a git work tree, or is in one that is not trusted (no git runs there). `baseHint` is the default branch from GitHub, used when the folder has no
     /// `refs/remotes/<remote>/HEAD`.
     public func localRepository(_ directory: String, baseHint: String? = nil) async -> GitHubLocalRepo? {
-        guard FileManager.default.fileExists(atPath: directory) else { return nil }
+        guard FileManager.default.fileExists(atPath: directory), repositoryFolder(directory)?.trusted == true else { return nil }
         let top = await git.run(["rev-parse", "--show-toplevel"], in: directory)
         guard top.succeeded, !top.line.isEmpty else { return nil }
         let root = top.line
@@ -97,6 +104,9 @@ public struct GitHubService: Sendable {
         let remoteName = upstreamRemote ?? (remotes.contains("origin") ? "origin" : nil) ?? githubRemote ?? remotes[0]
         local.remoteName = remoteName
         local.remote = urls[remoteName] ?? nil
+        let push = await pushRepository(remoteName: remoteName, root: root)
+        local.pushRemote = push.remote
+        local.pushProblem = push.problem
 
         let head = await git.run(["symbolic-ref", "--quiet", "--short", "refs/remotes/\(remoteName)/HEAD"], in: root)
         if head.succeeded, head.line.hasPrefix(remoteName + "/") {
@@ -112,6 +122,24 @@ public struct GitHubService: Sendable {
             local.ahead = await count("refs/remotes/\(remoteName)/\(base)..HEAD", root: root)
         }
         return local
+    }
+
+    /// The one GitHub repository every push URL of the remote names, or why there is none.
+    func pushRepository(remoteName: String, root: String) async -> (remote: GitHubRemote?, problem: String?) {
+        guard let urls = await pushDestinations(remoteName: remoteName, root: root) else {
+            return (nil, "Could not read where \(remoteName) pushes to")
+        }
+        var found: GitHubRemote?
+        for url in urls {
+            guard let target = GitHubParsing.remote(fromURL: url) else {
+                return (nil, "\(remoteName) pushes to \(GitHubParsing.displayURL(url)), which is not a GitHub repository")
+            }
+            if let found, !found.isSameRepository(as: target) {
+                return (nil, "\(remoteName) pushes to both \(found.slug) and \(target.slug)")
+            }
+            found = found ?? target
+        }
+        return (found, nil)
     }
 
     func refExists(_ ref: String, root: String) async -> Bool {
@@ -153,20 +181,22 @@ public struct GitHubService: Sendable {
         let r = await (try gh()).run(["repo", "view", remote.repoArgument, "--json", GitHubParsing.repoFields])
         guard r.succeeded else { throw GitHubError(GitHubParsing.errorLine(r.stderr, fallback: "Could not read \(remote.slug)")) }
         do {
-            return try GitHubParsing.repoInfo(r.stdout)
+            return try GitHubParsing.repoInfo(r.stdout, host: remote.host)
         } catch {
             throw GitHubError("gh printed a repository Ensemble could not read")
         }
     }
 
-    /// The branch's pull request (the newest open one, else the newest), or nil when it has none.
-    public func pullRequest(branch: String, remote: GitHubRemote) async throws -> GitHubPullRequest? {
-        let args = ["pr", "list", "--repo", remote.repoArgument, "--head", branch, "--state", "all", "--limit", "10",
+    /// The pull request of `branch` pushed to `head`, opened in `base` (the newest open one, else the newest), or
+    /// nil when it has none. `gh pr list --head` matches the branch name in every fork, so only pull requests whose
+    /// head repository is exactly `head` count.
+    public func pullRequest(branch: String, head: GitHubRemote, base: GitHubRemote) async throws -> GitHubPullRequest? {
+        let args = ["pr", "list", "--repo", base.repoArgument, "--head", branch, "--state", "all", "--limit", "30",
                     "--json", GitHubParsing.pullRequestFields]
         let r = await (try gh()).run(args)
         guard r.succeeded else { throw GitHubError(GitHubParsing.errorLine(r.stderr, fallback: "Could not look up pull requests")) }
         do {
-            return GitHubParsing.pick(try GitHubParsing.pullRequests(r.stdout))
+            return GitHubParsing.pick(try GitHubParsing.pullRequests(r.stdout), branch: branch, head: head, base: base)
         } catch {
             throw GitHubError("gh printed pull requests Ensemble could not read")
         }
