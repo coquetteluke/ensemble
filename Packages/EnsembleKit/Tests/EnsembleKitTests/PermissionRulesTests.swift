@@ -381,8 +381,9 @@ import Testing
         let own = ".ensemble/worktrees/ensemble-room-ada"
         let rules = PermissionRules.ruleset(for: .auto, worktree: own, repoPrefix: "apps/web")
         func edit(_ path: String) -> String { PermissionRules.effect(action: "edit", resource: path, rules: rules) }
+        // Any spelling of the folders too: the Mac's file system ignores case.
         for path in ["\(own)/OpenCode.JSON", "\(own)/apps/OpEnCoDe.json", "\(own)/apps/web/OPENCODE.JSONC",
-                     "\(own)/apps/web/opencode.json"] {
+                     "\(own)/apps/web/opencode.json", "\(own)/APPS/WEB/OpenCode.json", "\(own)/Apps/opencode.JSONC"] {
             #expect(edit(path) == "ask", "\(path)")
         }
         for path in ["\(own)/apps/web/index.ts", "\(own)/apps/web/tsconfig.json", "\(own)/apps/web/src/MainView.swift",
@@ -396,6 +397,7 @@ import Testing
         // A prefix with wildcard characters gets no worktree allow at all.
         #expect(PermissionRules.worktreeEditRules(own, repoPrefix: "a*/b") == nil)
         #expect(PermissionRules.worktreeEditRules(own, repoPrefix: "../x") == nil)
+        #expect(PermissionRules.worktreeEditRules(own, repoPrefix: "caf\u{E9}") == nil, "non-ASCII folders get no worktree allow")
     }
 
     @Test func worktreeRulesOnlyForWorktreeFoldersAndEditModes() {

@@ -266,8 +266,16 @@ public enum PermissionRules {
     /// The worktree is a whole checkout of the repository, and its branch is merged back at the repository's top. So
     /// OpenCode's config shape asks at the worktree's top and at every folder from there down to the room's folder
     /// (`repoPrefix`): after the merge those are the room's folder and its parents, which OpenCode reads config from.
+    /// Folder names on the way down are written as their shape (`apps/web` as `????/???`), because the Mac's file
+    /// system ignores case and the rules do not: `APPS/web/OpenCode.json` is the same file.
     public static func worktreeEditRules(_ worktree: String, repoPrefix: String = "") -> [PermissionRule]? {
-        guard isWorktreeFolder(worktree), let levels = configLevels(repoPrefix) else { return nil }
+        guard let levels = configLevels(repoPrefix) else { return nil }
+        return worktreeEditRules(worktree, shapeLevels: levels.map(shape))
+    }
+
+    /// `worktreeEditRules` with the levels already written as shapes (`""`, `"????"`, `"????/???"`).
+    static func worktreeEditRules(_ worktree: String, shapeLevels levels: [String]) -> [PermissionRule]? {
+        guard isWorktreeFolder(worktree) else { return nil }
         var rules = [PermissionRule("edit", worktree + "/*", "allow")]
         for level in levels {
             let base = level.isEmpty ? worktree : worktree + "/" + level
@@ -282,9 +290,12 @@ public enum PermissionRules {
 
     /// `""` and then each folder from the repository's top down to `repoPrefix` (`"a"`, `"a/b"`), or nil when the
     /// prefix is not plain folder names (wildcard characters would change what the rules match).
+    /// Only ASCII names: one `?` must stand for exactly one character in OpenCode's matcher.
     static func configLevels(_ repoPrefix: String) -> [String]? {
         let parts = repoPrefix.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        guard parts.allSatisfy({ $0 != "." && $0 != ".." && !$0.contains("*") && !$0.contains("?") }) else { return nil }
+        guard parts.allSatisfy({ part in
+            part != "." && part != ".." && part.unicodeScalars.allSatisfy { $0.isASCII && $0 != "*" && $0 != "?" && $0 != "\\" }
+        }) else { return nil }
         var levels = [""]
         var current = ""
         for part in parts {
@@ -292,6 +303,11 @@ public enum PermissionRules {
             levels.append(current)
         }
         return levels
+    }
+
+    /// `apps/web` as `????/???`.
+    static func shape(_ level: String) -> String {
+        level.split(separator: "/").map { String(repeating: "?", count: $0.count) }.joined(separator: "/")
     }
 
     /// True for `.ensemble/worktrees/<name>` where the name is ASCII letters, digits, `-`, `_` and `.`, and does not
@@ -315,14 +331,26 @@ public enum PermissionRules {
             guard first.action == "edit", first.effect == "allow", first.resource.hasSuffix("/*") else { continue }
             let worktree = String(first.resource.dropLast(2))
             let extraRules = Array(rules.dropFirst(base.count))
-            if let extra = worktreeEditRules(worktree, repoPrefix: repoPrefix(in: extraRules, worktree: worktree)),
+            if let extra = worktreeEditRules(worktree, shapeLevels: shapeLevels(in: extraRules, worktree: worktree)),
                extraRules == extra { return worktree }
         }
         return nil
     }
 
-    /// The deepest folder that has config ask rules inside `worktree`: the room folder's place in its repository.
-    static func repoPrefix(in rules: [PermissionRule], worktree: String) -> String {
+    /// The shape levels a ruleset's config ask rules cover (`""`, `"????"`, `"????/???"`), from the deepest one.
+    static func shapeLevels(in rules: [PermissionRule], worktree: String) -> [String] {
+        let deepest = deepestConfigLevel(in: rules, worktree: worktree)
+        var levels = [""]
+        var current = ""
+        for part in deepest.split(separator: "/") {
+            current = current.isEmpty ? String(part) : current + "/" + part
+            levels.append(current)
+        }
+        return levels
+    }
+
+    /// The deepest folder that has config ask rules inside `worktree`, as written in the rules.
+    static func deepestConfigLevel(in rules: [PermissionRule], worktree: String) -> String {
         let marker = opencodeConfigEditPatterns[0]
         var deepest = ""
         for rule in rules where rule.action == "edit" && rule.effect == "ask" && rule.resource.hasPrefix(worktree + "/") {
@@ -340,8 +368,11 @@ public enum PermissionRules {
         if rules.isEmpty { return nil }
         if let mode = PermissionMode.allCases.first(where: { ruleset(for: $0) == rules }) { return mode }
         guard let worktree = worktree(in: rules) else { return nil }
-        let prefix = repoPrefix(in: rules, worktree: worktree)
-        return [PermissionMode.acceptEdits, .auto].first { ruleset(for: $0, worktree: worktree, repoPrefix: prefix) == rules }
+        let levels = shapeLevels(in: rules, worktree: worktree)
+        return [PermissionMode.acceptEdits, .auto].first { mode in
+            guard let extra = worktreeEditRules(worktree, shapeLevels: levels) else { return false }
+            return ruleset(for: mode) + extra == rules
+        }
     }
 
     /// The mode of a ruleset that an earlier Ensemble version wrote for Ask, Accept edits or Auto (it starts with a
