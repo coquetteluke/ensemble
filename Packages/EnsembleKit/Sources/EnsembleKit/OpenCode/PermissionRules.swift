@@ -119,7 +119,8 @@ public enum PermissionRules {
     ).compactMap { code in Unicode.Scalar(code).map { scalar in "*\(Character(scalar))*" } }
 
     /// Build and hook files without a leading dot whose edits ask even when edits are allowed: they change what build
-    /// and test commands run, or run code later outside the agent (git hook managers, CI, toolchain pins).
+    /// and test commands run, run code later outside the agent (git hook managers, CI, toolchain pins), or instruct every
+    /// later agent session (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`).
     ///
     /// This is a heads-up for the usual spellings, not a boundary. OpenCode cannot match a name in any case, so
     /// `PaCkAgE.json` is not caught; Auto asks before every command that runs project code instead.
@@ -146,6 +147,9 @@ public enum PermissionRules {
         "mise.toml", "Brewfile", "flake.nix", "shell.nix", "devbox.json",
         // OpenCode config in subfolders (any spelling at the top of the folder: `opencodeConfigEditPatterns`)
         "opencode.json", "opencode.jsonc",
+        // Agent instructions that every later session reads (at any depth: agents load them from subfolders too).
+        // `.claude/`, `.agents/` and `.gemini/` ask through the dot rule.
+        "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "GEMINI.md",
     ]
 
     /// `edit` patterns for the protected files: each name at the top of the folder and in any subfolder (the
@@ -477,4 +481,206 @@ public enum PermissionRules {
         while pi < p.count, p[pi] == "*" { pi += 1 }
         return pi == p.count
     }
+}
+
+// MARK: Safety check hard rules
+
+/// What the safety check for Auto (`Store/SafetyCheckHardRules.swift`) never leaves to its model. A prompt that touches
+/// any of these asks, before any model call and whatever a model would answer.
+///
+/// These are matched by Ensemble, not by OpenCode, on the whole command line: every word of every part (`a && b`,
+/// `a | b`, `$(...)`, backticks, parentheses, the text inside quotes), with quotes and backslashes removed so `r''m` and
+/// `\rm` read as `rm`. Program names are compared without case and without their folder (`/usr/bin/GIT` is `git`), and
+/// wrappers are looked through (`env`, `xargs`, `nohup`, `time`, `timeout`, `nice`, `command`, `exec`, `sh -c`,
+/// `find -exec`). Paths and file names are compared without case, which OpenCode's own rules cannot do.
+extension PermissionRules {
+    /// Programs that always ask, with the reason the decision list shows.
+    public static let safetyCheckAskPrograms: [String: String] = {
+        var table: [String: String] = [:]
+        func add(_ reason: String, _ names: [String]) {
+            for name in names { table[name] = reason }
+        }
+        // A repository's config can make any git command run programs (see `autoAllowedShell`).
+        add("Git commands always ask", ["git", "git-lfs", "hub", "tig", "lazygit", "gitk"])
+        add("Runs as another user", ["sudo", "doas", "su", "pkexec", "runuser"])
+        add("Reaches other computers", [
+            "ssh", "scp", "sftp", "ftp", "telnet", "nc", "ncat", "netcat", "socat", "rsync", "rclone", "gh", "glab",
+            "aws", "gcloud", "gsutil", "az", "doctl", "flyctl", "fly", "heroku", "vercel", "netlify", "wrangler",
+            "firebase", "kubectl", "helm", "terraform", "tofu", "pulumi", "ngrok", "cloudflared", "tailscale",
+        ])
+        add("Changes system settings", [
+            "defaults", "launchctl", "osascript", "security", "csrutil", "spctl", "systemsetup", "networksetup",
+            "scutil", "pmset", "nvram", "crontab", "tccutil", "dscl", "sysadminctl", "softwareupdate", "profiles",
+            "kextload", "kextunload", "systemextensionsctl", "chflags", "xattr", "mdutil", "tmutil",
+        ])
+        add("Can erase disks", [
+            "dd", "mkfs", "fdisk", "gpt", "diskutil", "asr", "newfs_apfs", "newfs_hfs", "newfs_msdos", "shred", "srm",
+            "wipefs", "format",
+        ])
+        add("Stops or restarts the computer", ["shutdown", "reboot", "halt", "poweroff"])
+        add("Stops other programs", ["kill", "killall", "pkill"])
+        add("Changes file owners", ["chown", "chgrp"])
+        add("Runs text as a command", [
+            "eval", "source", ".", "watch", "trap", "alias", "script", "at", "batch", "expect", "tmux", "screen", "parallel", "flock",
+            "concurrently", "nodemon", "watchexec", "entr", "vi", "vim", "nvim", "ex", "view", "emacs",
+        ])
+        add("Opens other apps", ["open", "xdg-open"])
+        add("Reads the clipboard", ["pbpaste"])
+        add("Prints environment variables, which can hold secrets", ["printenv"])
+        add("Changes installed software", ["port", "mas", "apt", "apt-get", "dnf", "yum", "pacman", "snap", "flatpak"])
+        return table
+    }()
+
+    /// Program name prefixes that always ask (`mkfs.ext4`, `newfs_udf`).
+    public static let safetyCheckAskProgramPrefixes: [String: String] = [
+        "mkfs.": "Can erase disks", "newfs_": "Can erase disks",
+    ]
+
+    /// Programs that fetch from a network address. They ask unless every address they name is this Mac
+    /// (`localhost`, `127.x.x.x`, `[::1]`, `0.0.0.0`).
+    public static let safetyCheckFetchPrograms: Set<String> = ["curl", "wget", "http", "https", "xh", "httpie", "aria2c", "lynx", "links"]
+
+    /// Shells and interpreters. A pipe into one of them (`curl ... | sh`, `base64 -d | bash`) always asks.
+    public static let safetyCheckInterpreters: Set<String> = [
+        "sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh", "pwsh", "powershell", "python", "python2", "python3",
+        "node", "deno", "bun", "perl", "ruby", "php", "lua", "osascript", "tclsh", "swift",
+    ]
+
+    /// Commands, as program and words that follow it in order (other words may sit between), that always ask.
+    public static let safetyCheckAskCommands: [String: String] = {
+        var table: [String: String] = [:]
+        func add(_ reason: String, _ commands: [String]) {
+            for command in commands { table[command] = reason }
+        }
+        add("Publishes or changes a package online", [
+            "npm publish", "npm unpublish", "npm deprecate", "npm dist-tag", "npm owner", "npm access", "npm adduser",
+            "npm login", "npm token", "npm team", "npm org", "npm star", "pnpm publish", "yarn publish", "yarn npm publish",
+            "bun publish", "cargo publish", "cargo yank", "cargo owner", "cargo login", "gem push", "gem yank", "gem owner",
+            "gem signin", "twine upload", "poetry publish", "flit publish", "hatch publish", "uv publish", "pdm publish",
+            "pod trunk", "mvn deploy", "mvn release:perform", "gradle publish", "gradlew publish", "docker push",
+            "docker login", "podman push", "helm push", "vsce publish", "ovsx publish", "swift package-registry",
+            "dotnet nuget", "nuget push", "jsr publish", "deno publish",
+        ])
+        add("Installs software on this Mac", [
+            "brew install", "brew reinstall", "brew upgrade", "brew uninstall", "brew remove", "brew tap", "brew link",
+            "brew services", "brew update", "make install", "cmake --install", "npm link", "pnpm link", "yarn link",
+            "pip uninstall", "pipx install", "pipx run", "uv tool", "cargo install", "go install", "gem install",
+            "gem uninstall", "rustup", "nvm install", "volta install", "asdf install", "mise install", "mise use",
+        ])
+        add("Runs a package downloaded from the internet", [
+            "npx", "pnpx", "bunx", "uvx", "pnpm dlx", "yarn dlx", "npm exec", "npm x", "bun x",
+        ])
+        add("Deletes files", ["find -delete"])
+        return table
+    }()
+
+    /// Commands that install a project's packages. With only flags or local paths they install what the project
+    /// already declares and the model decides; naming a package (downloaded from the internet) or `-g` always asks.
+    public static let safetyCheckInstallCommands: [String] = [
+        "npm install", "npm i", "npm add", "npm ci", "pnpm install", "pnpm i", "pnpm add", "yarn add", "yarn install",
+        "bun install", "bun i", "bun add", "pip install", "pip3 install", "python -m pip install", "python3 -m pip install",
+        "uv pip install", "uv add", "poetry add", "pdm add", "cargo add", "go get", "composer require", "bundle add",
+        "swift package add-dependency", "dotnet add",
+    ]
+
+    /// Flags of the install commands that take the next word as their value (`pip install -r requirements.txt`).
+    public static let safetyCheckInstallValueFlags: Set<String> = [
+        "-r", "--requirement", "-c", "--constraint", "-e", "--editable", "-t", "--target", "--prefix", "--root",
+        "--save-prefix", "--tag", "--registry", "-i", "--index-url", "--extra-index-url", "-f", "--find-links",
+        "--cache-dir", "--python", "-p",
+    ]
+
+    /// Programs whose recursive flag (`-r`, `-R`, `--recursive`) always asks.
+    public static let safetyCheckRecursiveAskPrograms: [String: String] = [
+        "rm": "Deletes folders", "chmod": "Changes permissions of a whole folder",
+    ]
+
+    /// File names a command may not name without asking, compared without case, besides `protectedFileNames` and every
+    /// path with a segment that starts with a dot: key files, and one more agent instruction name.
+    public static let safetyCheckProtectedNames: [String] = [
+        "AGENT.md",
+        "*.pem", "*.key", "*.p12", "*.pfx", "*.keychain", "*.keychain-db", "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*",
+        "credentials", "credentials.json", "secrets.json", "*.mobileprovision",
+    ]
+
+    /// Dot folders a command may name without asking: build output and caches that nothing runs later.
+    public static let safetyCheckDotFoldersAllowed: Set<String> = [
+        ".build", ".next", ".nuxt", ".turbo", ".svelte-kit", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".parcel-cache",
+        ".swiftpm-build",
+    ]
+
+    /// Folders whose programs a command may run without asking about the dot folder (project tool folders).
+    public static let safetyCheckProgramFoldersAllowed: [String] = ["node_modules/.bin/", ".venv/bin/", "venv/bin/"]
+
+    /// Absolute paths outside the project a command may name.
+    public static let safetyCheckSystemPathsAllowed: Set<String> = [
+        "/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin", "/dev/tty", "/dev/zero", "/dev/random", "/dev/urandom",
+    ]
+
+    /// Folders whose programs may be named by full path as the program (`/usr/bin/env node`).
+    public static let safetyCheckSystemProgramFolders: [String] = [
+        "/bin/", "/usr/bin/", "/usr/local/bin/", "/opt/homebrew/bin/",
+    ]
+
+    /// Longest command, in characters, the model is asked about; longer ones always ask.
+    public static let safetyCheckCommandLimit = 2000
+
+    /// Flags of the fetch programs that cannot change where a request goes or load settings from a file. Every other
+    /// flag makes a fetch ask, even to this Mac (`-x`/`--proxy`, `--preproxy`, `--socks5`, `--resolve`, `--connect-to`,
+    /// `-K`/`--config`, `-L`, `-e`, `-i` (wget reads addresses from a file), attached forms such as `-xhttp://host`).
+    public static let safetyCheckFetchSafeFlags: Set<String> = [
+        "--silent", "--show-error", "--fail", "--fail-with-body", "--include", "--head", "--verbose", "--quiet",
+        "--insecure", "--no-progress-meter", "--compressed", "--ipv4", "--ipv6", "--disable",
+    ]
+
+    /// Short fetch flags that may be combined (`-sS`, `-fsS`): silent, show errors, fail, head, verbose, quiet, insecure,
+    /// IPv4 and IPv6. Case matters.
+    public static let safetyCheckFetchSafeLetters: Set<Character> = ["s", "S", "f", "I", "v", "q", "k", "4", "6"]
+
+    /// Fetch flags that take a value, and what the value must be: `method` (an HTTP method), `number`, or `file` (an
+    /// output file, also checked as a path). Values that look like addresses always ask.
+    public static let safetyCheckFetchValueFlags: [String: String] = [
+        "-X": "method", "--request": "method", "-m": "number", "--max-time": "number", "--connect-timeout": "number",
+        "--retry": "number", "--timeout": "number", "-o": "file", "--output": "file", "-O": "file",
+        "--output-document": "file",
+    ]
+
+    /// Variables that change which programs run, what they load at start, or where they connect. Setting one (also in
+    /// `export`) always asks; so does any name ending in `_PROXY`, in any case.
+    public static let safetyCheckSensitiveVariables: Set<String> = [
+        "PATH", "BASH_ENV", "ENV", "ZDOTDIR", "HOME", "SHELL", "IFS", "CDPATH", "PROMPT_COMMAND", "NODE_OPTIONS",
+        "NODE_EXTRA_CA_CERTS", "PYTHONSTARTUP", "PYTHONHOME", "PERL5OPT", "PERL5LIB", "RUBYOPT", "RUBYLIB", "CURL_HOME",
+        "WGETRC", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "TMPDIR",
+    ]
+
+    /// Prefixes of variables that always ask when set (`DYLD_INSERT_LIBRARIES`, `GIT_SSH_COMMAND`, `NPM_CONFIG_REGISTRY`).
+    public static let safetyCheckSensitiveVariablePrefixes: [String] = ["LD_", "DYLD_", "GIT_", "NPM_CONFIG_", "PIP_", "UV_INDEX"]
+
+    /// Flags that make a program run a command line given as their value (`tar --to-command=...`, `tar -I prog`,
+    /// `zip -TT cmd`). Short flags also count with the value attached (`-Iprog`).
+    public static let safetyCheckCommandFlags: [String: Set<String>] = [
+        "tar": ["--to-command", "--use-compress-program", "-I", "--checkpoint-action", "--info-script", "--new-volume-script",
+                "-F", "--rsh-command"],
+        "gtar": ["--to-command", "--use-compress-program", "-I", "--checkpoint-action", "--info-script", "--new-volume-script",
+                 "-F", "--rsh-command"],
+        "zip": ["-TT", "--unzip-command"],
+        "man": ["-P", "--pager", "-H"],
+    ]
+
+    /// Each interpreter's flags that take code written into the command. Short ones also count inside a cluster
+    /// (`bash -lc`, `perl -pe`, `python -Bc`).
+    public static let safetyCheckInlineCodeFlags: [String: Set<String>] = {
+        var table: [String: Set<String>] = [:]
+        for shell in ["sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh"] { table[shell] = ["-c", "--command"] }
+        for python in ["python", "python2", "python3"] { table[python] = ["-c"] }
+        for js in ["node", "bun", "deno"] { table[js] = ["-e", "--eval", "-p", "--print"] }
+        for name in ["perl", "ruby"] { table[name] = ["-e", "-E"] }
+        table["php"] = ["-r", "-B", "-R", "-E", "-F"]
+        table["lua"] = ["-e"]
+        table["osascript"] = ["-e"]
+        table["pwsh"] = ["-c", "-command", "-encodedcommand", "-e", "-ec"]
+        table["powershell"] = table["pwsh"]
+        table["swift"] = ["-e"]
+        return table
+    }()
 }

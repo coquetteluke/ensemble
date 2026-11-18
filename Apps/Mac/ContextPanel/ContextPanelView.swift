@@ -41,6 +41,10 @@ struct ContextPanelView: View {
                             BackgroundPanelSection(store: store, session: session, items: running, now: backgroundNow)
                             PanelSeparator()
                         }
+                        if !store.safetyCheckDecisions(for: session.id).isEmpty {
+                            SafetyCheckPanelSection(store: store, session: session)
+                            PanelSeparator()
+                        }
                     }
                     outputsSection
                     PanelSeparator()

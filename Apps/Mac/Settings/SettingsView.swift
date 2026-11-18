@@ -172,6 +172,7 @@ struct GeneralSettingsView: View {
                     Text(mode.label).tag(mode.rawValue)
                 }
             }
+            SafetyCheckSettingsSection(store: store)
             TrustedFoldersSection()
             WorktreesSettingsSection(store: store)
         }

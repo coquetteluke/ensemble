@@ -77,6 +77,8 @@ public final class SessionStore {
     public let rewinds = SessionRewindState()
     /// Sessions that work in their own git worktree (`SessionWorktree+Store.swift`).
     public let worktrees = SessionWorktrees()
+    /// The safety check for Auto: decides OpenCode permission prompts before they are shown (`SafetyCheck+Store.swift`).
+    public let safetyCheck = SafetyCheckState()
     /// Goals that keep a session working until a condition is met (`GoalStore.swift`).
     public let goals = SessionGoals()
 
@@ -351,6 +353,8 @@ public final class SessionStore {
 
         case .permissionAsked(let asked):
             guard let model = byID[asked.sessionID] else { return }
+            // The safety check for Auto may answer it first; it is then shown only if the check leaves it to the user.
+            if safetyCheckHolds(asked) { return }
             let request = prepared(asked)
             if !model.pendingPermissions.contains(where: { $0.id == request.id }) {
                 model.pendingPermissions.append(request)

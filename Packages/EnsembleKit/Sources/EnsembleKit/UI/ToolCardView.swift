@@ -127,6 +127,7 @@ public struct ToolCardView: View {
                 }
                 .font(theme.font(size: 12, weight: .medium).monospacedDigit())
             }
+            SafetyCheckToolBadge(toolCallID: tool.id)
             switch tool.status {
             case .running, .pending:
                 Spinner(size: 11)
@@ -348,5 +349,48 @@ public struct SubagentCardView: View {
                 .font(theme.font(size: 12))
                 .foregroundStyle(theme.danger)
         }
+    }
+}
+
+/// The small "Checked" mark on a tool card the safety check for Auto allowed (the reason shows on hover), or
+/// "Checking" while the check runs. Reads `SafetyCheckBadges.shared`, which the store's safety check fills.
+struct SafetyCheckToolBadge: View {
+    let toolCallID: String
+    var badges: SafetyCheckBadges = .shared
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        if let decision = badges.decision(forToolCall: toolCallID) {
+            label("Checked")
+                .help(Self.help(decision))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Checked by the safety check")
+                .accessibilityValue(decision.reason)
+        } else if badges.isChecking(toolCallID) {
+            label("Checking")
+                .help("The safety check is deciding whether this can run without asking")
+        }
+    }
+
+    private func label(_ text: String) -> some View {
+        HStack(spacing: theme.z(3)) {
+            Image(systemName: "checkmark.shield")
+                .font(theme.font(size: 10, weight: .medium))
+            Text(text)
+                .font(theme.font(size: 11, weight: .medium))
+        }
+        .foregroundStyle(theme.textTertiary)
+        .fixedSize()
+        .padding(.horizontal, theme.z(7))
+        .padding(.vertical, theme.z(2))
+        .background(theme.hover, in: RoundedRectangle(cornerRadius: theme.z(6), style: .continuous))
+    }
+
+    /// "Allowed by the safety check: <reason> (<model>)".
+    static func help(_ decision: SafetyCheckDecision) -> String {
+        var text = "Allowed by the safety check: \(decision.reason)"
+        if decision.basis == .cache { text += " (same as an earlier answer in this session)" }
+        if let model = decision.model { text += "\nModel: \(model.description)" }
+        return text
     }
 }

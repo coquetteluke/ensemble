@@ -280,6 +280,7 @@ enum SnapshotRenderer {
         written += TerminalSnapshots.render(to: outputDirectory, zoom: zoom)
         written += PhoneAlertsSnapshots.render(to: outputDirectory, zoom: zoom)
         written += NarrowPaneSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += SafetyCheckSnapshots.render(to: outputDirectory, zoom: zoom)
         written += SwarmSnapshots.render(to: outputDirectory, zoom: zoom)
         written += AgentToolsSnapshots.render(to: outputDirectory, zoom: zoom)
 

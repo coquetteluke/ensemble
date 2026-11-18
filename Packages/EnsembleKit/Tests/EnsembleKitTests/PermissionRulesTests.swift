@@ -191,8 +191,12 @@ import Testing
             for path in ["firebase.json", "manifest.json", "renovate.json", "metadata.jsonc"] {
                 #expect(effect("edit", path, mode) == "ask", "\(path) should ask in \(mode)")
             }
+            // Agent instruction files ask at any depth (W4-C protects them).
+            for path in ["AGENTS.md", "sub/AGENTS.md", "CLAUDE.md", "GEMINI.md"] {
+                #expect(effect("edit", path, mode) == "ask", "\(path) should ask in \(mode)")
+            }
             // Common lookalikes, and the same shape in subfolders, stay editable.
-            for path in ["tsconfig.json", "jsconfig.json", "AGENTS.md", "sub/AGENTS.md", "Assets.xcassets/Contents.json",
+            for path in ["tsconfig.json", "jsconfig.json", "Assets.xcassets/Contents.json",
                          "Sources/App/MainView.swift", "packages/web/tsconfig.json", "docs/opencode.md", "opencode.json.bak",
                          "sub/manifest.json"] {
                 #expect(effect("edit", path, mode) == "allow", "\(path) should be editable in \(mode)")
