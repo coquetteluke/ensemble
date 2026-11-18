@@ -286,13 +286,26 @@ actor ClaudeEngineCore {
         }
     }
 
-    /// Switches a running process to plan with the guard confirmed, or not at all: when either step fails, the CLI and
-    /// the saved session go back to `previous`, a turn in progress is stopped, and the call throws.
+    /// Switches a running process to plan with the guard confirmed, or not at all. The guard goes on first and must be
+    /// confirmed before the mode changes (its ask rules only make any mode ask more), so the CLI is never in plan without
+    /// it. When either step fails, the CLI and the saved session go back to `previous`, a turn in progress is stopped,
+    /// and the call throws.
     private func enterPlan(_ id: String, previous: PermissionMode) async throws {
         var reason: String?
         do {
-            _ = try await control(id, ["subtype": "set_permission_mode", "mode": .string(ClaudePermissionModes.cliMode(.plan))])
             try await applyPlanGuard(id, planOn: true)
+        } catch {
+            // Never switched: the CLI stays in `previous` (with at most some extra ask rules, which only ask more).
+            if var record = store[id], record.permissionMode == .plan {
+                record.permissionMode = previous
+                store[id] = record
+                save()
+                emit(.sessionUpdated(record.engineSession))
+            }
+            throw ClaudeCodeError.planGuardFailed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+        do {
+            _ = try await control(id, ["subtype": "set_permission_mode", "mode": .string(ClaudePermissionModes.cliMode(.plan))])
             return
         } catch {
             reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

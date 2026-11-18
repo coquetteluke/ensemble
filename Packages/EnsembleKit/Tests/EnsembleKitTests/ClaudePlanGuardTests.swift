@@ -147,7 +147,8 @@ struct ClaudePlanGuardTests {
         let sent = cli.requests("apply_flag_settings").last?["request"]?["settings"]?["permissions"]?["ask"]?.arrayValue ?? []
         #expect(sent.contains("Bash") && sent.contains("mcp__*"))
 
-        // 2. Switching a running session to plan: the guard is refused, so the CLI and the saved mode go back to Ask.
+        // 2. Switching a running session to plan: the guard goes on first and is refused, so the CLI is never switched
+        //    to plan at all and the saved mode stays Ask.
         let ask = try await engine.createSession(directory: box.project.path, model: haiku, agent: nil, permissionMode: .ask, parentID: nil)
         let askMark = await recorder.mark()
         try await engine.prompt(ask.id, text: "hello", files: [])
@@ -156,7 +157,7 @@ struct ClaudePlanGuardTests {
         let modesBefore = cli.requests("set_permission_mode").count
         await #expect(throws: (any Error).self) { try await engine.setPermissionMode(ask.id, mode: .plan) }
         let modes = cli.requests("set_permission_mode").dropFirst(modesBefore).compactMap { $0["request"]?["mode"]?.stringValue }
-        #expect(modes == ["plan", "default"])
+        #expect(modes.isEmpty, "never in plan without a confirmed guard")
         #expect(try savedMode(box, ask.id) == "ask")
         // It keeps working in Ask, without the guard.
         let sentBefore = cli.userMessages
