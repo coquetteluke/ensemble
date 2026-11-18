@@ -101,6 +101,11 @@ public enum EngineRouterError: Error, LocalizedError, Equatable, Sendable {
 /// Session ownership is learned from what engines return (created, listed, forked, child sessions) and from their
 /// events. A session id nobody claims triggers one fresh listing of every engine before the call fails with
 /// `EngineRouterError.unknownSession`.
+///
+/// Workspace trust: an engine registered with `registerForUntrustedFolders` (a second OpenCode server started without
+/// project config, `PrivateOpenCodeServer`) takes every new session, schedule and folder lookup the fallback engine
+/// would get for a folder `trust` does not trust, so the fallback never loads an untrusted folder's own config. A
+/// session stays on the engine it was created on: trusting the folder later sends only new sessions to the fallback.
 public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelOptionsControl, EngineCommandsControl,
     EngineModelBilling, Sendable {
 
@@ -137,14 +142,22 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
         /// Each engine's last good session list, used when that engine fails a later listing.
         var lastSessions: [String: [EngineSession]] = [:]
         var subscribers: [UUID: Subscriber] = [:]
+        /// The engine that serves the fallback's work in untrusted folders (`registerForUntrustedFolders`).
+        var untrustedID: String?
     }
 
     private let state: Mutex<State>
+    /// Decides which folders the fallback engine may serve once an untrusted-folder engine is registered.
+    public let trust: WorkspaceTrust
+
+    /// The id `registerForUntrustedFolders` uses by default.
+    public static let untrustedOpenCodeID = "opencode-untrusted"
 
     /// `fallback` serves every provider no registered engine claims (normally the OpenCode client).
-    public init(fallback: any OpenCodeAPI, id: String = "opencode", name: String = "OpenCode") {
+    public init(fallback: any OpenCodeAPI, id: String = "opencode", name: String = "OpenCode", trust: WorkspaceTrust = .shared) {
         let registration = Registration(id: id, name: name, engine: fallback, providers: [:], isFallback: true)
         state = Mutex(State(registrations: [registration]))
+        self.trust = trust
     }
 
     /// The usual setup: OpenCode for everything, plus the Claude engine for `claude-code` (subscription) and
@@ -187,6 +200,42 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
         }
         guard let registration = self.registration(id: engineID) else { return }
         for subscriber in subscribers { startForwarder(registration, subscriber: subscriber) }
+    }
+
+    /// Registers (or replaces in place) the engine that takes the fallback's new sessions in folders `trust` does not
+    /// trust. It claims no providers; its sessions are listed and routed like any other engine's.
+    public func registerForUntrustedFolders(_ engine: any OpenCodeAPI, id: String = EngineRouter.untrustedOpenCodeID,
+                                            name: String = "OpenCode") {
+        state.withLock { $0.untrustedID = id }
+        register(engine, providers: [String: ModelBilling](), id: id, name: name)
+    }
+
+    /// The engine registered with `registerForUntrustedFolders`, if any.
+    public var untrustedFolderRegistration: Registration? {
+        state.withLock { state in state.untrustedID.flatMap { id in state.registrations.first { $0.id == id } } }
+    }
+
+    /// The engine a new top-level session in `directory` with `model` goes to: the model provider's engine, or the
+    /// untrusted-folder engine when that would be the fallback and the folder is not trusted.
+    public func registration(forNewSessionIn directory: String, model: ModelRef?) -> Registration {
+        let target = model.map { registration(forProvider: $0.providerID) } ?? fallback
+        guard target.isFallback, let untrusted = untrustedFolderRegistration, !trust.isTrusted(directory) else { return target }
+        return untrusted
+    }
+
+    /// The id of the engine known to own a session, without asking the engines (nil when not known yet).
+    public func ownerID(ofSession sessionID: String) -> String? { knownOwner(sessionID)?.id }
+
+    /// True when location-scoped lookups for `directory` must skip the fallback engine.
+    private func avoidsFallback(_ directory: String?) -> Bool {
+        guard let directory, untrustedFolderRegistration != nil else { return false }
+        return !trust.isTrusted(directory)
+    }
+
+    /// Engines for app-wide lists (models, providers, connectors, billing): every engine except the untrusted-folder
+    /// one, which serves the same user-level config as the fallback.
+    private var listedRegistrations: [Registration] {
+        state.withLock { state in state.registrations.filter { $0.id != state.untrustedID } }
     }
 
     /// Every engine, the fallback first.
@@ -259,9 +308,9 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
 
     /// Runs `body` on every engine at once and returns the answers in registration order. Fails only when every
     /// engine fails, with the fallback engine's error first.
-    private func gather<T: Sendable>(_ body: @escaping @Sendable (Registration) async throws -> T)
+    private func gather<T: Sendable>(_ list: [Registration]? = nil, _ body: @escaping @Sendable (Registration) async throws -> T)
         async throws -> [(Registration, T)] {
-        let list = registrations
+        let list = list ?? registrations
         let results = await withTaskGroup(of: (Int, Result<T, any Error>).self) { group in
             for (index, registration) in list.enumerated() {
                 group.addTask {
@@ -340,16 +389,15 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
     }
 
     /// Subagents go to their parent's engine, new sessions to the engine of the model's provider, and sessions
-    /// without a model to the fallback engine (which picks its default model).
+    /// without a model to the fallback engine (which picks its default model). Work for the fallback in an untrusted
+    /// folder goes to the untrusted-folder engine when one is registered (`registration(forNewSessionIn:model:)`).
     public func createSession(directory: String, model: ModelRef?, agent: String?, permissionMode: PermissionMode,
                               parentID: String?) async throws -> EngineSession {
         let target: Registration
         if let parentID {
             target = try await owner(of: parentID)
-        } else if let model {
-            target = registration(forProvider: model.providerID)
         } else {
-            target = fallback
+            target = registration(forNewSessionIn: directory, model: model)
         }
         let session = try await target.engine.createSession(directory: directory, model: model, agent: agent,
                                                             permissionMode: permissionMode, parentID: parentID)
@@ -439,7 +487,7 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
 
     /// MCP servers of every engine. A server two engines both run is listed once, with the better state.
     public func connectors() async throws -> [ConnectorInfo] {
-        let answers = try await gather { try await $0.engine.connectors() }
+        let answers = try await gather(listedRegistrations) { try await $0.engine.connectors() }
         var merged: [ConnectorInfo] = []
         var index: [String: Int] = [:]
         for connector in answers.flatMap(\.1) {
@@ -459,12 +507,12 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
     /// `modelGroups()` to group them for the picker.
     public func models() async throws -> [ModelInfo] {
         var seen = Set<String>()
-        return try await gather { try await $0.engine.models() }.flatMap(\.1).filter { seen.insert($0.id).inserted }
+        return try await gather(listedRegistrations) { try await $0.engine.models() }.flatMap(\.1).filter { seen.insert($0.id).inserted }
     }
 
     public func providers() async throws -> [ProviderInfo] {
         var seen = Set<String>()
-        return try await gather { try await $0.engine.providers() }.flatMap(\.1).filter { seen.insert($0.id).inserted }
+        return try await gather(listedRegistrations) { try await $0.engine.providers() }.flatMap(\.1).filter { seen.insert($0.id).inserted }
     }
 
     public func setAPIKey(providerID: String, key: String) async throws {
@@ -481,7 +529,7 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
         for registration in registrations {
             for (provider, billing) in registration.providers { map[provider] = billing }
         }
-        let reported = (try? await gather { registration -> [String: ModelBilling] in
+        let reported = (try? await gather(listedRegistrations) { registration -> [String: ModelBilling] in
             guard let billing = registration.engine as? any EngineModelBilling else { return [:] }
             return try await billing.modelBilling()
         }) ?? []
@@ -511,7 +559,7 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
     }
 
     public func createSchedule(title: String, prompt: String, directory: String, schedule: String, model: ModelRef?) async throws -> ScheduleInfo {
-        let target = model.map { registration(forProvider: $0.providerID) } ?? fallback
+        let target = registration(forNewSessionIn: directory, model: model)
         let info = try await target.engine.createSchedule(title: title, prompt: prompt, directory: directory, schedule: schedule, model: model)
         state.withLock { $0.scheduleOwners[info.id] = target.id }
         return info
@@ -672,9 +720,14 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
     // MARK: Slash commands and skills
 
     /// Commands and skills of every engine for a folder, the fallback engine's first; a name two engines share is
-    /// listed once. Use `commands(directory:forSession:)` for the commands one session can run.
+    /// listed once. Use `commands(directory:forSession:)` for the commands one session can run. For an untrusted
+    /// folder the untrusted-folder engine answers instead of the fallback, so the fallback never loads its config.
     public func commands(directory: String?) async throws -> [EngineCommand] {
-        let answers = try await gather { registration -> [EngineCommand] in
+        let untrustedID = state.withLock { $0.untrustedID }
+        let list = avoidsFallback(directory)
+            ? registrations.filter { !$0.isFallback }
+            : registrations.filter { $0.id != untrustedID }
+        let answers = try await gather(list) { registration -> [EngineCommand] in
             guard let control = registration.engine as? any EngineCommandsControl else { return [] }
             return try await control.commands(directory: directory)
         }

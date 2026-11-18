@@ -17,6 +17,9 @@ struct ConversationView: View {
         VStack(spacing: 0) {
             transcript
             VStack(spacing: 0) {
+                // "Trust this folder?" when the session's engine skips or refuses the folder's own settings.
+                SessionTrustCard(store: store, session: session)
+                PullRequestBarHost(store: store, session: session)
                 ComposerView(store: store, session: session, window: window)
                 StatusLine(store: store, session: session, window: window)
             }

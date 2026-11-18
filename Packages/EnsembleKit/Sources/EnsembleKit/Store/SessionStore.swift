@@ -69,6 +69,8 @@ public final class SessionStore {
     @ObservationIgnored public var sideQuestionRecordURL: URL?
     /// The start-time deletion of copies left by an earlier run (tests await it).
     @ObservationIgnored var sideQuestionCleanupTask: Task<Void, Never>?
+    /// Trust cards put away, messages refused in untrusted folders, trust errors (`SessionStore+Trust.swift`).
+    public let trustNotes = SessionTrustNotes()
 
     private enum EditableField: Hashable { case title, archived, model }
 
@@ -431,6 +433,7 @@ public final class SessionStore {
             session.items.append(.error(id: "error-\(UUID().uuidString)", message: "Could not send: \(error.localizedDescription)"))
             session.setActivity(.failed)
             session.touch()
+            noteSendFailure(error, text: trimmed, files: files, sessionID: sessionID)
         }
     }
 

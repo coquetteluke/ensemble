@@ -22,6 +22,9 @@ final class AppEngine {
     @ObservationIgnored private var quitObserver: (any NSObjectProtocol)?
     /// Sends each session to OpenCode or to the Claude engine (Claude models on the user's own subscription).
     @ObservationIgnored private(set) var router: EngineRouter?
+    /// Ensemble's own OpenCode server for folders the user has not trusted: started without project config, so new
+    /// OpenCode sessions there never load the folder's opencode.json, plugins, MCP servers or AGENTS.md.
+    let privateOpenCode = PrivateOpenCodeServer(configuration: .init(defaultDirectory: NSHomeDirectory()))
 
     var status: EngineStatus {
         if Self.usePreview, let url = URL(string: "preview://local") { return .running(version: "preview", url: url) }
@@ -48,6 +51,7 @@ final class AppEngine {
                     // OpenCode came back with a new address or password: swap the client in place.
                     if (router.registration(id: "opencode")?.engine as? OpenCodeClient) !== client {
                         router.register(client, providers: [], id: "opencode")
+                        self.privateOpenCode.credentialSource = client
                     }
                     continue
                 }
@@ -59,6 +63,7 @@ final class AppEngine {
                     router.register(ACPEngine(agent: antigravity), providers: [antigravity.id], billing: .subscription,
                                     id: "antigravity", name: "Google Antigravity")
                 }
+                self.startPrivateOpenCode(router: router, sharedClient: client)
                 self.router = router
                 self.open(SessionStore(engine: router))
             }
@@ -92,9 +97,25 @@ final class AppEngine {
         Task { await manager.checkNow() }
     }
 
+    /// Untrusted folders get their own OpenCode server. Until it answers, its slot in the router refuses new sessions
+    /// (never falling back to the shared service); each time it (re)starts its client takes the slot and the session
+    /// list is reloaded so its sessions appear.
+    private func startPrivateOpenCode(router: EngineRouter, sharedClient: OpenCodeClient) {
+        router.registerForUntrustedFolders(OpenCodeStandIn(reason: "starting"))
+        privateOpenCode.credentialSource = sharedClient
+        privateOpenCode.onReady = { [weak self] client in
+            router.registerForUntrustedFolders(client)
+            Task { await self?.store?.reloadSessions() }
+        }
+        if let executable = manager.executableURL {
+            privateOpenCode.start(executable: executable)
+        }
+    }
+
     /// Stops the `claude` and `agy` processes Ensemble started, waiting at most two seconds so quitting
-    /// never hangs. (They also exit by themselves once their input closes.)
+    /// never hangs, and the private OpenCode server. (They also exit by themselves once their input closes.)
     private func stopAgentProcesses() {
+        privateOpenCode.stop(wait: 0)
         guard let router else { return }
         let claude = router.registration(id: "claude")?.engine as? ClaudeCodeEngine
         let antigravity = router.registration(id: "antigravity")?.engine as? ACPEngine
