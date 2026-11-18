@@ -14,6 +14,8 @@ actor ClaudeEngineCore {
         var interrupting = false
         /// The process was started with `--resume-session-at`; cleared after its first turn.
         var launchedWithResumeAt = false
+        /// Whether the folder was trusted (project settings loaded) when the process started.
+        var trusted = false
     }
 
     struct TranscriptSource: Sendable {
@@ -90,6 +92,18 @@ actor ClaudeEngineCore {
     }
 
     func currentPlanLimits() -> ClaudePlanLimits? { planLimits }
+
+    func confirmProjectAPISettings(directory: String) throws {
+        guard configuration.trust.isTrusted(directory) else { throw ClaudeCodeError.folderNotTrusted(directory) }
+        let key = WorkspaceTrust.resolvedPath(directory) ?? directory
+        guard let overrides = ClaudeProjectSettings.credentialOverrides(directory: directory) else {
+            store.confirmedAPISettings[key] = nil
+            save()
+            return
+        }
+        store.confirmedAPISettings[key] = overrides.fingerprint
+        save()
+    }
     func currentConnectors() -> [ConnectorInfo] { connectors }
 
     // MARK: Sign-in
@@ -302,9 +316,14 @@ actor ClaudeEngineCore {
     // MARK: Processes
 
     private func ensureProcess(_ id: String) throws {
-        if let session = live[id], session.process.isRunning { return }
-        live[id] = nil
         let record = try record(id)
+        let trusted = configuration.trust.isTrusted(record.directory)
+        if let session = live[id], session.process.isRunning {
+            // A trust change takes effect once the process is idle: the next prompt starts a new one.
+            if session.trusted == trusted || session.turnsInFlight > 0 { return }
+            stopProcess(id)
+        }
+        live[id] = nil
         guard let exe = executableURL() else { throw ClaudeCodeError.notInstalled }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: record.directory, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -312,6 +331,15 @@ actor ClaudeEngineCore {
         }
         var apiKey: String?
         if record.billing == .apiKey {
+            // A project's settings could send the key elsewhere (ANTHROPIC_BASE_URL, a proxy, apiKeyHelper). Checked
+            // even for an untrusted folder, whose settings the CLI would not load, so such a project is always shown.
+            if let overrides = ClaudeProjectSettings.credentialOverrides(directory: record.directory) {
+                guard trusted else { throw ClaudeCodeError.folderNotTrusted(record.directory) }
+                let key = WorkspaceTrust.resolvedPath(record.directory) ?? record.directory
+                guard store.confirmedAPISettings[key] == overrides.fingerprint else {
+                    throw ClaudeCodeError.projectOverridesAPISettings(directory: record.directory, keys: overrides.keys)
+                }
+            }
             guard let key = keychain.read() else {
                 throw ClaudeCodeError.invalidArgument("No Anthropic API key is saved for Claude API billing. Add one in Settings.")
             }
@@ -326,7 +354,8 @@ actor ClaudeEngineCore {
         let model = record.model.map(\.id).flatMap { $0 == "default" ? nil : $0 }
         let options = ClaudeLaunchOptions(sessionID: record.cliID, start: start, resumeAt: start == .new ? nil : record.resumeAt,
                                           model: model, effort: record.effort, permissionMode: record.permissionMode,
-                                          settingSources: configuration.settingSources, thinkingDisplay: configuration.thinkingDisplay,
+                                          settingSources: configuration.settingSources.effective(trusted: trusted),
+                                          thinkingDisplay: configuration.thinkingDisplay,
                                           fastMode: record.fastMode, extraArguments: configuration.extraArguments)
         let env = ClaudeCLI.environment(base: configuration.baseEnvironment, billing: record.billing, apiKey: apiKey,
                                         fileCheckpointing: configuration.fileCheckpointing)
@@ -338,7 +367,7 @@ actor ClaudeEngineCore {
         decoder.lastContextTokens = record.lastContextTokens
         decoder.reportsCost = record.billing == .apiKey
         live[id] = Live(process: process, decoder: decoder, bypassAllowed: record.permissionMode == .bypass,
-                        launchedWithResumeAt: options.resumeAt != nil)
+                        launchedWithResumeAt: options.resumeAt != nil, trusted: trusted)
         let gen = generation
         let lines = process.lines
         Task {
@@ -855,7 +884,8 @@ actor ClaudeEngineCore {
             return cached.info.engineCommands(skills: skills, terminalOnly: terminalCommands)
         }
         guard executableURL() != nil else { throw ClaudeCodeError.notInstalled }
-        guard let info = await probeInitialize(directory: directory, settingSources: configuration.settingSources) else {
+        // Never a project's own settings: the probe starts a process (hooks would run) before anyone is asked.
+        guard let info = await probeInitialize(directory: directory, settingSources: configuration.settingSources.effective(trusted: false)) else {
             throw ClaudeCodeError.processFailed("could not read the command list")
         }
         commandCache[key] = (Date(), info)

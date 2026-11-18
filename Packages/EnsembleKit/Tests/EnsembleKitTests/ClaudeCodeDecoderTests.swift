@@ -415,6 +415,84 @@ struct ClaudeCodePermissionTests {
         #expect(!mcp.matches(toolName: "mcp__docs__delete", input: ["q": "y"], directory: "/p"))
     }
 
+    @Test func agentInstructionFilesAlwaysAsk() {
+        let remembered = rules([.init(tool: "edit", content: nil)])
+        for path in ["/p/CLAUDE.md", "/p/claude.md", "/p/sub/deep/Claude.md", "/p/CLAUDE.local.md", "/p/docs/claude.LOCAL.MD"] {
+            #expect(!remembered.matches(toolName: "Write", input: .object(["file_path": .string(path)]), directory: "/p"))
+        }
+        #expect(remembered.matches(toolName: "Write", input: ["file_path": "/p/CLAUDE.txt"], directory: "/p"))
+        #expect(remembered.matches(toolName: "Write", input: ["file_path": "/p/docs/claude-md.txt"], directory: "/p"))
+    }
+
+    @Test func editRulesResolveSymlinks() throws {
+        let fm = FileManager.default
+        let folder = fm.temporaryDirectory.appendingPathComponent("ens-links-\(UUID().uuidString.prefix(8))")
+        defer { try? fm.removeItem(at: folder) }
+        let project = folder.appendingPathComponent("proj")
+        let outside = folder.appendingPathComponent("outside")
+        try fm.createDirectory(at: project.appendingPathComponent(".git"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: project.appendingPathComponent("src"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: project.appendingPathComponent(".git/config"))
+        try Data("x".utf8).write(to: project.appendingPathComponent("CLAUDE.md"))
+        try Data("x".utf8).write(to: project.appendingPathComponent("src/a.txt"))
+        try fm.createSymbolicLink(at: project.appendingPathComponent("out"), withDestinationURL: outside)
+        try fm.createSymbolicLink(at: project.appendingPathComponent("dangling"), withDestinationURL: outside.appendingPathComponent("new.txt"))
+        try fm.createSymbolicLink(at: project.appendingPathComponent("innocent"), withDestinationURL: project.appendingPathComponent(".git/config"))
+        try fm.createSymbolicLink(at: project.appendingPathComponent("notes.md"), withDestinationURL: project.appendingPathComponent("CLAUDE.md"))
+        try fm.createSymbolicLink(at: project.appendingPathComponent("lib"), withDestinationURL: project.appendingPathComponent("src"))
+        try fm.createSymbolicLink(at: folder.appendingPathComponent("proj-link"), withDestinationURL: project)
+
+        let remembered = rules([.init(tool: "edit", content: nil)])
+        func allowed(_ path: URL, in directory: URL = project) -> Bool {
+            remembered.matches(toolName: "Write", input: .object(["file_path": .string(path.path)]), directory: directory.path)
+        }
+        #expect(allowed(project.appendingPathComponent("src/a.txt")))
+        #expect(allowed(project.appendingPathComponent("src/new/b.txt")))
+        #expect(allowed(project.appendingPathComponent("lib/a.txt")))
+        #expect(allowed(folder.appendingPathComponent("proj-link/src/a.txt"), in: folder.appendingPathComponent("proj-link")))
+        #expect(allowed(project.appendingPathComponent("src/a.txt"), in: folder.appendingPathComponent("proj-link")))
+        // A link out of the project, a link that points nowhere, and links to protected files all ask.
+        #expect(!allowed(project.appendingPathComponent("out/x.txt")))
+        #expect(!allowed(project.appendingPathComponent("out")))
+        #expect(!allowed(project.appendingPathComponent("dangling")))
+        #expect(!allowed(project.appendingPathComponent("innocent")))
+        #expect(!allowed(project.appendingPathComponent("notes.md")))
+    }
+
+    @Test func webFetchRulesRefuseAmbiguousURLs() {
+        let web = rules([.init(tool: "WebFetch", content: "domain:example.com")])
+        func fetch(_ url: String, _ rules: ClaudePermissionRules? = nil) -> Bool {
+            (rules ?? web).matches(toolName: "WebFetch", input: .object(["url": .string(url)]), directory: "/p")
+        }
+        for url in ["https://example.com", "https://example.com/", "http://docs.example.com/a?b=1#c", "HTTPS://Example.COM./x",
+                    "https://example.com:8443/p", "https://a.b.example.com/"] {
+            #expect(fetch(url), "\(url) should match")
+        }
+        for url in [
+            "https://example.com\\@evil.com/", "https://evil.com\\.example.com/", "https://example.com\\", "https://example.com/a\\b",
+            "https://user@example.com/", "https://user:pw@docs.example.com/", "https://evil.com@example.com/", "https://@example.com/",
+            "https://example.com @evil.com/", "https://exa\tmple.com/", "https://example.com/\u{0}", "https://example.com\n.evil.com/",
+            " https://example.com/", "https://example.com/\u{200B}", "https://example.com/\u{202E}",
+            "ftp://example.com/", "file:///example.com", "ws://example.com/", "javascript://example.com/%0aalert(1)",
+            "https:example.com", "//example.com/x", "example.com", "",
+            "https://\u{0435}xample.com/", "https://%65xample.com/", "https://example.com.evil.net/", "https://notexample.com/",
+        ] {
+            #expect(!fetch(url), "\(url.debugDescription) should ask")
+        }
+        // IDNA: a rule and a URL in either form compare as punycode.
+        let idna = rules([.init(tool: "WebFetch", content: "domain:bücher.de")])
+        #expect(fetch("https://xn--bcher-kva.de/", idna))
+        #expect(fetch("https://bücher.de/katalog", idna))
+        #expect(fetch("https://bücher.de/", rules([.init(tool: "WebFetch", content: "domain:xn--bcher-kva.de")])))
+        #expect(!fetch("https://bucher.de/", idna))
+        // Rules that are not plain host names never match.
+        for content in ["domain:", "domain:example.com/x", "domain:user@example.com", "domain:example.com:443", "domain:*.example.com",
+                        "domain:exa mple.com", "example.com"] {
+            #expect(!fetch("https://example.com/", rules([.init(tool: "WebFetch", content: content)])), "\(content) should never match")
+        }
+    }
+
     /// A prefix rule only ever approves one simple command; every shell trick below must ask again.
     @Test(arguments: [
         "git status > /etc/x",

@@ -98,6 +98,9 @@ struct ClaudeSessionRecord: Codable, Hashable, Sendable {
 struct ClaudeSessionStore {
     let fileURL: URL
     private(set) var records: [String: ClaudeSessionRecord] = [:]
+    /// Trusted folders (resolved) whose API endpoint and credential settings the user agreed to for API-key agents,
+    /// with a hash of those settings (`ClaudeProjectSettings.Overrides.fingerprint`), never their values.
+    var confirmedAPISettings: [String: String] = [:]
 
     static var defaultURL: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -108,6 +111,7 @@ struct ClaudeSessionStore {
     private struct FileBody: Codable {
         var version: Int
         var sessions: [ClaudeSessionRecord]
+        var confirmedAPISettings: [String: String]?
     }
 
     init(fileURL: URL) {
@@ -117,6 +121,7 @@ struct ClaudeSessionStore {
             decoder.dateDecodingStrategy = .iso8601
             if let body = try? decoder.decode(FileBody.self, from: data) {
                 records = Dictionary(body.sessions.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+                confirmedAPISettings = body.confirmedAPISettings ?? [:]
             }
         }
     }
@@ -134,7 +139,8 @@ struct ClaudeSessionStore {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        let data = try encoder.encode(FileBody(version: 1, sessions: all))
+        let data = try encoder.encode(FileBody(version: 1, sessions: all,
+                                               confirmedAPISettings: confirmedAPISettings.isEmpty ? nil : confirmedAPISettings))
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: fileURL, options: .atomic)
     }

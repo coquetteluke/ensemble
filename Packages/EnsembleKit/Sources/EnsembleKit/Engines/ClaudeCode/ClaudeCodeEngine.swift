@@ -54,8 +54,10 @@ public final class ClaudeCodeEngine: OpenCodeAPI, EngineModelOptionsControl, Eng
         /// The CLI's transcripts (`~/.claude/projects`, or `$CLAUDE_CONFIG_DIR/projects`).
         public var projectsDirectory: URL
         /// Which settings files agents load. `.all` (default) keeps the user's own hooks, skills, plugins and CLAUDE.md,
-        /// like their own `claude` sessions.
+        /// like their own `claude` sessions. A project's own settings are only loaded when `trust` trusts its folder.
         public var settingSources: ClaudeSettingSources
+        /// Folders whose own Claude settings may run (shared with the other engines and the UI).
+        public var trust: WorkspaceTrust
         /// `summarized` streams a summary of the model's thinking; nil leaves the CLI default (token counts only).
         public var thinkingDisplay: String?
         /// Snapshot files before edits so rewind can restore them.
@@ -69,8 +71,10 @@ public final class ClaudeCodeEngine: OpenCodeAPI, EngineModelOptionsControl, Eng
         public init(executablePath: String? = nil, storeURL: URL? = nil, projectsDirectory: URL? = nil,
                     settingSources: ClaudeSettingSources = .all, thinkingDisplay: String? = "summarized",
                     fileCheckpointing: Bool = true, keychainService: String = "Ensemble Claude API key",
-                    extraArguments: [String] = [], baseEnvironment: [String: String] = ProcessInfo.processInfo.environment) {
+                    extraArguments: [String] = [], baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
+                    trust: WorkspaceTrust = .shared) {
             self.executablePath = executablePath
+            self.trust = trust
             self.storeURL = storeURL ?? ClaudeSessionStore.defaultURL
             self.projectsDirectory = projectsDirectory ?? ClaudeTranscriptFiles.defaultProjectsDirectory(environment: baseEnvironment)
             self.settingSources = settingSources
@@ -114,6 +118,18 @@ public final class ClaudeCodeEngine: OpenCodeAPI, EngineModelOptionsControl, Eng
 
     /// The newest plan usage the CLI reported (five-hour and weekly windows), or nil before the first turn.
     public func planLimits() async -> ClaudePlanLimits? { await core.currentPlanLimits() }
+
+    /// True when the folder has Claude settings or MCP servers of its own that agents leave out because the folder is
+    /// not trusted (the UI can offer "Trust this folder?").
+    public func ignoresProjectSettings(directory: String) -> Bool {
+        !configuration.trust.isTrusted(directory) && ClaudeProjectSettings.hasOwnSettings(directory: directory)
+    }
+
+    /// Agrees to a trusted folder's API endpoint and credential settings for API-key agents (after
+    /// `ClaudeCodeError.projectOverridesAPISettings`). The agreement lapses when those settings change.
+    public func confirmProjectAPISettings(directory: String) async throws {
+        try await core.confirmProjectAPISettings(directory: directory)
+    }
 
     // MARK: Sessions
 

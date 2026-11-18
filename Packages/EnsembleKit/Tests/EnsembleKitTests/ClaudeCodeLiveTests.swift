@@ -50,8 +50,11 @@ final class ClaudeLiveHarness: @unchecked Sendable {
         try "alpha\nsecond line\n".write(to: project.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
     }
 
+    /// This run's own trust list, so the user's real one is never read or changed.
+    lazy var trust = WorkspaceTrust(fileURL: folder.appendingPathComponent("trusted-folders.json"))
+
     func engine() -> ClaudeCodeEngine {
-        let engine = ClaudeCodeEngine(configuration: .init(storeURL: store))
+        let engine = ClaudeCodeEngine(configuration: .init(storeURL: store, trust: trust))
         let stream = engine.events()
         let recorder = recorder
         tasks.append(Task { for await event in stream { await recorder.append(event) } })
@@ -211,6 +214,49 @@ struct ClaudeCodeLiveTests {
 
         await engine.shutdown()
         if let limits = await engine.planLimits() { #expect(!limits.status.isEmpty) }
+    }
+
+    /// A cloned repository's `.claude/settings.json` hook and `.mcp.json` server only run once its folder is trusted,
+    /// and never in the command probe. Two haiku turns.
+    @Test func projectSettingsRunOnlyInTrustedFolders() async throws {
+        let harness = try ClaudeLiveHarness()
+        defer { harness.finish() }
+        let hookMarker = harness.folder.appendingPathComponent("hook-ran")
+        let mcpMarker = harness.folder.appendingPathComponent("mcp-ran")
+        let settings = harness.project.appendingPathComponent(".claude")
+        try FileManager.default.createDirectory(at: settings, withIntermediateDirectories: true)
+        try Data("""
+        {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "touch '\(hookMarker.path)'"}]}]}}
+        """.utf8).write(to: settings.appendingPathComponent("settings.json"))
+        try Data("""
+        {"mcpServers": {"probe": {"command": "/bin/sh", "args": ["-c", "touch '\(mcpMarker.path)'; sleep 2"]}}}
+        """.utf8).write(to: harness.project.appendingPathComponent(".mcp.json"))
+        func ran(_ marker: URL) -> Bool { FileManager.default.fileExists(atPath: marker.path) }
+
+        let engine = harness.engine()
+        #expect(engine.ignoresProjectSettings(directory: harness.project.path))
+        let session = try await engine.createSession(directory: harness.project.path, model: ClaudeLive.haiku, agent: nil,
+                                                     permissionMode: .ask, parentID: nil)
+        var mark = await harness.recorder.mark()
+        try await engine.prompt(session.id, text: "Reply with exactly: ok", files: [])
+        #expect(try await harness.ended(session.id, after: mark) == "succeeded")
+        #expect(!ran(hookMarker))
+        #expect(!ran(mcpMarker))
+
+        try harness.trust.trust(harness.project.path)
+        #expect(!engine.ignoresProjectSettings(directory: harness.project.path))
+        // The probe never loads a project's settings, even in a trusted folder.
+        _ = try await engine.commands(directory: harness.project.path)
+        #expect(!ran(hookMarker))
+        #expect(!ran(mcpMarker))
+
+        // The idle process restarts with the project's settings on the next prompt.
+        mark = await harness.recorder.mark()
+        try await engine.prompt(session.id, text: "Reply with exactly: ok", files: [])
+        #expect(try await harness.ended(session.id, after: mark) == "succeeded")
+        #expect(ran(hookMarker))
+        #expect(ran(mcpMarker))
+        await engine.shutdown()
     }
 }
 #endif

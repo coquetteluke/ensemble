@@ -103,13 +103,14 @@ struct ClaudePermissionPrompt: Equatable, Sendable {
 /// "Always" answers, remembered for one session. A later prompt that matches is approved without asking.
 ///
 /// Rule kinds:
-/// - `edit` with no content: file edits inside the project folder, never outside it and never the files
-///   `isProtected` lists (dot paths such as `.git` and `.claude`, build and hook files).
+/// - `edit` with no content: file edits inside the project folder, also after resolving symlinks, never outside it
+///   and never the files `isProtected` lists (dot paths such as `.git` and `.claude`, build and hook files,
+///   `CLAUDE.md` and `CLAUDE.local.md`).
 /// - `Bash` with `words:*` or `words *`: one simple command whose first words are exactly these (see
 ///   `ClaudeShellWords`); any operator, redirection, substitution, expansion, glob or quote trick asks again, and so
 ///   does a command the CLI flags as reaching outside the project.
 /// - `Bash` with other content: exactly that command string. A Bash rule with no content is never made or matched.
-/// - `WebFetch` with `domain:host`: that host and its subdomains.
+/// - `WebFetch` with `domain:host`: that host and its subdomains, for plain http(s) URLs only (`ClaudeWebHosts`).
 /// - A path tool with `//abs/path/**` (the CLI's own form) or `//abs/path`: files inside that folder, or that file.
 /// - Any other tool with no content: every call of that tool (an MCP tool, WebSearch, ...).
 /// Content Ensemble does not understand never matches, so the user is asked.
@@ -179,9 +180,21 @@ struct ClaudePermissionRules: Codable, Hashable, Sendable {
     func matches(toolName: String, input: JSONValue, directory: String?, isExternal: Bool = false) -> Bool {
         rules.contains { rule in
             if rule.tool == "edit" {
-                guard Self.editFamily.contains(toolName), !isExternal, let path = Self.targetPath(input),
-                      let relative = ClaudePaths.relative(path, directory: directory), !relative.isEmpty else { return false }
-                return !Self.isProtected(relative: relative, path: path)
+                guard Self.editFamily.contains(toolName), !isExternal, let directory, let path = Self.targetPath(input) else {
+                    return false
+                }
+                // As written: when the path is spelt inside the project, that spelling must not name a protected file.
+                if let relative = ClaudePaths.relative(path, directory: directory),
+                   relative.isEmpty || Self.isProtected(relative: relative, path: path) {
+                    return false
+                }
+                // As resolved, which is what decides: the real file (the deepest existing folder plus the rest, for a
+                // new file) must be inside the real project folder, and must not be a protected file either. A
+                // dangling link never matches. A session opened through a linked folder still matches real paths.
+                guard let realPath = WorkspaceTrust.resolvedPath(path), let realDirectory = WorkspaceTrust.resolvedPath(directory),
+                      let realRelative = ClaudePaths.relative(realPath, directory: realDirectory, aliases: false),
+                      !realRelative.isEmpty else { return false }
+                return !Self.isProtected(relative: realRelative, path: realPath) && !Self.hasIgnorableCharacters(path)
             }
             guard rule.tool == toolName else { return false }
             guard let content = rule.content, !content.isEmpty else {
@@ -201,10 +214,9 @@ struct ClaudePermissionRules: Codable, Hashable, Sendable {
                 return command == content
             }
             if toolName == "WebFetch" {
-                guard content.hasPrefix("domain:"), let url = input["url"]?.stringValue,
-                      let host = URL(string: url)?.host?.lowercased() else { return false }
-                let domain = String(content.dropFirst(7)).lowercased()
-                return !domain.isEmpty && (host == domain || host.hasSuffix("." + domain))
+                guard content.hasPrefix("domain:"), let url = input["url"]?.stringValue, let host = ClaudeWebHosts.host(of: url),
+                      let domain = ClaudeWebHosts.domain(String(content.dropFirst(7))) else { return false }
+                return host == domain || host.hasSuffix("." + domain)
             }
             if Self.pathTools.contains(toolName) {
                 guard let path = Self.targetPath(input) else { return false }
@@ -222,14 +234,20 @@ struct ClaudePermissionRules: Codable, Hashable, Sendable {
     /// `relative` is the path's components inside the project folder, so a project that itself lives in a dot folder
     /// still works.
     static func isProtected(relative: [String], path: String) -> Bool {
-        if path.unicodeScalars.contains(where: { ignorable.contains($0.value) }) { return true }
+        if hasIgnorableCharacters(path) { return true }
         if relative.contains(where: { $0.hasPrefix(".") }) { return true }
         guard let name = relative.last?.lowercased() else { return true }
+        // The agent's own instructions, in any folder: an edit there changes what every later session is told.
+        if name == "claude.md" || name == "claude.local.md" { return true }
         return protectedNamePatterns.contains { pattern in
             if pattern.hasPrefix("*") { return name.hasSuffix(pattern.dropFirst()) }
             if pattern.hasSuffix("*") { return name.hasPrefix(pattern.dropLast()) }
             return name == pattern
         }
+    }
+
+    static func hasIgnorableCharacters(_ path: String) -> Bool {
+        path.unicodeScalars.contains { ignorable.contains($0.value) }
     }
 
     private static let ignorable: Set<UInt32> = Set(Array(0x200C...0x200F) + Array(0x202A...0x202E) + Array(0x206A...0x206F) + [0xFEFF])
@@ -284,9 +302,11 @@ enum ClaudePaths {
     }
 
     /// The components of `path` below `directory` (empty for the folder itself), or nil when it is not inside.
-    static func relative(_ path: String, directory: String?) -> [String]? {
+    /// `aliases` also accepts the `/private` forms of `/tmp`, `/var` and `/etc` (off for paths already resolved).
+    static func relative(_ path: String, directory: String?, aliases: Bool = true) -> [String]? {
         guard let directory, let wanted = components(path), let base = components(directory), !base.isEmpty else { return nil }
-        for candidate in variants(base) where wanted.count >= candidate.count && Array(wanted.prefix(candidate.count)) == candidate {
+        for candidate in aliases ? variants(base) : [base]
+            where wanted.count >= candidate.count && Array(wanted.prefix(candidate.count)) == candidate {
             return Array(wanted.dropFirst(candidate.count))
         }
         return nil
@@ -371,6 +391,44 @@ enum ClaudeShellWords {
             return false
         default:
             return true
+        }
+    }
+}
+
+/// Hosts for WebFetch domain rules. A URL that another parser could read differently never matches: the CLI's fetch
+/// runs in Node, whose WHATWG parser treats `\` like `/` (so `https://example.com\@evil.com` means different hosts to
+/// Foundation and to Node), so backslashes, user info, whitespace and control characters are refused outright.
+enum ClaudeWebHosts {
+    /// The lower-case IDNA (punycode) host of a plain `http` or `https` URL, without a trailing dot, or nil.
+    static func host(of url: String) -> String? {
+        guard !url.isEmpty, !url.contains("\\"), !url.unicodeScalars.contains(where: unsafe) else { return nil }
+        guard let components = URLComponents(string: url), let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https", components.user == nil, components.password == nil,
+              let separator = url.range(of: "://") else { return nil }
+        let authority = url[separator.upperBound...].prefix { !"/?#".contains($0) }
+        guard !authority.isEmpty, !authority.contains("@") else { return nil }
+        return normalised(components.encodedHost)
+    }
+
+    /// A rule's domain in the same form, or nil when it is not a plain host name.
+    static func domain(_ text: String) -> String? {
+        guard !text.isEmpty, !text.contains(where: { "/\\@:?#[]%".contains($0) }), !text.unicodeScalars.contains(where: unsafe),
+              let components = URLComponents(string: "https://" + text) else { return nil }
+        return normalised(components.encodedHost)
+    }
+
+    private static func normalised(_ host: String?) -> String? {
+        guard var host = host?.lowercased(), !host.isEmpty, !host.contains("%") else { return nil }
+        if host.hasSuffix(".") { host.removeLast() }
+        guard !host.isEmpty, !host.hasSuffix(".") else { return nil }
+        return host
+    }
+
+    private static func unsafe(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar.properties.isWhitespace { return true }
+        switch scalar.properties.generalCategory {
+        case .control, .format, .lineSeparator, .paragraphSeparator, .spaceSeparator, .surrogate, .privateUse, .unassigned: return true
+        default: return false
         }
     }
 }

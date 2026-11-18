@@ -17,6 +17,14 @@ public enum ClaudeCodeError: Error, LocalizedError, Equatable, Sendable {
     /// A control request (interrupt, set mode, context) was refused or timed out.
     case controlFailed(String)
     case keychain(String)
+    /// The project folder is not in `WorkspaceTrust` and the agent needs it to be (an API-key agent in a folder whose
+    /// Claude settings set where requests go). The UI can ask "Trust this folder?", call `WorkspaceTrust.trust`, and
+    /// try again.
+    case folderNotTrusted(String)
+    /// A trusted folder's Claude settings set API endpoints or credentials (`ANTHROPIC_BASE_URL`, `apiKeyHelper`, ...)
+    /// and an API-key agent would send its key there. The UI shows the keys and, if the user agrees, calls
+    /// `ClaudeCodeEngine.confirmProjectAPISettings(directory:)`.
+    case projectOverridesAPISettings(directory: String, keys: [String])
 
     public var errorDescription: String? {
         switch self {
@@ -38,6 +46,10 @@ public enum ClaudeCodeError: Error, LocalizedError, Equatable, Sendable {
             "Claude Code did not accept the request: \(message)"
         case .keychain(let message):
             "Keychain error: \(message)"
+        case .folderNotTrusted(let directory):
+            "\(directory) is not a trusted folder. Its Claude settings change where requests and your API key go, so Ensemble only starts an API-key agent here after you trust the folder and confirm those settings."
+        case .projectOverridesAPISettings(let directory, let keys):
+            "The Claude settings in \(directory) set \(keys.joined(separator: ", ")). An API-key agent would send your key according to them. Confirm them to start the agent, or use your subscription instead."
         }
     }
 }
@@ -51,10 +63,15 @@ public enum ClaudeBilling: String, Codable, Sendable, CaseIterable {
 }
 
 /// Which of the user's Claude settings files a headless agent loads (`--setting-sources`).
+///
+/// Project and local settings (`.claude/settings*.json`, and with them the project's `.mcp.json` servers) are only
+/// loaded for folders in `WorkspaceTrust`; for any other folder the sources are narrowed with `effective(trusted:)`.
 public enum ClaudeSettingSources: String, Codable, Sendable, CaseIterable {
     /// User, project and local settings: the user's own hooks, skills, plugins, CLAUDE.md and permission rules apply,
     /// exactly like their own `claude` sessions (the default, since it is their own Claude).
     case all
+    /// The user's own settings (`~/.claude/settings.json`) only: what an untrusted folder gets under `.all`.
+    case userOnly
     /// Project and local settings only. The user's global hooks and settings (`~/.claude/settings.json`) are skipped.
     case projectOnly
     /// No settings files at all.
@@ -64,8 +81,18 @@ public enum ClaudeSettingSources: String, Codable, Sendable, CaseIterable {
     var argument: String? {
         switch self {
         case .all: nil
+        case .userOnly: "user"
         case .projectOnly: "project,local"
         case .none: ""
+        }
+    }
+
+    /// The sources for a session folder: unchanged when it is trusted, without project and local settings otherwise.
+    public func effective(trusted: Bool) -> ClaudeSettingSources {
+        guard !trusted else { return self }
+        switch self {
+        case .all, .userOnly: return .userOnly
+        case .projectOnly, .none: return .none
         }
     }
 }
