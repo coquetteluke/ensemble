@@ -1,0 +1,1 @@
+{"defaultBranchRef":{"name":"main"},"isFork":true,"mergeCommitAllowed":true,"nameWithOwner":"mallory/widgets","owner":{"id":"U_mallory","login":"mallory"},"parent":{"id":"R_acme","name":"widgets","owner":{"id":"U_acme","login":"acme"}},"rebaseMergeAllowed":true,"squashMergeAllowed":true,"url":"https://github.com/mallory/widgets"}

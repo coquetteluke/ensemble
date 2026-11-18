@@ -1,1 +1,1 @@
-{"defaultBranchRef":{"name":"trunk"},"isFork":false,"mergeCommitAllowed":true,"nameWithOwner":"acme/widgets","parent":null,"rebaseMergeAllowed":true,"squashMergeAllowed":false,"url":"https://github.com/acme/widgets"}
+{"defaultBranchRef":{"name":"trunk"},"isFork":false,"mergeCommitAllowed":true,"nameWithOwner":"acme/widgets","owner":{"id":"U_acme","login":"acme"},"parent":null,"rebaseMergeAllowed":true,"squashMergeAllowed":false,"url":"https://github.com/acme/widgets"}

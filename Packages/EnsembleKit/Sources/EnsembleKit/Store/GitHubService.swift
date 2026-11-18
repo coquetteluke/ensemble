@@ -248,6 +248,8 @@ public struct GitHubService: Sendable {
         return await git.run(["check-ref-format", "--branch", name], in: root).succeeded
     }
 
+    public static let untrustedPush = "Ensemble pushes only from trusted folders. Trust this folder first."
+
     /// Config that would make a push send more than the one branch: tags it follows, submodules, mirroring.
     static let pushOverrides = ["-c", "push.followTags=false", "-c", "push.recurseSubmodules=no"]
 
@@ -262,9 +264,7 @@ public struct GitHubService: Sendable {
     /// Throws unless the folder is trusted and every URL git would push the plan's remote to names the
     /// repository the confirmation shows (a `pushurl` or `pushInsteadOf` pointing elsewhere is refused).
     public func verifyPushDestination(_ plan: GitHubPushPlan) async throws {
-        guard isTrusted(plan.root) else {
-            throw GitHubError("Ensemble pushes only from trusted folders. Trust this folder first.")
-        }
+        guard isTrusted(plan.root) else { throw GitHubError(Self.untrustedPush) }
         guard let urls = await pushDestinations(remoteName: plan.remoteName, root: plan.root) else {
             throw GitHubError("Could not read where \(plan.remoteName) pushes to")
         }

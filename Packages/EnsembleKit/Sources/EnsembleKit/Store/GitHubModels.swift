@@ -38,9 +38,11 @@ public struct GitHubRepoInfo: Hashable, Sendable {
     public var rebaseAllowed: Bool
     /// The repository this one was forked from, when it is a fork. Pull requests from a fork go there.
     public var parent: GitHubRemote?
+    /// The account or organisation that owns the repository.
+    public var ownerLogin: String?
 
     public init(nameWithOwner: String, url: String, defaultBranch: String?, squashAllowed: Bool = true,
-                mergeCommitAllowed: Bool = true, rebaseAllowed: Bool = true, parent: GitHubRemote? = nil) {
+                mergeCommitAllowed: Bool = true, rebaseAllowed: Bool = true, parent: GitHubRemote? = nil, ownerLogin: String? = nil) {
         self.nameWithOwner = nameWithOwner
         self.url = url
         self.defaultBranch = defaultBranch
@@ -48,6 +50,7 @@ public struct GitHubRepoInfo: Hashable, Sendable {
         self.mergeCommitAllowed = mergeCommitAllowed
         self.rebaseAllowed = rebaseAllowed
         self.parent = parent
+        self.ownerLogin = ownerLogin
     }
 
     /// The method Merge when ready uses: squash when the repository allows it, then a merge commit, then rebase.
@@ -404,6 +407,28 @@ public enum GitHubBarState: Hashable, Sendable {
         if let pullRequest { return .pullRequest(pullRequest) }
         if let lookupError { return .failed(lookupError) }
         return .noPullRequest(branch: branch, base: defaultBranch)
+    }
+}
+
+/// Where a branch may be pushed, deny by default: to the repository its remote fetches from, or to your own fork
+/// of that repository (a fork whose parent is the fetch repository and whose owner is an account gh is signed in
+/// to on that host). Anything else, such as a lookalike repository in `pushurl`, is refused before any confirmation.
+public enum GitHubPushPolicy {
+    /// Why pushing to `push` is refused, or nil when it is allowed. `pushInfo` is `gh repo view` of `push`.
+    public static func refusal(remoteName: String, fetch: GitHubRemote?, push: GitHubRemote, pushInfo: GitHubRepoInfo?,
+                               cli: GitHubCLIStatus?) -> String? {
+        guard let fetch else {
+            return "\(remoteName) fetches from no GitHub repository, so Ensemble does not push to \(push.slug)"
+        }
+        if push.isSameRepository(as: fetch) { return nil }
+        let refused = "\(remoteName) fetches from \(fetch.slug) but pushes to \(push.slug). Ensemble pushes only to the repository "
+            + "a branch comes from, or to your own fork of it."
+        guard let info = pushInfo, info.nameWithOwner.lowercased() == push.slug.lowercased(),
+              let parent = info.parent, parent.isSameRepository(as: fetch),
+              let owner = info.ownerLogin?.lowercased(), owner == push.owner.lowercased() else { return refused }
+        let accounts = cli?.info?.accounts.filter { $0.host.lowercased() == push.host.lowercased() && $0.state != .invalid } ?? []
+        guard accounts.contains(where: { $0.login.lowercased() == owner }) else { return refused }
+        return nil
     }
 }
 

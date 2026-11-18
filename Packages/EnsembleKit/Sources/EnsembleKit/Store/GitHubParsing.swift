@@ -231,9 +231,10 @@ public enum GitHubParsing {
         var rebaseMergeAllowed: Bool?
         var isFork: Bool?
         var parent: Parent?
+        var owner: OwnerJSON?
     }
 
-    public static let repoFields = "nameWithOwner,url,defaultBranchRef,squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed,isFork,parent"
+    public static let repoFields = "nameWithOwner,url,defaultBranchRef,squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed,isFork,parent,owner"
 
     /// `gh repo view --json` for a repository on `host` (its parent, for a fork, is on the same host).
     public static func repoInfo(_ data: Data, host: String = "github.com") throws -> GitHubRepoInfo {
@@ -250,7 +251,7 @@ public enum GitHubParsing {
         }
         return GitHubRepoInfo(nameWithOwner: json.nameWithOwner, url: json.url, defaultBranch: branch,
                               squashAllowed: json.squashMergeAllowed ?? true, mergeCommitAllowed: json.mergeCommitAllowed ?? true,
-                              rebaseAllowed: json.rebaseMergeAllowed ?? true, parent: parent)
+                              rebaseAllowed: json.rebaseMergeAllowed ?? true, parent: parent, ownerLogin: json.owner?.login)
     }
 
     // MARK: Links

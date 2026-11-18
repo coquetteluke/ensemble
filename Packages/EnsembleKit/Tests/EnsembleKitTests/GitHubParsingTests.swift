@@ -175,9 +175,50 @@ import Testing
     @Test func aForkKnowsItsParent() throws {
         let fork = try GitHubParsing.repoInfo(Fixtures.data("github/repo-view-fork.json"))
         #expect(fork.parent == GitHubRemote(host: "github.com", owner: "acme", name: "widgets"))
+        #expect(fork.ownerLogin == "octocat" && GitHubParsing.repoFields.hasSuffix("isFork,parent,owner"))
         #expect(try GitHubParsing.repoInfo(Fixtures.data("github/repo-view.json")).parent == nil)
         let enterprise = try GitHubParsing.repoInfo(Fixtures.data("github/repo-view-fork.json"), host: "work.ghe.com")
         #expect(enterprise.parent?.host == "work.ghe.com")
+    }
+
+    /// Deny by default: the fetch repository, or your own fork of it, and nothing else.
+    @Test func pushesGoOnlyToTheFetchRepositoryOrYourOwnForkOfIt() {
+        let acme = GitHubRemote(host: "github.com", owner: "acme", name: "widgets")
+        let octocat = GitHubRemote(host: "github.com", owner: "octocat", name: "widgets")
+        let mallory = GitHubRemote(host: "github.com", owner: "mallory", name: "widgets")
+        let signedIn = GitHubCLIStatus.installed(GitHubCLIInfo(path: "gh", accounts: [
+            GitHubAccount(host: "github.com", login: "OctoCat", active: true, state: .valid),
+            GitHubAccount(host: "github.com", login: "work-me", active: false, state: .valid),
+            GitHubAccount(host: "github.com", login: "old-me", active: false, state: .invalid),
+        ]))
+        func fork(_ remote: GitHubRemote, of parent: GitHubRemote?, owner: String? = nil) -> GitHubRepoInfo {
+            GitHubRepoInfo(nameWithOwner: remote.slug, url: "", defaultBranch: "main", parent: parent, ownerLogin: owner ?? remote.owner)
+        }
+        func refusal(_ push: GitHubRemote, _ info: GitHubRepoInfo?, fetch: GitHubRemote? = acme, cli: GitHubCLIStatus? = signedIn) -> String? {
+            GitHubPushPolicy.refusal(remoteName: "origin", fetch: fetch, push: push, pushInfo: info, cli: cli)
+        }
+        #expect(refusal(acme, nil) == nil, "the repository it fetches from")
+        #expect(refusal(GitHubRemote(host: "github.com", owner: "ACME", name: "Widgets"), nil) == nil)
+        #expect(refusal(octocat, fork(octocat, of: acme)) == nil, "your own fork of it")
+        let work = GitHubRemote(host: "github.com", owner: "work-me", name: "widgets")
+        #expect(refusal(work, fork(work, of: acme)) == nil, "a fork owned by another signed-in account")
+
+        let unrelated = refusal(GitHubRemote(host: "github.com", owner: "evil", name: "widgets"),
+                                GitHubRepoInfo(nameWithOwner: "evil/widgets", url: "", defaultBranch: "main", ownerLogin: "evil"))
+        #expect(unrelated == "origin fetches from acme/widgets but pushes to evil/widgets. Ensemble pushes only to the repository "
+            + "a branch comes from, or to your own fork of it.")
+        #expect(refusal(mallory, fork(mallory, of: acme)) != nil, "someone else's fork")
+        let old = GitHubRemote(host: "github.com", owner: "old-me", name: "widgets")
+        #expect(refusal(old, fork(old, of: acme)) != nil, "an account whose sign-in no longer works")
+        #expect(refusal(octocat, fork(octocat, of: GitHubRemote(host: "github.com", owner: "other", name: "widgets"))) != nil,
+                "your fork of another repository")
+        #expect(refusal(octocat, fork(octocat, of: acme, owner: "mallory")) != nil, "GitHub says someone else owns it")
+        #expect(refusal(octocat, nil) != nil, "nothing known about the push repository")
+        #expect(refusal(octocat, fork(mallory, of: acme)) != nil, "facts about another repository")
+        #expect(refusal(octocat, fork(octocat, of: acme), cli: nil) != nil)
+        #expect(refusal(octocat, fork(octocat, of: acme), fetch: nil) != nil)
+        let enterprise = GitHubRemote(host: "work.ghe.com", owner: "octocat", name: "widgets")
+        #expect(refusal(enterprise, fork(enterprise, of: acme)) != nil, "another host")
     }
 
     @Test func aPullRequestFromAForkNamesItsHeadByOwner() {

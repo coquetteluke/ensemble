@@ -353,28 +353,70 @@ import Testing
         #expect(gh.calls("repo", "view").count == 2)
     }
 
-    /// The confirmation names the repository git really pushes to (its push URL), and a remote whose push URLs
-    /// name different repositories offers no push at all.
-    @Test func theConfirmationNamesWhereGitReallyPushes() async throws {
+    /// A push URL naming another repository than the fetch URL is refused before any confirmation, unless it is
+    /// your own fork of the fetch repository.
+    @Test func aPushURLToAnUnrelatedRepositoryOrSomeoneElsesForkIsRefused() async throws {
+        let cases: [(pushURL: String, slug: String, fixture: String)] = [
+            ("git@github.com:evil/widgets.git", "evil/widgets", "repo-view-evil.json"),
+            ("git@github.com:mallory/widgets.git", "mallory/widgets", "repo-view-fork-mallory.json"),
+        ]
+        for item in cases {
+            let repo = try GitHubTestRepo()
+            let gh = try FakeGH()
+            try gh.signedIn()
+            try gh.respond("repo_view_" + item.slug.replacingOccurrences(of: "/", with: "_"), fixture: item.fixture)
+            try repo.git(["config", "remote.origin.pushurl", item.pushURL])
+            try repo.git(["switch", "-q", "-c", "feature"])
+            try repo.commit("a.txt", "a\n", message: "Add a")
+            let controller = GitHubPullRequestController(sessionID: "s", hooks: hooks(repo.work, Recorder()), service: repo.service(gh),
+                                                         setting: setting())
+            await controller.refresh()
+            let expected = "origin fetches from acme/widgets but pushes to \(item.slug). Ensemble pushes only to the repository "
+                + "a branch comes from, or to your own fork of it."
+            #expect(controller.state == .failed(expected), "\(item.slug)")
+            #expect(gh.calls("pr", "list").isEmpty, "\(item.slug): nothing is looked up for a refused push repository")
+            await controller.requestPush()
+            #expect(controller.confirmation == nil && controller.actionError == expected, "\(item.slug)")
+            #expect(repo.loggingGit.pushes().isEmpty && repo.loggingGit.sshLog().isEmpty && gh.calls("pr", "create").isEmpty)
+        }
+    }
+
+    @Test func aPushURLToYourOwnForkOfTheRepositoryIsAllowed() async throws {
         let repo = try GitHubTestRepo()
         let gh = try FakeGH()
         try gh.signedIn()
-        try repo.git(["config", "remote.origin.pushurl", "git@github.com:evil/widgets.git"])
+        try gh.respond("repo_view_octocat_widgets", fixture: "repo-view-fork.json")
+        try gh.respond("repo_view_acme_widgets", fixture: "repo-view.json")
+        try gh.respond("pr_create", out: "https://github.com/acme/widgets/pull/51\n")
+        try repo.git(["config", "remote.origin.pushurl", "git@github.com:octocat/widgets.git"])
         try repo.git(["switch", "-q", "-c", "feature"])
         try repo.commit("a.txt", "a\n", message: "Add a")
         let controller = GitHubPullRequestController(sessionID: "s", hooks: hooks(repo.work, Recorder()), service: repo.service(gh),
                                                      setting: setting())
         await controller.refresh()
-        #expect(controller.headRepository?.slug == "evil/widgets")
+        #expect(controller.state == .noPullRequest(branch: "feature", base: "main"))
+        #expect(controller.headRepository?.slug == "octocat/widgets" && controller.baseRepository?.slug == "acme/widgets")
         await controller.beginPullRequest()
         await controller.requestCreatePullRequest()
-        #expect(controller.confirmation?.message.contains("to origin (evil/widgets on github.com)") == true)
-        controller.cancelConfirmation()
-        controller.cancelPullRequest()
+        #expect(controller.confirmation?.message.contains("to origin (octocat/widgets on github.com)") == true)
+        await controller.confirm()
+        #expect(repo.loggingGit.sshLog() == ["git@github.com git-receive-pack 'octocat/widgets.git'"])
+        #expect(gh.calls("pr", "create").last?.prefix(8) == ["pr", "create", "--repo", "acme/widgets", "--base", "main",
+                                                             "--head", "octocat:feature"])
+    }
 
+    @Test func pushURLsThatDisagreeOfferNoPush() async throws {
+        let repo = try GitHubTestRepo()
+        let gh = try FakeGH()
+        try gh.signedIn()
         try repo.git(["config", "--add", "remote.origin.pushurl", "git@github.com:acme/widgets.git"])
+        try repo.git(["config", "--add", "remote.origin.pushurl", "git@github.com:evil/widgets.git"])
+        try repo.git(["switch", "-q", "-c", "feature"])
+        try repo.commit("a.txt", "a\n", message: "Add a")
+        let controller = GitHubPullRequestController(sessionID: "s", hooks: hooks(repo.work, Recorder()), service: repo.service(gh),
+                                                     setting: setting())
         await controller.refresh()
-        #expect(controller.state == .failed("origin pushes to both evil/widgets and acme/widgets"))
+        #expect(controller.state == .failed("origin pushes to both acme/widgets and evil/widgets"))
         #expect(controller.pushPlan == nil)
         #expect(repo.loggingGit.pushes().isEmpty && gh.calls("pr", "create").isEmpty)
     }

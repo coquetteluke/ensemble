@@ -281,6 +281,13 @@ public final class GitHubPullRequestController {
                 lookupError = error.localizedDescription
             }
         }
+        // Deny by default: a push repository other than the fetch repository must be your own fork of it.
+        if !head.isSameRepository(as: remote),
+           let refusal = GitHubPushPolicy.refusal(remoteName: found.remoteName ?? "The remote", fetch: remote, push: head,
+                                                  pushInfo: info(for: head), cli: cli) {
+            apply(local: local, pullRequest: nil, error: refusal)
+            return
+        }
         if network, let parent = repoInfo?.parent {
             let parentStale = parentInfoCheckedAt.map { now.timeIntervalSince($0) > GitHubRefreshPolicy.repoInfoLifetime } ?? true
             let parentMoved = parentInfo.map { $0.nameWithOwner.lowercased() != parent.slug.lowercased() } ?? true
@@ -339,6 +346,32 @@ public final class GitHubPullRequestController {
     }
 
     static let mismatch = "That pull request no longer comes from this branch's repository, so nothing was done"
+
+    /// `repoInfo` when it describes `remote`.
+    func info(for remote: GitHubRemote) -> GitHubRepoInfo? {
+        guard let info = repoInfo, info.nameWithOwner.lowercased() == remote.slug.lowercased() else { return nil }
+        return info
+    }
+
+    /// Reads again where the folder fetches from and pushes to, right before a push is offered or run. Returns why
+    /// the push is refused: git would push somewhere other than `plan.remote`, or `GitHubPushPolicy` refuses it.
+    func pushRefusal(_ plan: GitHubPushPlan) async -> String? {
+        guard let service else { return nil }
+        if service.repositoryFolder(plan.root)?.trusted != true { return GitHubService.untrustedPush }
+        guard let fresh = await service.localRepository(hooks.directory(), baseHint: repoInfo?.defaultBranch) else {
+            return "Could not read this folder's git settings"
+        }
+        guard let push = fresh.pushRemote else { return fresh.pushProblem ?? "Could not tell where this branch is pushed" }
+        guard push.isSameRepository(as: plan.remote), fresh.remoteName == plan.remoteName else {
+            return "\(plan.remoteName) now pushes to \(push.slug), not \(plan.remote.slug)"
+        }
+        var pushInfo: GitHubRepoInfo?
+        if let fetch = fresh.remote, !push.isSameRepository(as: fetch) {
+            // A fork's parent and owner are read again, not taken from earlier.
+            pushInfo = try? await service.repoInfo(push)
+        }
+        return GitHubPushPolicy.refusal(remoteName: plan.remoteName, fetch: fresh.remote, push: push, pushInfo: pushInfo, cli: cli)
+    }
 
     /// Looks the branch's pull request up again right before acting on it. Returns it only when the same pull
     /// request still comes from exactly the repository this branch is pushed to.
@@ -444,6 +477,10 @@ public final class GitHubPullRequestController {
                                                body: form.body.trimmingCharacters(in: .whitespacesAndNewlines), draft: form.draft)
         let push = pushPlan
         if let push, let service {
+            if let refusal = await pushRefusal(push) {
+                formError = refusal
+                return
+            }
             do {
                 try await service.verifyPushDestination(push)
             } catch {
@@ -461,6 +498,10 @@ public final class GitHubPullRequestController {
     public func requestPush() async {
         guard let plan = pushPlan else { return }
         if let service {
+            if let refusal = await pushRefusal(plan) {
+                actionError = refusal
+                return
+            }
             do {
                 try await service.verifyPushDestination(plan)
             } catch {
@@ -499,6 +540,7 @@ public final class GitHubPullRequestController {
             busy.insert(.pushing)
             defer { busy.remove(.pushing) }
             do {
+                if let refusal = await pushRefusal(plan) { throw GitHubError(refusal) }
                 try await service.push(plan)
                 actionError = nil
                 notice = "Pushed \(plan.branch) to \(plan.remoteName)"
@@ -509,7 +551,10 @@ public final class GitHubPullRequestController {
             busy.insert(.creatingPullRequest)
             defer { busy.remove(.creatingPullRequest) }
             do {
-                if let push { try await service.push(push) }
+                if let push {
+                    if let refusal = await pushRefusal(push) { throw GitHubError(refusal) }
+                    try await service.push(push)
+                }
                 let created = try await service.createPullRequest(request)
                 form = nil
                 formError = nil
