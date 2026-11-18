@@ -82,7 +82,7 @@ The model picker groups models under "Your subscriptions" and "API keys". The us
 |---|---|
 | Ask | Every edit and command asks you (OpenCode default ruleset). |
 | Accept edits | File edits allowed; commands ask. |
-| Auto | Edits and safe read-only commands allowed; risky commands ask. Uses OpenCode's auto-approve plus a deny list for destructive commands. |
+| Auto | Edits inside the project and an allowlist of read-only and build/test commands run without asking; every other command, web fetches and anything outside the project ask. (An allowlist, not a deny list: deny lists are easy to slip past.) |
 | Bypass | Everything allowed. Shown in red. |
 
 Permission prompts from any agent appear in that agent's pane, in the room view, in the Session Hub, and on the iPhone.
