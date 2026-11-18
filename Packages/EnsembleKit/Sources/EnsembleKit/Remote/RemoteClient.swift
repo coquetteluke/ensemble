@@ -94,6 +94,8 @@ public final class RemoteClient {
     @ObservationIgnored private var socket: URLSessionWebSocketTask?
     /// Seals and opens frames on the current connection.
     @ObservationIgnored private var channel: RemoteChannel?
+    /// The relay the active connection is using, or `nil` when disconnected or connected directly.
+    @ObservationIgnored private var connectedRelay: RemotePairing.Relay?
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     @ObservationIgnored private var pingTask: Task<Void, Never>?
     @ObservationIgnored private var localUpdatesTask: Task<Void, Never>?
@@ -164,6 +166,7 @@ public final class RemoteClient {
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
         channel = nil
+        connectedRelay = nil
         failAllPending(RemoteError(.failed, "Disconnected"))
         state = .idle
     }
@@ -254,6 +257,7 @@ public final class RemoteClient {
                 }
                 socket = task
                 channel = winner.channel
+                connectedRelay = winner.relay
                 state = .connected(via: winner.path)
                 lastError = nil
                 attempt = 0
@@ -264,6 +268,7 @@ public final class RemoteClient {
                 if socket === task {
                     socket = nil
                     channel = nil
+                    connectedRelay = nil
                 }
                 failAllPending(RemoteError(.failed, "Lost the connection to the Mac"))
                 guard isCurrent(gen) else { return }
@@ -816,11 +821,17 @@ public final class RemoteClient {
         guard !isInProcess,
               let url = URL(string: incoming.url), RelayDialer.isAllowed(url),
               RelayWire.isMailboxID(incoming.mailbox) else { return }
-        guard pairing.relay != incoming else { return }
-        if let old = pairing.relay {
-            pairing.previousRelay = old
-        } else if pairing.previousRelay == incoming {
+        if pairing.relay == incoming {
+            if connectedRelay == incoming, pairing.previousRelay != nil {
+                pairing.previousRelay = nil
+                try? pairingStore?.save(pairing)
+            }
+            return
+        }
+        if connectedRelay == incoming || pairing.previousRelay == incoming {
             pairing.previousRelay = nil
+        } else if pairing.previousRelay == nil, let old = pairing.relay {
+            pairing.previousRelay = old
         }
         pairing.relay = incoming
         try? pairingStore?.save(pairing)

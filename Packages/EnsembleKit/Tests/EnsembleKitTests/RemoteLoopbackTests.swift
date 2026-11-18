@@ -653,9 +653,29 @@ import Testing
         #expect(c.pairing.previousRelay == firstRelay)
         #expect(store.load()?.relay == secondRelay)
 
+        // R1 -> R2 (unproven) -> R3 keeps previousRelay == R1 instead of clobbering it with unproven R2.
+        let thirdRelay = RemotePairing.Relay(url: "wss://relay-three.example", mailbox: RelayIdentity.make().mailboxID)
+        await h.server.setActiveRelay(thirdRelay)
+        try await waitUntil("third relayDetails to be saved") {
+            c.pairing.relay == thirdRelay
+        }
+        #expect(c.pairing.previousRelay == firstRelay)
+        #expect(store.load()?.relay == thirdRelay)
+        #expect(store.load()?.previousRelay == firstRelay)
+
+        // Rolling back to R1 before any newer relay worked clears previousRelay to nil.
+        await h.server.setActiveRelay(firstRelay)
+        try await waitUntil("rollback relayDetails to be saved") {
+            c.pairing.relay == firstRelay
+        }
+        #expect(c.pairing.previousRelay == nil)
+        #expect(store.load()?.relay == firstRelay)
+        #expect(store.load()?.previousRelay == nil)
+
         let wireBytes = proxy.fromMac.all
         #expect(!wireBytes.isEmpty)
-        for secret in ["relayDetails", firstRelay.url, firstRelay.mailbox, secondRelay.url, secondRelay.mailbox] {
+        for secret in ["relayDetails", firstRelay.url, firstRelay.mailbox, secondRelay.url, secondRelay.mailbox,
+                       thirdRelay.url, thirdRelay.mailbox] {
             #expect(wireBytes.range(of: Data(secret.utf8)) == nil, "\(secret) crossed the wire in plaintext")
         }
     }
@@ -702,6 +722,14 @@ import Testing
                 #expect(c.pairing.previousRelay == oldRelay)
                 #expect(store.load()?.relay == newRelay)
                 #expect(store.load()?.previousRelay == oldRelay)
+
+                // If the Mac rolls back to oldRelay while the phone is connected through oldRelay, previousRelay clears.
+                await server.setActiveRelay(oldRelay)
+                try await waitUntil("rollback over active fallback connection clears previousRelay") {
+                    c.pairing.relay == oldRelay && c.pairing.previousRelay == nil
+                }
+                #expect(store.load()?.relay == oldRelay)
+                #expect(store.load()?.previousRelay == nil)
                 c.stop()
             } catch {
                 c.stop()
