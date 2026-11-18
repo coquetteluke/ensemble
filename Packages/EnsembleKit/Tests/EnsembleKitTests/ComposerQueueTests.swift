@@ -64,6 +64,14 @@ final class SteeringTestEngine: PreviewForwarding, EngineSteeringControl, Engine
     }
 
     var calls: [String] { log.withLock { $0 } }
+    /// When true, deleting a session fails (an engine that is down).
+    let failDeletes = Mutex(false)
+
+    func deleteSession(_ sessionID: String) async throws {
+        log.withLock { $0.append("delete:\(sessionID)") }
+        if failDeletes.withLock({ $0 }) { throw PreviewEngine.PreviewError.unknownSession(sessionID) }
+        try await base.deleteSession(sessionID)
+    }
 
     func prompt(_ sessionID: String, text: String, files: [URL]) async throws {
         log.withLock { $0.append("prompt:\(text)") }
@@ -330,6 +338,127 @@ struct ComposerQueueTests {
             Issue.record("expected a failed side question")
         }
         #expect(gated.hiddenSessionIDs.isEmpty)
+    }
+
+    // MARK: Copies left by a quit app
+
+    func recordURL() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("ens-side-\(UUID().uuidString)/side-question-copies.json")
+    }
+
+    /// A second app launch on the same engine and the same list of copies.
+    func relaunch(_ engine: any OpenCodeAPI, record: URL) async -> SessionStore {
+        let store = SessionStore(engine: engine)
+        store.sideQuestionRecordURL = record
+        await store.start()
+        return store
+    }
+
+    @Test func leftoverCopiesAreDeletedAtTheNextStartAndNothingElseIs() async throws {
+        let engine = SteeringTestEngine()
+        let record = recordURL()
+        let first = SessionStore(engine: engine)
+        first.sideQuestionRecordURL = record
+        await first.start()
+        let a = try await first.newSession(directory: "/tmp/side-a", model: nil, permissionMode: .bypass)
+        let b = try await first.newSession(directory: "/tmp/side-b", model: nil, permissionMode: .bypass)
+        // A normal session whose title looks like a copy's: a title is never enough to delete anything.
+        let lookalike = try await first.newSession(directory: "/tmp/side-c", model: nil, permissionMode: .bypass)
+        await first.rename(lookalike.id, to: "Side question: not a copy")
+
+        await first.askSideQuestion("Left open when the app quit", about: a.id)
+        let leftover = try #require(first.sideQuestions[a.id]?.forkSessionID)
+        await first.askSideQuestion("Kept as a session", about: b.id)
+        let kept = try #require(first.sideQuestions[b.id]?.forkSessionID)
+        await until("both answers") { first.sideQuestions.values.allSatisfy { $0.phase != .asking } }
+        await first.continueSideQuestion(for: b.id)
+        #expect(first.sideQuestionCopyRecords().map(\.id) == [leftover], "a kept copy is off the list at once")
+        first.stopListening()
+
+        let second = await relaunch(engine, record: record)
+        #expect(!second.sidebarOrder.contains { $0.id == leftover }, "the leftover never shows")
+        await second.sideQuestionCleanupTask?.value
+        let listed = try await engine.listSessions().map(\.id)
+        #expect(!listed.contains(leftover))
+        #expect(second.session(leftover) == nil)
+        #expect(second.sideQuestionCopyRecords().isEmpty)
+        #expect(!second.isSideQuestionSession(leftover))
+        for id in [a.id, b.id, lookalike.id, kept] {
+            #expect(listed.contains(id), "\(id) is untouched")
+            #expect(second.sidebarOrder.contains { $0.id == id })
+        }
+        #expect(engine.calls.filter { $0.hasPrefix("delete:") } == ["delete:\(leftover)"], "only the leftover copy was deleted")
+        try? FileManager.default.removeItem(at: record.deletingLastPathComponent())
+    }
+
+    @Test func aFailedDeleteIsTriedAgainNextTime() async throws {
+        let engine = SteeringTestEngine()
+        let record = recordURL()
+        let first = await relaunch(engine, record: record)
+        let session = try await first.newSession(directory: "/tmp/side-retry", model: nil, permissionMode: .bypass)
+        await first.askSideQuestion("Anything", about: session.id)
+        let leftover = try #require(first.sideQuestions[session.id]?.forkSessionID)
+        await until("the answer") { first.sideQuestions[session.id]?.phase != .asking }
+        first.stopListening()
+
+        engine.failDeletes.withLock { $0 = true }
+        let second = await relaunch(engine, record: record)
+        await second.sideQuestionCleanupTask?.value
+        #expect(try await engine.listSessions().contains { $0.id == leftover })
+        #expect(second.isSideQuestionSession(leftover), "still hidden while it cannot be deleted")
+        #expect(!second.sidebarOrder.contains { $0.id == leftover })
+        #expect(second.sideQuestionCopyRecords().map(\.id) == [leftover])
+        second.stopListening()
+
+        engine.failDeletes.withLock { $0 = false }
+        let third = await relaunch(engine, record: record)
+        await third.sideQuestionCleanupTask?.value
+        #expect(try await !engine.listSessions().contains { $0.id == leftover })
+        #expect(third.sideQuestionCopyRecords().isEmpty)
+        try? FileManager.default.removeItem(at: record.deletingLastPathComponent())
+    }
+
+    @Test func copiesNoEngineListsAreKeptUntilTheyAreOld() async throws {
+        let engine = SteeringTestEngine()
+        let record = recordURL()
+        let recent = SideQuestionCopyRecord(id: "ses_offline_engine", sourceSessionID: "s1", created: Date().addingTimeInterval(-3600))
+        let old = SideQuestionCopyRecord(id: "ses_long_gone", sourceSessionID: "s2", created: Date().addingTimeInterval(-40 * 24 * 3600))
+        try FileManager.default.createDirectory(at: record.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try encoder.encode([recent, old]).write(to: record)
+        let sessionsBefore = try await engine.listSessions().map(\.id).sorted()
+
+        let store = await relaunch(engine, record: record)
+        await store.sideQuestionCleanupTask?.value
+        #expect(store.sideQuestionCopyRecords().map(\.id) == ["ses_offline_engine"])
+        #expect(store.isSideQuestionSession("ses_offline_engine"))
+        #expect(!store.isSideQuestionSession("ses_long_gone"))
+        #expect(!engine.calls.contains { $0.hasPrefix("delete:") }, "nothing the engines do not list is deleted")
+        #expect(try await engine.listSessions().map(\.id).sorted() == sessionsBefore)
+        try? FileManager.default.removeItem(at: record.deletingLastPathComponent())
+    }
+
+    @Test func closingForgetsTheCopyAndPreviewsRememberNothing() async throws {
+        let engine = SteeringTestEngine()
+        let record = recordURL()
+        let store = await relaunch(engine, record: record)
+        let session = try await store.newSession(directory: "/tmp/side-close", model: nil, permissionMode: .bypass)
+        await store.askSideQuestion("Close me", about: session.id)
+        let copy = try #require(store.sideQuestions[session.id]?.forkSessionID)
+        #expect(store.sideQuestionCopyRecords().map(\.id) == [copy])
+        await store.closeSideQuestion(for: session.id)
+        #expect(store.sideQuestionCopyRecords().isEmpty)
+        try? FileManager.default.removeItem(at: record.deletingLastPathComponent())
+
+        #expect(SessionStore.defaultSideQuestionRecordURL(isPreview: true) == nil)
+        #expect(SessionStore(engine: PreviewEngine()).sideQuestionRecordURL == nil)
+        #expect(SessionStore.defaultSideQuestionRecordURL(isPreview: false) == nil, "test runners are not an app bundle")
+        let app = Bundle(url: URL(fileURLWithPath: "/System/Applications/Calculator.app"))
+        if let app {
+            #expect(SessionStore.defaultSideQuestionRecordURL(isPreview: false, bundle: app)?.path
+                .hasSuffix("Application Support/Ensemble/side-question-copies.json") == true)
+        }
     }
 
     @Test func btwIsInTheSlashMenu() {

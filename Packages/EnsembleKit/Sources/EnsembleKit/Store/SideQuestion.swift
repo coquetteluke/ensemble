@@ -90,6 +90,7 @@ extension SessionStore {
             failSideQuestion(entry.id, on: sessionID, "Could not copy the session: \(error.localizedDescription)")
             return
         }
+        rememberSideQuestionCopy(info.id, source: sessionID)
         hiddenSessionIDs.insert(info.id)
         let fork = upsertSession(info)
         fork.permissionMode = .ask
@@ -155,6 +156,8 @@ extension SessionStore {
     public func continueSideQuestion(for sessionID: String) async -> SessionModel? {
         guard let entry = sideQuestions[sessionID], let forkID = entry.forkSessionID, let fork = byID[forkID] else { return nil }
         sideQuestions[sessionID] = nil
+        // Forgotten first: a kept session must never be taken for a leftover copy.
+        forgetSideQuestionCopy(forkID)
         hiddenSessionIDs.remove(forkID)
         let mode = byID[sessionID]?.permissionMode ?? defaultPermissionMode
         await setPermissionMode(mode, for: forkID)
@@ -194,6 +197,7 @@ extension SessionStore {
     }
 
     private func removeHiddenSession(_ forkID: String) {
+        forgetSideQuestionCopy(forkID)
         apply(.sessionDeleted(sessionID: forkID))
         hiddenSessionIDs.remove(forkID)
     }
@@ -223,6 +227,88 @@ extension SessionStore {
             }
         default:
             break
+        }
+    }
+}
+
+// MARK: Copies left by an earlier run
+
+/// One side question's hidden copy, remembered on disk from the moment it is made until it is deleted or kept.
+struct SideQuestionCopyRecord: Codable, Hashable, Sendable {
+    var id: String
+    var sourceSessionID: String
+    var created: Date
+}
+
+extension SessionStore {
+    /// A copy that cannot be found for this long is forgotten (its engine was gone each time the app started).
+    static let sideQuestionRecordLifetime: TimeInterval = 30 * 24 * 3600
+
+    /// `~/Library/Application Support/Ensemble/side-question-copies.json` in the app; nothing for the preview engine or
+    /// outside an app bundle (test runners), so those never write the app's list.
+    nonisolated static func defaultSideQuestionRecordURL(isPreview: Bool, bundle: Bundle = .main) -> URL? {
+        guard !isPreview, bundle.bundleURL.pathExtension == "app" else { return nil }
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return base.appendingPathComponent("Ensemble/side-question-copies.json")
+    }
+
+    /// The copies remembered on disk.
+    func sideQuestionCopyRecords() -> [SideQuestionCopyRecord] {
+        guard let url = sideQuestionRecordURL, let data = try? Data(contentsOf: url) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return (try? decoder.decode([SideQuestionCopyRecord].self, from: data)) ?? []
+    }
+
+    private func writeSideQuestionCopyRecords(_ records: [SideQuestionCopyRecord]) {
+        guard let url = sideQuestionRecordURL else { return }
+        do {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            try encoder.encode(records).write(to: url, options: .atomic)
+        } catch {
+            lastError = "Could not save the list of side question copies: \(error.localizedDescription)"
+        }
+    }
+
+    func rememberSideQuestionCopy(_ id: String, source: String) {
+        var records = sideQuestionCopyRecords().filter { $0.id != id }
+        records.append(SideQuestionCopyRecord(id: id, sourceSessionID: source, created: Date()))
+        writeSideQuestionCopyRecords(records)
+    }
+
+    func forgetSideQuestionCopy(_ id: String) {
+        let records = sideQuestionCopyRecords()
+        guard records.contains(where: { $0.id == id }) else { return }
+        writeSideQuestionCopyRecords(records.filter { $0.id != id })
+    }
+
+    /// Before the first session list: keeps copies left by an earlier run out of the sidebar.
+    func hideLeftoverSideQuestionCopies() {
+        hiddenSessionIDs.formUnion(sideQuestionCopyRecords().map(\.id))
+    }
+
+    /// After the first session list: deletes the copies left by an earlier run. Only sessions whose id is on the list
+    /// of copies Ensemble made itself are touched, and a kept copy is taken off that list before it becomes a normal
+    /// session. A copy the engines do not list stays on the list (its engine may be offline) until it is too old.
+    func deleteLeftoverSideQuestionCopies() async {
+        let inUse = Set(sideQuestions.values.compactMap(\.forkSessionID))
+        let now = Date()
+        for record in sideQuestionCopyRecords() where !inUse.contains(record.id) {
+            if let session = byID[record.id], session.info.parentID == nil {
+                do {
+                    try await engine.deleteSession(record.id)
+                    removeHiddenSession(record.id)
+                } catch {
+                    // Stays hidden and listed; the next start tries again.
+                }
+            } else if now.timeIntervalSince(record.created) > Self.sideQuestionRecordLifetime {
+                forgetSideQuestionCopy(record.id)
+                hiddenSessionIDs.remove(record.id)
+            }
         }
     }
 }

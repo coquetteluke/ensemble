@@ -55,11 +55,17 @@ public final class SessionStore {
     /// The launch-time check of every session's permission rules (tests await it).
     @ObservationIgnored var permissionSyncTask: Task<Void, Never>?
     @ObservationIgnored var queueRuntime: [String: QueueRuntime] = [:]
+    /// Where side questions' hidden copies are remembered until deleted or kept, so copies left by a quit app are
+    /// deleted at the next start. Nil remembers nothing (previews, test runners).
+    @ObservationIgnored public var sideQuestionRecordURL: URL?
+    /// The start-time deletion of copies left by an earlier run (tests await it).
+    @ObservationIgnored var sideQuestionCleanupTask: Task<Void, Never>?
 
     private enum EditableField: Hashable { case title, archived, model }
 
     public init(engine: any OpenCodeAPI) {
         self.engine = engine
+        self.sideQuestionRecordURL = Self.defaultSideQuestionRecordURL(isPreview: engine is PreviewEngine)
     }
 
     /// True when the store runs on sample data instead of a real engine.
@@ -78,7 +84,9 @@ public final class SessionStore {
         } catch {
             lastError = "Engine not reachable: \(error.localizedDescription)"
         }
+        hideLeftoverSideQuestionCopies()
         await reloadSessions()
+        sideQuestionCleanupTask = Task { [weak self] in await self?.deleteLeftoverSideQuestionCopies() }
         async let models = try? engine.models()
         async let providers = try? engine.providers()
         async let connectors = try? engine.connectors()
