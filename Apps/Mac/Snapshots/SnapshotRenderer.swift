@@ -283,6 +283,7 @@ enum SnapshotRenderer {
         written += SafetyCheckSnapshots.render(to: outputDirectory, zoom: zoom)
         written += SwarmSnapshots.render(to: outputDirectory, zoom: zoom)
         written += AgentToolsSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += ModelPickerSnapshots.render(to: outputDirectory, zoom: zoom)
 
         print("Rendered \(written.count) snapshots:")
         for path in written { print(path) }

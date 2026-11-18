@@ -299,6 +299,17 @@ struct ClaudeCodeLaunchTests {
         #expect(ClaudeModels.contextLimit(for: "haiku", observed: [:]) == 1_000_000)
         #expect(ClaudeModels.contextLimit(for: "sonnet", observed: ["claude-sonnet-5-5": 400_000]) == 400_000)
         #expect(ClaudeModels.contextLimit(for: "opus[1m]", observed: ["claude-opus-5-5": 200_000]) == 1_000_000)
+        // Every current model has a 1M window with its plain id; the older 4.6 models and Haiku 4.5 have 200k.
+        for id in ["opus", "sonnet", "haiku", "fable", "claude-fable-5-2", "claude-opus-5-5"] {
+            #expect(ClaudeModels.contextLimit(for: id, observed: [:]) == 1_000_000)
+        }
+        #expect(ClaudeModels.contextLimit(for: "claude-sonnet-4-6", observed: [:]) == 200_000)
+        #expect(ClaudeModels.contextLimit(for: "claude-sonnet-4-6[1m]", observed: [:]) == 1_000_000)
+        #expect(ClaudeModels.contextLimit(for: "claude-haiku-4-5-20251001", observed: [:]) == 200_000)
+        #expect(ClaudeModels.contextLimit(for: "claude-unknown-9", observed: [:]) == nil)
+        // One entry per current model: no separate 200k and 1M entries.
+        #expect(ClaudeModels.catalog.map(\.id) == ["opus", "claude-fable-5-2", "sonnet", "haiku", "fable"])
+        #expect(!ClaudeModels.catalog.contains { $0.id.hasSuffix("[1m]") })
         #expect(!ClaudeSessionIDs.isChild("0b9c2f1e-0000-4000-8000-000000000000"))
         #expect(ClaudeSessionIDs.toolUseID(of: "root.toolu_1") == "toolu_1")
     }

@@ -17,6 +17,8 @@ struct ComposerView: View {
     var snapshotDictation: DictationController?
     /// The status line has no room for its "Work in a copy" switch, so the More menu offers it (`StatusLine`).
     var worktreeSwitchInMore = false
+    /// Snapshots draw the "start a new session with this model" bar.
+    var snapshotModelOffer: ModelChangeOffer?
 
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
@@ -51,6 +53,12 @@ struct ComposerView: View {
                     sendNow: store.sendNowBehavior(for: session.id),
                     onSendNow: { message in Task { await store.sendNow(message.id, in: session.id) } },
                     onEdit: edit, onCancel: { store.cancelQueued($0.id, in: session.id) })
+            }
+            if let offer = snapshotModelOffer ?? ModelChangeOffers.shared.bySession[session.id] {
+                ModelChangeOfferBar(
+                    offer: offer,
+                    onStart: { Task { await ModelSwitcher.accept(offer, store: store, window: window) } },
+                    onCancel: { ModelSwitcher.decline(offer) })
             }
             composerBox
         }
@@ -459,9 +467,10 @@ struct ComposerView: View {
         .accessibilityLabel("Model")
         .accessibilityValue(name)
         .popover(isPresented: $showModelMenu, arrowEdge: .bottom) {
-            ModelMenuContent(models: store.models, current: session.info.model, billing: modelBilling) { ref in
+            ModelPickerView(models: store.models, billing: modelBilling, current: session.info.model,
+                            context: .init(store: store, session: session)) { ref in
                 showModelMenu = false
-                Task { await store.switchModel(ref, for: session.id) }
+                Task { await ModelSwitcher.pick(ref, session: session, store: store, window: window) }
             }
             .ensembleTheme()
         }

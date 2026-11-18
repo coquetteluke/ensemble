@@ -1060,11 +1060,12 @@ actor ClaudeEngineCore {
         var entries: [(id: String, name: String, levels: [String])] = []
         if let info {
             for model in info.models {
-                let name = model.value == "default" ? "Default (\(model.resolvedModel ?? "your setting"))" : model.displayName
+                // `default` is the model it resolves to; it carries that model's name so the picker shows it once.
+                let name = model.value == "default"
+                    ? info.models.first(where: { $0.value != "default" && $0.resolvedModel == model.resolvedModel })?.displayName
+                        ?? "Default (\(model.resolvedModel ?? "your setting"))"
+                    : model.displayName
                 entries.append((model.value, name, model.effortLevels))
-            }
-            for extra in ClaudeModels.catalog where extra.id.hasSuffix("[1m]") && !entries.contains(where: { $0.id == extra.id }) {
-                entries.append((extra.id, extra.name, ClaudeModels.effortLevels))
             }
         } else {
             entries = ClaudeModels.catalog.map { ($0.id, $0.name, ClaudeModels.effortLevels) }
