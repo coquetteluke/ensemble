@@ -150,14 +150,21 @@ public struct Theme: Sendable {
         contextBuffer: Color(hex: 0x8C8A86)
     )
 
-    /// System font at `size` points times the zoom.
+    /// Interface font at `size` points times the zoom: Inter for the default design (see
+    /// `EnsembleFonts`), the system fonts for `.monospaced` (SF Mono) and the other designs.
     public func font(size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> Font {
-        .system(size: size * scale, weight: weight, design: design)
+        switch design {
+        case .default:
+            EnsembleFonts.register()
+            return .custom(EnsembleFonts.interface, fixedSize: size * scale).weight(weight)
+        default:
+            return .system(size: size * scale, weight: weight, design: design)
+        }
     }
 
-    /// Font for what an agent writes: New York, the system serif. See `MessageType`.
+    /// Font for what an agent writes: Ensemble Serif, at the zoom. See `MessageType`.
     public func messageFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: MessageType.size(size) * scale, weight: weight, design: .serif)
+        MessageType.font(size: size * scale, weight: weight)
     }
 
     /// Letter spacing for agent text at `size` (the interface size passed to `messageFont`).
@@ -183,14 +190,20 @@ public struct Theme: Sendable {
     }
 }
 
-/// How agent text is set. Agents write in New York, the system serif; everything else uses the
-/// system sans. New York looks small and tight next to SF Pro at the same point size, so agent
-/// text is drawn 7% larger, with 2% letter spacing and lines about 1.7 times the type size apart.
-/// Shared by the Mac app and the iPhone remote so both read the same.
+/// How agent text is set. Agents write in Ensemble Serif (see `EnsembleFonts` and
+/// tools/fonts/README.md); everything else uses Inter. It is drawn at the interface size with
+/// letters set a little closer (1.2%), like the reference app's serif, and lines about 1.6 times
+/// the type size apart. Shared by the Mac app and the iPhone remote so both read the same.
 public enum MessageType {
-    public static let scale: CGFloat = 1.07
-    public static let trackingRatio: CGFloat = 0.02
-    public static let lineSpacingRatio: CGFloat = 0.42
+    public static let scale: CGFloat = 1.0
+    public static let trackingRatio: CGFloat = -0.012
+    public static let lineSpacingRatio: CGFloat = 0.36
+
+    /// Ensemble Serif at `size` points (already zoomed or scaled for Dynamic Type), not scaled again.
+    public static func font(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        EnsembleFonts.register()
+        return .custom(EnsembleFonts.message, fixedSize: self.size(size)).weight(weight)
+    }
 
     /// The serif size that matches interface text of `size` points.
     public static func size(_ size: CGFloat) -> CGFloat { size * scale }
@@ -198,16 +211,6 @@ public enum MessageType {
     public static func lineSpacing(_ size: CGFloat) -> CGFloat { size * scale * lineSpacingRatio }
 }
 
-/// Type sizes for interface text, which uses the system font (SF Pro). Agent text uses `MessageType`.
-public enum EFont {
-    public static let body = Font.system(size: 13)
-    public static let bodyMedium = Font.system(size: 13, weight: .medium)
-    public static let transcript = Font.system(size: 14)
-    public static let small = Font.system(size: 12)
-    public static let caption = Font.system(size: 11.5)
-    public static let mono = Font.system(size: 12.5, design: .monospaced)
-    public static let monoSmall = Font.system(size: 12, design: .monospaced)
-}
 
 public extension Color {
     /// `Color(hex: 0x8B7CF6)`.
@@ -270,6 +273,8 @@ private struct ThemeProvider: ViewModifier {
         theme.scale = zoom
         return content
             .environment(\.theme, theme)
+            // Text that sets no font of its own (form labels, alerts inside the window) uses Inter too.
+            .font(theme.font(size: 13))
             .tint(scheme == .dark ? Theme.dark.accent : Theme.light.accent)
     }
 }

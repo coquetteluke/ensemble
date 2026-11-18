@@ -79,7 +79,7 @@ struct AgentMessageText: View {
 
     var body: some View {
         Text(TranscriptRow.markdown(text))
-            .font(.system(size: MessageType.size(size), design: .serif))
+            .font(MessageType.font(size: size))
             .tracking(MessageType.tracking(size))
             .lineSpacing(MessageType.lineSpacing(size))
             .foregroundStyle(RemoteTheme.primaryText)

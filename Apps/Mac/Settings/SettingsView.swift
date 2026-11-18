@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import EnsembleKit
 
@@ -83,6 +84,62 @@ struct ModelsSettingsView: View {
 }
 
 /// Appearance and default permission mode.
+/// Folders whose own agent settings, hooks and MCP servers may load (see `WorkspaceTrust`).
+struct TrustedFoldersSection: View {
+    private let trust = WorkspaceTrust.shared
+    @State private var error: String?
+
+    var body: some View {
+        Section {
+            ForEach(trust.folders, id: \.self) { folder in
+                HStack(spacing: 8) {
+                    Image(systemName: "folder")
+                        .foregroundStyle(.secondary)
+                    Text(Self.display(folder))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(folder)
+                    Spacer(minLength: 0)
+                    Button("Remove") { run { try trust.revoke(folder) } }
+                }
+            }
+            Button("Add Folder\u{2026}", action: addFolder)
+            if let error {
+                Text(error).foregroundStyle(.red)
+            }
+        } header: {
+            Text("Trusted folders")
+        } footer: {
+            Text("Agents load a trusted folder's own settings, hooks and MCP servers. Elsewhere they run with your settings only, and Gemini does not start.")
+        }
+    }
+
+    private func addFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Trust"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        run { try trust.trust(url.path) }
+    }
+
+    private func run(_ change: () throws -> Void) {
+        do {
+            try change()
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    /// The path with the home folder shown as ~.
+    static func display(_ path: String) -> String {
+        let home = NSHomeDirectory()
+        return path == home ? "~" : path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
+    }
+}
+
 struct GeneralSettingsView: View {
     let store: SessionStore
     @AppStorage("appearance") private var appearance = AppearanceSetting.dark.rawValue
@@ -100,6 +157,7 @@ struct GeneralSettingsView: View {
                     Text(mode.label).tag(mode.rawValue)
                 }
             }
+            TrustedFoldersSection()
         }
         .formStyle(.grouped)
         .zoomedForm()
