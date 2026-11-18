@@ -1,6 +1,74 @@
+import CryptoKit
 import Foundation
 import Security
 import Synchronization
+
+/// Mutual challenge-response so the pairing token never travels over the wire.
+///
+/// 1. On connect the Mac sends a random `serverNonce` (`challenge`).
+/// 2. The phone picks a random `clientNonce` and sends
+///    `HMAC-SHA256(token, serverNonce || clientNonce || "ensemble-client")` with it (`hello`).
+/// 3. The Mac checks that proof in constant time and answers with
+///    `HMAC-SHA256(token, clientNonce || serverNonce || "ensemble-server")` (`welcome`).
+/// 4. The phone checks the Mac's proof before it trusts anything the Mac sends.
+///
+/// The HMAC key is the token's UTF-8 bytes. Nonces are 32 random bytes, base64url on the wire.
+public enum RemoteHandshake {
+    public static let nonceByteCount = 32
+    static let clientLabel = Data("ensemble-client".utf8)
+    static let serverLabel = Data("ensemble-server".utf8)
+
+    /// 32 bytes from the system CSPRNG.
+    public static func makeNonce() -> Data {
+        var bytes = [UInt8](repeating: 0, count: nonceByteCount)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
+        return Data(bytes)
+    }
+
+    public static func clientProof(token: String, serverNonce: Data, clientNonce: Data) -> Data {
+        mac(token, serverNonce + clientNonce + clientLabel)
+    }
+
+    public static func serverProof(token: String, serverNonce: Data, clientNonce: Data) -> Data {
+        mac(token, clientNonce + serverNonce + serverLabel)
+    }
+
+    /// Constant-time check of the phone's proof.
+    public static func isValidClientProof(_ proof: Data, token: String, serverNonce: Data, clientNonce: Data) -> Bool {
+        HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: serverNonce + clientNonce + clientLabel, using: key(token))
+    }
+
+    /// Constant-time check of the Mac's proof.
+    public static func isValidServerProof(_ proof: Data, token: String, serverNonce: Data, clientNonce: Data) -> Bool {
+        HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: clientNonce + serverNonce + serverLabel, using: key(token))
+    }
+
+    /// A nonce or proof as base64url without padding.
+    public static func encode(_ data: Data) -> String {
+        data.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+
+    /// Reads base64url; `nil` when it is not valid or not `expectedCount` bytes long.
+    public static func decode(_ text: String, expectedCount: Int) -> Data? {
+        guard text.count <= 128 else { return nil }
+        var s = text.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        while s.count % 4 != 0 { s.append("=") }
+        guard let data = Data(base64Encoded: s), data.count == expectedCount else { return nil }
+        return data
+    }
+
+    private static func key(_ token: String) -> SymmetricKey {
+        SymmetricKey(data: Data(token.utf8))
+    }
+
+    private static func mac(_ token: String, _ message: Data) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(for: message, using: key(token)))
+    }
+}
 
 /// Pairing token helpers.
 public enum RemoteToken {

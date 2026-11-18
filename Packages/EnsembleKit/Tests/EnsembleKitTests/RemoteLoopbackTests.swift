@@ -1,5 +1,7 @@
 #if os(macOS)
 import Foundation
+import Network
+import Synchronization
 import Testing
 @testable import EnsembleKit
 
@@ -12,11 +14,14 @@ import Testing
         let port: Int
     }
 
-    func startServer(heartbeat: Duration = .seconds(15)) async throws -> Harness {
+    func startServer(heartbeat: Duration = .seconds(15), helloTimeout: Duration = .seconds(3), port: UInt16 = 0,
+                     maxDevices: Int = 8, maxPending: Int = 8, maxPendingPerAddress: Int = 3) async throws -> Harness {
         let host = DemoRemoteHost()
         let token = RemoteToken.generate()
-        let config = RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Loopback Mac",
-                                                heartbeatInterval: heartbeat, helloTimeout: .seconds(3))
+        let config = RemoteServer.Configuration(port: port, bindAddresses: ["127.0.0.1"], macName: "Loopback Mac",
+                                                heartbeatInterval: heartbeat, helloTimeout: helloTimeout,
+                                                maxDevices: maxDevices, maxPending: maxPending,
+                                                maxPendingPerAddress: maxPendingPerAddress)
         let server = RemoteServer(host: host, token: token, configuration: config)
         try await server.start()
         let port = try #require(await server.boundPort)
@@ -191,13 +196,151 @@ import Testing
         let url = try #require(RemotePairing.webSocketURL(host: "127.0.0.1", port: h.port))
         let task = URLSession.shared.webSocketTask(with: url)
         task.resume()
+        defer { task.cancel() }
+        // The Mac speaks first with a challenge; nothing else comes before a valid hello.
+        let first = try RemoteCoding.decode(RemoteServerFrame.self, from: Self.data(try await task.receive()))
+        guard case .challenge(let challenge) = first.message else {
+            Issue.record("Expected a challenge, got \(first.message.typeName)")
+            return
+        }
+        #expect(RemoteHandshake.decode(challenge.serverNonce, expectedCount: 32) != nil)
         // No hello: the server closes the socket after its 3 s hello timeout.
-        let closed = await withTaskGroup(of: Bool.self) { group in
+        #expect(await Self.receiveFails(task, within: .seconds(8)))
+    }
+
+    @Test func oldPhoneIsToldToUpdate() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let url = try #require(RemotePairing.webSocketURL(host: "127.0.0.1", port: h.port))
+        let task = URLSession.shared.webSocketTask(with: url)
+        task.resume()
+        defer { task.cancel() }
+        _ = try await task.receive() // challenge
+        // A version 1 hello carried the raw token.
+        let v1 = #"{"v":1,"id":"1","type":"hello","data":{"token":"x","protocolVersion":1,"deviceName":"Old","deviceID":"old"}}"#
+        try await task.send(.string(v1))
+        let reply = try RemoteCoding.decode(RemoteServerFrame.self, from: Self.data(try await task.receive()))
+        guard case .error(let error) = reply.message else {
+            Issue.record("Expected an error, got \(reply.message.typeName)")
+            return
+        }
+        #expect(error.code == .unsupportedVersion)
+        #expect(error.message.contains("Update Ensemble"))
+        #expect(reply.replyTo == "1")
+        #expect(await h.server.status.devices.isEmpty)
+    }
+
+    @Test func phoneRefusesAHostThatFailsTheServerProofAndNeverSendsTheToken() async throws {
+        let fake = try await FakeMac.start(host: "127.0.0.1", port: 0)
+        defer { fake.stop() }
+        let token = RemoteToken.generate()
+        let pairing = RemotePairing(hosts: ["127.0.0.1"], port: Int(fake.port), token: token, macName: "Fake")
+        let c = RemoteClient(pairing: pairing, deviceName: "Test Phone", deviceID: "test")
+        c.handshakeTimeout = .seconds(3)
+        c.start()
+        defer { c.stop() }
+
+        #expect(await eventually { !fake.log.all.isEmpty && (c.lastError ?? "").contains("could not prove") })
+        #expect(!c.state.isConnected)
+        #expect(c.sessions.isEmpty)
+        let sent = fake.log.all
+        #expect(sent.allSatisfy { !$0.contains(token) })
+        #expect(sent.first?.contains("\"proof\"") == true)
+    }
+
+    @Test func phoneSkipsTheFakeHostAndConnectsToTheRealMac() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        // Same port on another loopback address, answering with a bad proof.
+        let fake = try await FakeMac.start(host: "::1", port: UInt16(h.port))
+        defer { fake.stop() }
+        let c = client(h, hosts: ["::1", "127.0.0.1"])
+        c.start()
+        defer { c.stop() }
+        #expect(await eventually(.seconds(8)) { c.state == .connected(host: "127.0.0.1") })
+        #expect(fake.log.all.count >= 1)
+        #expect(await eventually { c.sessions.count == 4 })
+    }
+
+    @Test func stalledTCPConnectionIsClosedAtTheDeadline() async throws {
+        let h = try await startServer(helloTimeout: .seconds(1))
+        defer { Task { await h.server.stop() } }
+        // Plain TCP that never sends the WebSocket upgrade, so the server-side connection never becomes ready.
+        let raw = Self.silentTCP(port: h.port)
+        defer { raw.cancel() }
+        #expect(await eventually { await h.server.status.pendingConnections == 1 })
+        #expect(await Self.tcpClosedByServer(raw, within: .seconds(5)))
+        #expect(await eventually { await h.server.status.pendingConnections == 0 })
+    }
+
+    @Test func handshakeFloodCannotTakePairedPhoneSlots() async throws {
+        let h = try await startServer(helloTimeout: .seconds(2), maxDevices: 2, maxPending: 2, maxPendingPerAddress: 2)
+        defer { Task { await h.server.stop() } }
+        let phone = client(h)
+        phone.start()
+        defer { phone.stop() }
+        #expect(await eventually { phone.state.isConnected })
+
+        // Six silent connections: only two get a handshake slot, the rest are closed at once.
+        let flood = (0..<6).map { _ in Self.silentTCP(port: h.port) }
+        defer { flood.forEach { $0.cancel() } }
+        try await Task.sleep(for: .milliseconds(500))
+        let status = await h.server.status
+        #expect(status.pendingConnections == 2)
+        #expect(status.devices.count == 1)
+        #expect(phone.state.isConnected)
+
+        // Once the deadline clears them, a second phone gets in.
+        let second = client(h)
+        second.start()
+        defer { second.stop() }
+        #expect(await eventually(.seconds(10)) { second.state.isConnected })
+        #expect(await h.server.status.devices.count == 2)
+        #expect(phone.state.isConnected)
+    }
+
+    @Test func pendingLimitIsPerAddressToo() async throws {
+        let h = try await startServer(helloTimeout: .seconds(3), maxPending: 8, maxPendingPerAddress: 2)
+        defer { Task { await h.server.stop() } }
+        let flood = (0..<5).map { _ in Self.silentTCP(port: h.port) }
+        defer { flood.forEach { $0.cancel() } }
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(await h.server.status.pendingConnections == 2)
+    }
+
+    @Test func extraPhonesBeyondTheDeviceLimitAreTurnedAway() async throws {
+        let h = try await startServer(maxDevices: 1)
+        defer { Task { await h.server.stop() } }
+        let a = client(h)
+        a.start()
+        defer { a.stop() }
+        #expect(await eventually { a.state.isConnected })
+        let b = client(h)
+        b.start()
+        defer { b.stop() }
+        #expect(await eventually { (b.lastError ?? "").contains("most phones") })
+        #expect(!b.state.isConnected)
+        #expect(await h.server.status.devices.count == 1)
+    }
+
+    // MARK: Helpers
+
+    nonisolated static func data(_ message: URLSessionWebSocketTask.Message) -> Data {
+        switch message {
+        case .string(let s): Data(s.utf8)
+        case .data(let d): d
+        @unknown default: Data()
+        }
+    }
+
+    /// True when the next receive fails (the server closed the socket) within `timeout`.
+    nonisolated static func receiveFails(_ task: URLSessionWebSocketTask, within timeout: Duration) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
             group.addTask {
                 do { _ = try await task.receive(); return false } catch { return true }
             }
             group.addTask {
-                try? await Task.sleep(for: .seconds(8))
+                try? await Task.sleep(for: timeout)
                 return false
             }
             let first = await group.next() ?? false
@@ -205,7 +348,26 @@ import Testing
             task.cancel()
             return first
         }
-        #expect(closed)
+    }
+
+    nonisolated static func silentTCP(port: Int) -> NWConnection {
+        let c = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: UInt16(port))!, using: .tcp)
+        c.start(queue: .global())
+        return c
+    }
+
+    /// True when the server ends the TCP connection within `timeout`.
+    nonisolated static func tcpClosedByServer(_ connection: NWConnection, within timeout: Duration) async -> Bool {
+        let once = RemoteResumeOnce()
+        return await withCheckedContinuation { continuation in
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { _, _, isComplete, error in
+                if once.claim() { continuation.resume(returning: isComplete || error != nil) }
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                if once.claim() { continuation.resume(returning: false) }
+            }
+        }
     }
 
     @Test func stopClosesListener() async throws {
@@ -236,6 +398,86 @@ import Testing
             if case .user(_, let text, _)? = c.openTranscript?.items.last { return text == "hi" }
             return false
         })
+    }
+}
+/// Thread-safe list of the hello frames a fake host received.
+final class HelloLog: Sendable {
+    private let items = Mutex<[String]>([])
+    func append(_ text: String) { items.withLock { $0.append(text) } }
+    var all: [String] { items.withLock { $0 } }
+}
+
+/// A host that speaks the protocol but does not know the token: it sends a challenge, records the hello and
+/// answers with a made-up server proof.
+final class FakeMac: Sendable {
+    let listener: NWListener
+    let port: UInt16
+    let log: HelloLog
+
+    private init(listener: NWListener, port: UInt16, log: HelloLog) {
+        self.listener = listener
+        self.port = port
+        self.log = log
+    }
+
+    static func start(host: String, port: UInt16) async throws -> FakeMac {
+        let ws = NWProtocolWebSocket.Options()
+        ws.autoReplyPing = true
+        let params = NWParameters.tcp
+        params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
+        params.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port) ?? .any)
+        let listener = try NWListener(using: params)
+        let queue = DispatchQueue(label: "fake-mac")
+        let log = HelloLog()
+        listener.newConnectionHandler = { connection in
+            connection.stateUpdateHandler = { state in
+                if case .ready = state {
+                    send(.challenge(RemoteChallenge(serverNonce: RemoteHandshake.encode(RemoteHandshake.makeNonce()))), on: connection)
+                    receive(on: connection, log: log)
+                }
+            }
+            connection.start(queue: queue)
+        }
+        let once = RemoteResumeOnce()
+        let boundPort: UInt16 = try await withCheckedThrowingContinuation { continuation in
+            listener.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    if once.claim() { continuation.resume(returning: listener.port?.rawValue ?? 0) }
+                case .failed(let error), .waiting(let error):
+                    if once.claim() { continuation.resume(throwing: error) }
+                default:
+                    break
+                }
+            }
+            listener.start(queue: queue)
+        }
+        return FakeMac(listener: listener, port: boundPort, log: log)
+    }
+
+    func stop() {
+        listener.cancel()
+    }
+
+    private static func receive(on connection: NWConnection, log: HelloLog) {
+        connection.receiveMessage { content, _, _, error in
+            guard error == nil, let content else { return }
+            let text = String(decoding: content, as: UTF8.self)
+            log.append(text)
+            if let frame = try? RemoteCoding.decode(RemoteClientFrame.self, from: content), case .hello(let hello) = frame.message {
+                // A believable welcome, but the proof is random because this host has no token.
+                let welcome = RemoteWelcome(macName: "Fake", deviceID: hello.deviceID, appVersion: "9.9",
+                                            serverProof: RemoteHandshake.encode(RemoteHandshake.makeNonce()))
+                send(.welcome(welcome), replyTo: frame.id, on: connection)
+            }
+            receive(on: connection, log: log)
+        }
+    }
+
+    private static func send(_ message: RemoteServerMessage, replyTo: String? = nil, on connection: NWConnection) {
+        guard let data = try? RemoteCoding.encode(RemoteServerFrame(message, replyTo: replyTo)) else { return }
+        let context = NWConnection.ContentContext(identifier: "text", metadata: [NWProtocolWebSocket.Metadata(opcode: .text)])
+        connection.send(content: data, contentContext: context, isComplete: true, completion: .idempotent)
     }
 }
 #endif

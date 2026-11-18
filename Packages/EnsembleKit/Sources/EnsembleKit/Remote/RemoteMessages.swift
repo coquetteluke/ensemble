@@ -12,19 +12,24 @@ public enum RemoteWireKey: String, CodingKey {
 
 // MARK: - Phone to Mac
 
-/// First message on every connection.
+/// The phone's answer to the Mac's `challenge`. Carries a proof of the token, never the token itself
+/// (see `RemoteHandshake`).
 public struct RemoteHello: Codable, Hashable, Sendable {
-    public var token: String
     public var protocolVersion: Int
     public var deviceName: String
     /// Stable id for this phone, so the Mac can list devices.
     public var deviceID: String
+    /// 32 random bytes, base64url.
+    public var clientNonce: String
+    /// `HMAC-SHA256(token, serverNonce || clientNonce || "ensemble-client")`, base64url.
+    public var proof: String
 
-    public init(token: String, protocolVersion: Int = remoteProtocolVersion, deviceName: String, deviceID: String) {
-        self.token = token
+    public init(protocolVersion: Int = remoteProtocolVersion, deviceName: String, deviceID: String, clientNonce: String, proof: String) {
         self.protocolVersion = protocolVersion
         self.deviceName = deviceName
         self.deviceID = deviceID
+        self.clientNonce = clientNonce
+        self.proof = proof
     }
 }
 
@@ -158,6 +163,19 @@ public enum RemoteClientMessage: Hashable, Sendable {
 
 // MARK: - Mac to phone
 
+/// First message from the Mac on every connection, before anything else is said.
+public struct RemoteChallenge: Codable, Hashable, Sendable {
+    public var protocolVersion: Int
+    /// 32 random bytes, base64url, new for every connection.
+    public var serverNonce: String
+
+    public init(protocolVersion: Int = remoteProtocolVersion, serverNonce: String) {
+        self.protocolVersion = protocolVersion
+        self.serverNonce = serverNonce
+    }
+}
+
+/// The Mac accepted the phone's proof. The phone must check `serverProof` before trusting anything else.
 public struct RemoteWelcome: Codable, Hashable, Sendable {
     public var protocolVersion: Int
     public var macName: String
@@ -165,12 +183,15 @@ public struct RemoteWelcome: Codable, Hashable, Sendable {
     public var deviceID: String
     /// Ensemble version on the Mac.
     public var appVersion: String
+    /// `HMAC-SHA256(token, clientNonce || serverNonce || "ensemble-server")`, base64url.
+    public var serverProof: String
 
-    public init(protocolVersion: Int = remoteProtocolVersion, macName: String, deviceID: String, appVersion: String) {
+    public init(protocolVersion: Int = remoteProtocolVersion, macName: String, deviceID: String, appVersion: String, serverProof: String) {
         self.protocolVersion = protocolVersion
         self.macName = macName
         self.deviceID = deviceID
         self.appVersion = appVersion
+        self.serverProof = serverProof
     }
 }
 
@@ -178,6 +199,8 @@ private struct RemoteRoomsPayload: Codable { var rooms: [RemoteRoom] }
 
 /// Everything the Mac sends the phone.
 public enum RemoteServerMessage: Hashable, Sendable {
+    /// Sent once, right after the connection opens.
+    case challenge(RemoteChallenge)
     case welcome(RemoteWelcome)
     case hub(RemoteHubSnapshot)
     case transcript(RemoteTranscript)
@@ -190,6 +213,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
 
     public var typeName: String {
         switch self {
+        case .challenge: "challenge"
         case .welcome: "welcome"
         case .hub: "hub"
         case .transcript: "transcript"
@@ -204,6 +228,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
     public func encode(into c: inout KeyedEncodingContainer<RemoteWireKey>) throws {
         try c.encode(typeName, forKey: .type)
         switch self {
+        case .challenge(let p): try c.encode(p, forKey: .data)
         case .welcome(let p): try c.encode(p, forKey: .data)
         case .hub(let p): try c.encode(p, forKey: .data)
         case .transcript(let p): try c.encode(p, forKey: .data)
@@ -218,6 +243,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
     public static func decode(from c: KeyedDecodingContainer<RemoteWireKey>) throws -> RemoteServerMessage {
         let type = try c.decode(String.self, forKey: .type)
         switch type {
+        case "challenge": return .challenge(try c.decode(RemoteChallenge.self, forKey: .data))
         case "welcome": return .welcome(try c.decode(RemoteWelcome.self, forKey: .data))
         case "hub": return .hub(try c.decode(RemoteHubSnapshot.self, forKey: .data))
         case "transcript": return .transcript(try c.decode(RemoteTranscript.self, forKey: .data))

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import EnsembleKit
@@ -13,7 +14,7 @@ import Testing
     @Test func clientMessagesRoundTrip() throws {
         let room = RemoteDemoData.IDs.roomID
         let messages: [RemoteClientMessage] = [
-            .hello(RemoteHello(token: "t0k3n", deviceName: "Test iPhone", deviceID: "dev-1")),
+            .hello(RemoteHello(deviceName: "Test iPhone", deviceID: "dev-1", clientNonce: "bm9uY2U", proof: "cHJvb2Y")),
             .hubSnapshot,
             .openSession(sessionID: "s1"),
             .closeSession(sessionID: "s1"),
@@ -52,7 +53,8 @@ import Testing
             .usageSummary(summary: data.usage),
         ]
         var messages: [RemoteServerMessage] = [
-            .welcome(RemoteWelcome(macName: "Test Mac", deviceID: "dev-1", appVersion: "0.1.0")),
+            .challenge(RemoteChallenge(serverNonce: RemoteHandshake.encode(RemoteHandshake.makeNonce()))),
+            .welcome(RemoteWelcome(macName: "Test Mac", deviceID: "dev-1", appVersion: "0.1.0", serverProof: "cHJvb2Y")),
             .hub(RemoteHubSnapshot(sessions: data.sessions, permissions: data.permissions)),
             .transcript(transcript),
             .rooms(data.rooms),
@@ -77,6 +79,65 @@ import Testing
 
         let target = try JSONSerialization.jsonObject(with: JSONEncoder().encode(RemoteTarget.session("s1"))) as? [String: String]
         #expect(target == ["kind": "session", "id": "s1"])
+    }
+
+    // MARK: Challenge-response
+
+    @Test func proofsVerifyOnlyWithTheRightTokenAndNonces() {
+        let token = RemoteToken.generate()
+        let server = RemoteHandshake.makeNonce()
+        let client = RemoteHandshake.makeNonce()
+        #expect(server.count == 32 && server != client)
+
+        let clientProof = RemoteHandshake.clientProof(token: token, serverNonce: server, clientNonce: client)
+        let serverProof = RemoteHandshake.serverProof(token: token, serverNonce: server, clientNonce: client)
+        #expect(clientProof.count == 32)
+        #expect(RemoteHandshake.isValidClientProof(clientProof, token: token, serverNonce: server, clientNonce: client))
+        #expect(RemoteHandshake.isValidServerProof(serverProof, token: token, serverNonce: server, clientNonce: client))
+
+        // Wrong token, swapped or fresh nonces, and one proof used as the other all fail.
+        #expect(!RemoteHandshake.isValidClientProof(clientProof, token: RemoteToken.generate(), serverNonce: server, clientNonce: client))
+        #expect(!RemoteHandshake.isValidClientProof(clientProof, token: token, serverNonce: client, clientNonce: server))
+        #expect(!RemoteHandshake.isValidClientProof(clientProof, token: token, serverNonce: RemoteHandshake.makeNonce(), clientNonce: client))
+        #expect(!RemoteHandshake.isValidServerProof(clientProof, token: token, serverNonce: server, clientNonce: client))
+        #expect(!RemoteHandshake.isValidClientProof(serverProof, token: token, serverNonce: server, clientNonce: client))
+        #expect(clientProof != serverProof)
+    }
+
+    @Test func proofMatchesTheSpecifiedHMAC() {
+        // HMAC-SHA256(token, serverNonce || clientNonce || "ensemble-client"), computed independently.
+        let token = "test-token"
+        let server = Data(repeating: 1, count: 32)
+        let client = Data(repeating: 2, count: 32)
+        let expected = Data(HMAC<SHA256>.authenticationCode(for: server + client + Data("ensemble-client".utf8),
+                                                            using: SymmetricKey(data: Data(token.utf8))))
+        #expect(RemoteHandshake.clientProof(token: token, serverNonce: server, clientNonce: client) == expected)
+        let expectedServer = Data(HMAC<SHA256>.authenticationCode(for: client + server + Data("ensemble-server".utf8),
+                                                                  using: SymmetricKey(data: Data(token.utf8))))
+        #expect(RemoteHandshake.serverProof(token: token, serverNonce: server, clientNonce: client) == expectedServer)
+    }
+
+    @Test func nonceEncodingRoundTripsAndChecksLength() {
+        let n = RemoteHandshake.makeNonce()
+        let text = RemoteHandshake.encode(n)
+        #expect(!text.contains("=") && !text.contains("+") && !text.contains("/"))
+        #expect(RemoteHandshake.decode(text, expectedCount: 32) == n)
+        #expect(RemoteHandshake.decode(text, expectedCount: 16) == nil)
+        #expect(RemoteHandshake.decode("not base64 !!", expectedCount: 32) == nil)
+        #expect(RemoteHandshake.decode(String(repeating: "A", count: 400), expectedCount: 32) == nil)
+    }
+
+    @Test func helloNeverCarriesTheToken() throws {
+        let token = RemoteToken.generate()
+        let server = RemoteHandshake.makeNonce()
+        let client = RemoteHandshake.makeNonce()
+        let proof = RemoteHandshake.clientProof(token: token, serverNonce: server, clientNonce: client)
+        let hello = RemoteClientFrame(.hello(RemoteHello(deviceName: "p", deviceID: "d", clientNonce: RemoteHandshake.encode(client),
+                                                         proof: RemoteHandshake.encode(proof))), id: "1")
+        let text = String(decoding: try RemoteCoding.encode(hello), as: UTF8.self)
+        #expect(!text.contains(token))
+        #expect(!text.contains("\"token\""))
+        #expect(remoteProtocolVersion == 2 && remoteMinimumProtocolVersion == 2)
     }
 
     @Test func unknownTypeIsReported() throws {

@@ -141,6 +141,9 @@ public final class RemoteClient {
         var attempt = 0
         while isCurrent(gen) {
             var hadConnection = false
+            // A refusal arrives before the host has proved anything, so a fake host could send one. Keep trying
+            // the other hosts and only give up when none of them lets this phone in.
+            var refusal: RemoteError?
             for host in pairing.hosts {
                 guard isCurrent(gen) else { return }
                 guard let url = RemotePairing.webSocketURL(host: host, port: pairing.port) else { continue }
@@ -151,8 +154,13 @@ public final class RemoteClient {
                 } catch let error as RemoteError where error.code == .unauthorized || error.code == .unsupportedVersion {
                     guard isCurrent(gen) else { return }
                     lastError = error.message
-                    state = .rejected(error.message)
-                    return
+                    refusal = error
+                    continue
+                } catch let error as RemoteError where error.code == .macNotVerified {
+                    // Refuse this host: it does not know the pairing token.
+                    guard isCurrent(gen) else { return }
+                    lastError = "\(host): \(error.message)"
+                    continue
                 } catch {
                     guard isCurrent(gen) else { return }
                     lastError = "\(host): \(Self.describe(error))"
@@ -176,6 +184,10 @@ public final class RemoteClient {
                 break
             }
             guard isCurrent(gen) else { return }
+            if !hadConnection, let refusal {
+                state = .rejected(refusal.message)
+                return
+            }
             let delay = hadConnection ? 1 : min(maxBackoffSeconds, pow(2, Double(attempt)))
             attempt += 1
             state = .waiting(retryIn: Int(delay.rounded(.up)))
@@ -194,11 +206,37 @@ public final class RemoteClient {
         }
         defer { timer.cancel() }
         do {
-            let hello = RemoteHello(token: pairing.token, deviceName: deviceName, deviceID: deviceID)
+            // 1. The Mac speaks first with a fresh nonce.
+            let first = try Self.decode(try await task.receive())
+            let challenge: RemoteChallenge
+            switch first.message {
+            case .challenge(let c): challenge = c
+            case .error(let error): throw error
+            default: throw RemoteError(.badRequest, "The Mac did not start the pairing check")
+            }
+            guard first.version >= remoteMinimumProtocolVersion, challenge.protocolVersion >= remoteMinimumProtocolVersion else {
+                throw RemoteError(.unsupportedVersion, "Update Ensemble on your Mac to connect from this iPhone.")
+            }
+            guard let serverNonce = RemoteHandshake.decode(challenge.serverNonce, expectedCount: RemoteHandshake.nonceByteCount) else {
+                throw RemoteError(.macNotVerified, "The host sent an invalid pairing challenge.")
+            }
+
+            // 2. Prove the token without sending it.
+            let clientNonce = RemoteHandshake.makeNonce()
+            let proof = RemoteHandshake.clientProof(token: pairing.token, serverNonce: serverNonce, clientNonce: clientNonce)
+            let hello = RemoteHello(deviceName: deviceName, deviceID: deviceID,
+                                    clientNonce: RemoteHandshake.encode(clientNonce), proof: RemoteHandshake.encode(proof))
             try await task.send(.string(try Self.encode(RemoteClientFrame(.hello(hello), id: nextRequestID()))))
+
+            // 3. The Mac must prove it knows the token too, before anything it says is trusted.
             let reply = try Self.decode(try await task.receive())
             switch reply.message {
             case .welcome(let welcome):
+                guard let serverProof = RemoteHandshake.decode(welcome.serverProof, expectedCount: 32),
+                      RemoteHandshake.isValidServerProof(serverProof, token: pairing.token, serverNonce: serverNonce,
+                                                         clientNonce: clientNonce) else {
+                    throw RemoteError(.macNotVerified, "This host could not prove it is your Mac, so the iPhone did not connect.")
+                }
                 macName = welcome.macName
                 macAppVersion = welcome.appVersion
                 return task
@@ -344,7 +382,7 @@ public final class RemoteClient {
             usage = u
         case .update(let u):
             apply(u)
-        case .welcome, .ack, .error:
+        case .challenge, .welcome, .ack, .error:
             break
         }
         if let re = frame.replyTo {

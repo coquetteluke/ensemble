@@ -4,8 +4,12 @@ import Network
 import Synchronization
 
 /// The Mac side of the iPhone remote: a WebSocket server (Network.framework) that listens on localhost and
-/// the Tailscale addresses only, checks the pairing token on `hello`, and relays a `RemoteHost` to every
-/// paired phone.
+/// the Tailscale addresses only, checks the phone's proof of the pairing token (`RemoteHandshake`, the token
+/// itself is never sent), proves itself back, and relays a `RemoteHost` to every paired phone.
+///
+/// Connections that have not proved the token yet are limited separately (in total and per address) and are
+/// closed when the hello timeout runs out, whatever state they are in, so they can never use up the slots of
+/// paired phones.
 public actor RemoteServer {
     public struct Configuration: Sendable {
         /// 0 picks a free port (tests). Several addresses with port 0 each get their own port.
@@ -15,22 +19,34 @@ public actor RemoteServer {
         public var macName: String
         public var appVersion: String
         public var heartbeatInterval: Duration
+        /// A connection that has not proved the token this long after it was accepted is closed.
         public var helloTimeout: Duration
-        public var maxConnections: Int
-        /// Largest message a phone may send.
+        /// Paired phones connected at once.
+        public var maxDevices: Int
+        /// Connections still in the handshake, in total. Kept apart from `maxDevices`.
+        public var maxPending: Int
+        /// Connections still in the handshake from one address.
+        public var maxPendingPerAddress: Int
+        /// Largest message a paired phone may send.
         public var maxMessageBytes: Int
+        /// Largest message before the handshake is done (the hello is a few hundred bytes).
+        public var maxPendingMessageBytes: Int
 
         public init(port: UInt16 = UInt16(remoteDefaultPort), bindAddresses: [String] = ["127.0.0.1"], macName: String = "Mac",
                     appVersion: String = "0.1.0", heartbeatInterval: Duration = .seconds(15), helloTimeout: Duration = .seconds(10),
-                    maxConnections: Int = 16, maxMessageBytes: Int = 1 << 20) {
+                    maxDevices: Int = 8, maxPending: Int = 8, maxPendingPerAddress: Int = 3,
+                    maxMessageBytes: Int = 1 << 20, maxPendingMessageBytes: Int = 4096) {
             self.port = port
             self.bindAddresses = bindAddresses
             self.macName = macName
             self.appVersion = appVersion
             self.heartbeatInterval = heartbeatInterval
             self.helloTimeout = helloTimeout
-            self.maxConnections = maxConnections
+            self.maxDevices = maxDevices
+            self.maxPending = maxPending
+            self.maxPendingPerAddress = maxPendingPerAddress
             self.maxMessageBytes = maxMessageBytes
+            self.maxPendingMessageBytes = maxPendingMessageBytes
         }
     }
 
@@ -50,8 +66,10 @@ public actor RemoteServer {
         /// Addresses that could not be bound, with the reason.
         public var failedAddresses: [String: String]
         public var devices: [Device]
+        /// Connections still in the handshake.
+        public var pendingConnections: Int
 
-        public static let stopped = Status(running: false, listening: [], failedAddresses: [:], devices: [])
+        public static let stopped = Status(running: false, listening: [], failedAddresses: [:], devices: [], pendingConnections: 0)
     }
 
     public enum StartError: Error, LocalizedError {
@@ -73,6 +91,8 @@ public actor RemoteServer {
         let connectedAt: Date
         var ready = false
         var authenticated = false
+        /// Sent in the challenge; `nil` until the connection is ready.
+        var serverNonce: Data?
         var deviceID = ""
         var deviceName = ""
         var openSessions: Set<String> = []
@@ -174,7 +194,8 @@ public actor RemoteServer {
         Status(running: running,
                listening: config.bindAddresses.compactMap { a in listeningPorts[a].map { Self.display(a, $0) } },
                failedAddresses: failures,
-               devices: devices)
+               devices: devices,
+               pendingConnections: peers.values.count { !$0.authenticated })
     }
 
     /// Status now and after every change.
@@ -309,14 +330,26 @@ public actor RemoteServer {
 
     private func accept(_ connection: NWConnection) {
         let address = Self.remoteAddress(connection.endpoint)
-        guard running else { connection.cancel(); return }
-        if limiter.isBlocked(address) || peers.count >= config.maxConnections {
+        guard running, !limiter.isBlocked(address) else {
+            connection.cancel()
+            return
+        }
+        // Handshakes in progress get their own small budget, so they cannot crowd out paired phones.
+        let pending = peers.values.filter { !$0.authenticated }
+        if pending.count >= config.maxPending || pending.count(where: { $0.address == address }) >= config.maxPendingPerAddress {
             connection.cancel()
             return
         }
         let id = nextPeerID
         nextPeerID += 1
         peers[id] = Peer(id: id, connection: connection, address: address, connectedAt: Date(), lastSeen: Date())
+        // The deadline starts now, not when the WebSocket upgrade finishes: a client that opens TCP and never
+        // sends the upgrade request is closed too.
+        let timeout = config.helloTimeout
+        Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            await self?.expireIfUnauthenticated(id)
+        }
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
@@ -330,30 +363,31 @@ public actor RemoteServer {
             }
         }
         connection.start(queue: queue)
+        publishStatus()
     }
 
+    /// The WebSocket is open: send the challenge and start reading.
     private func peerReady(_ id: Int) {
         guard peers[id] != nil else { return }
+        let nonce = RemoteHandshake.makeNonce()
         peers[id]?.ready = true
         peers[id]?.lastSeen = Date()
+        peers[id]?.serverNonce = nonce
+        send(.challenge(RemoteChallenge(serverNonce: RemoteHandshake.encode(nonce))), replyTo: nil, to: id)
         receiveNext(id)
-        let timeout = config.helloTimeout
-        Task { [weak self] in
-            try? await Task.sleep(for: timeout)
-            await self?.expireIfUnauthenticated(id)
-        }
     }
 
     private func expireIfUnauthenticated(_ id: Int) {
         guard let p = peers[id], !p.authenticated else { return }
         p.connection.cancel()
         peers[id] = nil
+        publishStatus()
     }
 
     private func dropPeer(_ id: Int) {
         guard let p = peers.removeValue(forKey: id) else { return }
         p.connection.cancel()
-        if p.authenticated { publishStatus() }
+        publishStatus()
     }
 
     private func receiveNext(_ id: Int) {
@@ -388,6 +422,19 @@ public actor RemoteServer {
 
     private func handleFrame(_ id: Int, data: Data) async {
         guard let peer = peers[id] else { return }
+        if !peer.authenticated {
+            guard data.count <= config.maxPendingMessageBytes else {
+                peer.connection.cancel()
+                peers[id] = nil
+                publishStatus()
+                return
+            }
+            // Version 1 phones send the raw token in hello. Refuse them before reading anything else.
+            if let header = try? decoder.decode(RemoteFrameHeader.self, from: data), header.version < remoteMinimumProtocolVersion {
+                send(.error(RemoteError(.unsupportedVersion, Self.updateAppMessage)), replyTo: header.id, to: id, thenClose: true)
+                return
+            }
+        }
         let frame: RemoteClientFrame
         do {
             frame = try decoder.decode(RemoteClientFrame.self, from: data)
@@ -417,23 +464,34 @@ public actor RemoteServer {
         await handleRequest(id, message: frame.message, replyTo: frame.id)
     }
 
+    static let updateAppMessage = "Update Ensemble on your iPhone to connect to this Mac."
+
     private func handleHello(_ id: Int, hello: RemoteHello, replyTo: String?) {
-        guard let peer = peers[id] else { return }
-        guard RemoteToken.constantTimeEquals(hello.token, token) else {
+        guard let peer = peers[id], let serverNonce = peer.serverNonce else { return }
+        guard hello.protocolVersion >= remoteMinimumProtocolVersion else {
+            send(.error(RemoteError(.unsupportedVersion, Self.updateAppMessage)), replyTo: replyTo, to: id, thenClose: true)
+            return
+        }
+        guard let clientNonce = RemoteHandshake.decode(hello.clientNonce, expectedCount: RemoteHandshake.nonceByteCount),
+              let proof = RemoteHandshake.decode(hello.proof, expectedCount: 32),
+              clientNonce != serverNonce,
+              RemoteHandshake.isValidClientProof(proof, token: token, serverNonce: serverNonce, clientNonce: clientNonce) else {
             limiter.recordFailure(peer.address)
             send(.error(RemoteError(.unauthorized, "This phone is not paired with this Mac. Scan the pairing code again.")),
                  replyTo: replyTo, to: id, thenClose: true)
             return
         }
-        guard hello.protocolVersion >= remoteMinimumProtocolVersion else {
-            send(.error(RemoteError(.unsupportedVersion, "Update Ensemble on your iPhone.")), replyTo: replyTo, to: id, thenClose: true)
+        guard peers.values.count(where: { $0.authenticated }) < config.maxDevices else {
+            send(.error(RemoteError(.busy, "This Mac already has the most phones connected.")), replyTo: replyTo, to: id, thenClose: true)
             return
         }
         limiter.recordSuccess(peer.address)
         peers[id]?.authenticated = true
         peers[id]?.deviceID = String(hello.deviceID.prefix(128))
         peers[id]?.deviceName = String(hello.deviceName.prefix(128))
-        send(.welcome(RemoteWelcome(macName: config.macName, deviceID: hello.deviceID, appVersion: config.appVersion)),
+        let serverProof = RemoteHandshake.serverProof(token: token, serverNonce: serverNonce, clientNonce: clientNonce)
+        send(.welcome(RemoteWelcome(macName: config.macName, deviceID: hello.deviceID, appVersion: config.appVersion,
+                                    serverProof: RemoteHandshake.encode(serverProof))),
              replyTo: replyTo, to: id)
         publishStatus()
     }
@@ -458,7 +516,10 @@ public actor RemoteServer {
         guard let connection = peers[id]?.connection else { return }
         guard let data = try? encoder.encode(RemoteServerFrame(message, replyTo: replyTo)) else { return }
         Self.write(data, on: connection, thenClose: thenClose)
-        if thenClose { peers[id] = nil }
+        if thenClose {
+            peers[id] = nil
+            publishStatus()
+        }
     }
 
     private static func write(_ data: Data, on connection: NWConnection, thenClose: Bool) {

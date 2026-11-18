@@ -1,9 +1,10 @@
 import Foundation
 
 /// Version of the Mac/iPhone protocol. Bump when messages change incompatibly.
-public let remoteProtocolVersion = 1
-/// Oldest phone protocol version the Mac still accepts.
-public let remoteMinimumProtocolVersion = 1
+/// 2: challenge-response pairing check; the token is never sent.
+public let remoteProtocolVersion = 2
+/// Oldest protocol version either side accepts. Version 1 sent the raw token, so it is refused.
+public let remoteMinimumProtocolVersion = 2
 /// Port the Mac listens on unless the user picks another.
 public let remoteDefaultPort = 47823
 
@@ -335,6 +336,8 @@ public enum RemoteErrorCode: String, Codable, Sendable {
     case failed
     /// The Mac is not accepting more phones.
     case busy
+    /// The host could not prove it knows the pairing token, so the phone refused it. Never sent by a Mac.
+    case macNotVerified
 }
 
 public struct RemoteError: Codable, Hashable, Sendable, Error, LocalizedError {
