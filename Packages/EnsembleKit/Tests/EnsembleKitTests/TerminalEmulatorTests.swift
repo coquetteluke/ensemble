@@ -421,7 +421,8 @@ import Testing
     @Test func pasteIsBracketedWhenTheShellAsks() {
         #expect(TerminalInput.paste("ls\nexit\n", bracketed: false) == Array("ls\rexit\r".utf8))
         let bracketed = String(decoding: TerminalInput.paste("echo hi\u{1B}[201~; rm x\r\n", bracketed: true), as: UTF8.self)
-        #expect(bracketed == "\u{1B}[200~echo hi; rm x\r\u{1B}[201~")
+        // The ESC is dropped, so "[201~" is only text and can't end the bracket.
+        #expect(bracketed == "\u{1B}[200~echo hi[201~; rm x\r\u{1B}[201~")
     }
 
     @Test func mouseReports() {

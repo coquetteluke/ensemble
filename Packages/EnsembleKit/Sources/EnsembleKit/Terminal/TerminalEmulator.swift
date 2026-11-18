@@ -306,6 +306,9 @@ public final class TerminalEmulator {
         }
     }
 
+    /// Most scalars one cell keeps: a base character and its combining marks.
+    static let maxScalarsPerCell = 32
+
     /// A combining mark or other zero-width character joins the character before the cursor.
     private func appendCombining(_ scalar: Unicode.Scalar) {
         var column = pendingWrap ? cursorColumn : cursorColumn - 1
@@ -313,6 +316,9 @@ public final class TerminalEmulator {
         if screen[cursorRow].cells[column].width == 0, column > 0 { column -= 1 }
         let text = screen[cursorRow].cells[column].text
         guard !text.isEmpty, text != " " || scalar.properties.generalCategory == .nonspacingMark else { return }
+        // A cell holds at most `maxScalarsPerCell` scalars; extra marks are dropped (as xterm and iTerm2 do), so a
+        // stream of combining marks can't grow one cell without bound or make every append slower.
+        guard text.unicodeScalars.count < Self.maxScalarsPerCell else { return }
         let combined = text + String(Character(scalar))
         if combined.count == 1 { screen[cursorRow].cells[column].text = combined }
     }

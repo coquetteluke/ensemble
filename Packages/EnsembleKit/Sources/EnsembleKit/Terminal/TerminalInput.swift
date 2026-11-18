@@ -93,15 +93,25 @@ public enum TerminalInput {
     }
 
     /// Bytes for pasted text: line breaks become carriage returns (what Return sends), and when the program
-    /// turned on bracketed paste the text is wrapped so the shell inserts it instead of running it. Any
-    /// end-of-paste marker inside the text is removed, so pasted text can never end the bracket early.
+    /// turned on bracketed paste the text is wrapped so the shell inserts it instead of running it. Every
+    /// control character except tab and the line breaks is dropped first (ESC, C1 controls and DEL included),
+    /// as xterm and iTerm2 do, so pasted text can never end the bracket early or send escape sequences, even
+    /// with nested markers such as `ESC[20ESC[201~1~`.
     public static func paste(_ text: String, bracketed: Bool) -> [UInt8] {
-        var body = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
+        let lines = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
+        var body = String.UnicodeScalarView()
+        for scalar in lines.unicodeScalars where !isDroppedFromPaste(scalar) { body.append(scalar) }
         if bracketed {
-            body = body.replacingOccurrences(of: "\u{1B}[201~", with: "").replacingOccurrences(of: "\u{1B}[200~", with: "")
-            return Array("\u{1B}[200~".utf8) + Array(body.utf8) + Array("\u{1B}[201~".utf8)
+            return Array("\u{1B}[200~".utf8) + Array(String(body).utf8) + Array("\u{1B}[201~".utf8)
         }
-        return Array(body.utf8)
+        return Array(String(body).utf8)
+    }
+
+    /// C0 controls other than tab and carriage return, DEL, and C1 controls.
+    static func isDroppedFromPaste(_ scalar: Unicode.Scalar) -> Bool {
+        let value = scalar.value
+        if value == 0x09 || value == 0x0D { return false }
+        return value < 0x20 || value == 0x7F || (0x80...0x9F).contains(value)
     }
 
     public enum MouseButton: Int, Sendable {
