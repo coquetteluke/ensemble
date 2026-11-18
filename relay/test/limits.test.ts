@@ -147,65 +147,124 @@ describe("bad handshakes block an address", () => {
 
 describe("daily budget", () => {
   const nextMidnight = () => (Math.floor(Date.now() / 86_400_000) + 1) * 86_400;
+  /** Sets the stored counts, as if that much of the day had been used. */
   const prime = (mac: Mac, patch: { messages?: number; bytes?: number }) =>
-    runInDurableObject(stubOf(mac), async (inst: Mailbox) => {
+    runInDurableObject(stubOf(mac), async (inst: Mailbox, state) => {
       await inst.loadBudget();
       Object.assign(inst.budget, patch);
+      await state.storage.put("budget", inst.budget);
     });
-  const writes = (mac: Mac) => runInDurableObject(stubOf(mac), (inst: Mailbox) => inst.budgetWrites);
+  const stored = (mac: Mac) =>
+    runInDurableObject(stubOf(mac), (_i, state) => state.storage.get<{ messages: number; bytes: number; writes: number; lastFlush: number }>("budget"));
 
-  async function expectLimit(c: Client) {
-    expect(await c.next()).toEqual({ t: "limit", kind: "daily", resetsAt: nextMidnight() });
+  /** A pair ends with close 4029 and a reason carrying the reset time. Nothing is injected into the stream. */
+  async function expectPairEnded(c: Client) {
     expect(await c.closeCode()).toBe(4029);
+    expect(c.closed!.reason).toBe(`limit ${nextMidnight()}`);
+    expect(c.messages).toEqual([]);
   }
 
-  it("past 40,000 messages both sides get a limit frame and close 4029", async () => {
+  it("past 40,000 messages the pair ends with 4029 and the Mac is told on its control socket", async () => {
     const mac = await setup();
     const { phone, data } = await paired(mac);
     await prime(mac, { messages: DAILY_MESSAGES - 1 });
     phone.ws.send("last one");
     expect(await data.nextRaw()).toBe("last one");
     data.ws.send("over");
-    await expectLimit(phone);
-    await expectLimit(data);
+    await expectPairEnded(phone);
+    await expectPairEnded(data);
+    expect(await mac.host.next()).toEqual({ t: "limit", kind: "daily", resetsAt: nextMidnight() });
   });
 
-  it("past 200 MB both sides get a limit frame and close 4029", async () => {
+  it("past 200 MB the pair ends with 4029", async () => {
     const mac = await setup();
     const { phone, data } = await paired(mac);
     await prime(mac, { bytes: DAILY_BYTES - 10 });
     phone.ws.send(new Uint8Array(100));
-    await expectLimit(phone);
-    await expectLimit(data);
+    await expectPairEnded(phone);
+    await expectPairEnded(data);
   });
 
-  it("reconnecting does not reset the counters, even after eviction", async () => {
+  it("a waiting phone is told with a limit frame when the day is spent", async () => {
+    const mac = await setup();
+    const { phone, data } = await paired(mac);
+    const { phone: waiting } = await phoneWaiting(mac);
+    await prime(mac, { messages: DAILY_MESSAGES });
+    phone.ws.send("over");
+    await expectPairEnded(data);
+    expect(await waiting.next()).toEqual({ t: "limit", kind: "daily", resetsAt: nextMidnight() });
+    expect(await waiting.closeCode()).toBe(4029);
+  });
+
+  it("reconnecting does not reset the counters; the Mac is told once", async () => {
     const mac = await setup();
     const { phone, data } = await paired(mac);
     await prime(mac, { messages: DAILY_MESSAGES });
     phone.ws.send("over");
-    await expectLimit(phone);
-    await expectLimit(data);
+    await expectPairEnded(data);
+    expect((await mac.host.next()).t).toBe("limit");
 
     await evictDurableObject(stubOf(mac));
     const again = await phoneFrom(mac, "203.0.113.50");
     expect(await again.next()).toEqual({ t: "limit", kind: "daily", resetsAt: nextMidnight() });
     expect(await again.closeCode()).toBe(4029);
+    expect(await mac.host.quiet()).toBe(true);
   });
 
-  it("counters reach storage at most once a minute", async () => {
+  it("unwritten counts survive hibernation and reach storage with the alarm", async () => {
     const mac = await setup();
     const { phone, data } = await paired(mac);
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 5; i++) {
+      phone.ws.send(`m${i}`);
+      await data.nextRaw();
+    }
+    await evictDurableObject(stubOf(mac));
+    for (let i = 0; i < 5; i++) {
+      data.ws.send(`n${i}`);
+      await phone.nextRaw();
+    }
+    await evictDurableObject(stubOf(mac));
+    // Make the minute since the last write pass, then let the alarm do the write.
+    await runInDurableObject(stubOf(mac), async (inst: Mailbox, state) => {
+      await inst.loadBudget();
+      inst.budget.lastFlush = Date.now() - 61_000;
+      await state.storage.put("budget", inst.budget);
+    });
+    expect(await runDurableObjectAlarm(stubOf(mac))).toBe(true);
+    expect((await stored(mac))!.messages).toBe(10);
+  });
+
+  it("messages spaced past hibernation still cost at most one write a minute", async () => {
+    const mac = await setup();
+    const { phone, data } = await paired(mac);
+    for (let i = 0; i < 6; i++) {
       phone.ws.send(`m${i}`);
       expect(await data.nextRaw()).toBe(`m${i}`);
+      await evictDurableObject(stubOf(mac));
     }
-    expect(await writes(mac)).toBe(1);
-    await prime(mac, { messages: DAILY_MESSAGES });
-    phone.ws.send("over");
-    await expectLimit(phone);
-    // One more write marks the day as spent so a reconnect cannot reset it.
-    expect(await writes(mac)).toBe(2);
+    expect((await stored(mac))!.writes).toBe(1);
+  });
+
+  it("a closing socket's counts are added to the stored totals", async () => {
+    const mac = await setup();
+    const { phone, data } = await paired(mac);
+    for (let i = 0; i < 4; i++) {
+      phone.ws.send(`m${i}`);
+      await data.nextRaw();
+    }
+    phone.ws.close(1000);
+    await data.closeCode();
+    expect((await stored(mac))!.messages).toBe(4);
+  });
+
+  it("text is charged by its UTF-8 size", async () => {
+    const mac = await setup();
+    const { phone, data } = await paired(mac);
+    phone.ws.send("\u20ac\u20ac"); // 6 bytes
+    await data.nextRaw();
+    phone.ws.close(1000);
+    await data.closeCode();
+    expect((await stored(mac))!.bytes).toBe(6);
   });
 });
 
@@ -290,5 +349,81 @@ describe("peer closing", () => {
       return [send(closing, "x"), send(throwing, "x")];
     });
     expect(results).toEqual([false, false]);
+  });
+});
+
+describe("bad handshake state survives hibernation", () => {
+  async function badReport(mac: Mac, ip: string) {
+    const phone = await phoneFrom(mac, ip);
+    expect(await phone.next()).toEqual({ t: "waiting" });
+    const note = await mac.host.next();
+    mac.host.send({ t: "badHandshake", conn: note.conn });
+    await mac.host.quiet(50);
+    phone.ws.close(1000);
+    await phone.closeCode();
+  }
+
+  it("five failures with an eviction between each still block, and the block outlasts eviction", async () => {
+    const mac = await setup();
+    for (let i = 0; i < 5; i++) {
+      await badReport(mac, "198.51.100.40");
+      await evictDurableObject(stubOf(mac));
+    }
+    const blocked = await connect(mac.id, "phone", "198.51.100.40");
+    expect(await blocked.closeCode()).toBe(4001);
+    expect(blocked.messages).toEqual([]);
+  });
+
+  it("an address blocked after it connected gets no phone notice", async () => {
+    const mac = await setup();
+    const early = await connect(mac.id, "phone", "198.51.100.41");
+    const ch = await early.next();
+    for (let i = 0; i < 5; i++) await badReport(mac, "198.51.100.41");
+    early.send({ t: "access", proof: await proof(mac.accessKey, mac.id, ch.nonce) });
+    expect(await early.closeCode()).toBe(4001);
+    expect(await mac.host.quiet()).toBe(true);
+  });
+
+  it("one address cannot hold more than 3 unproven connections", async () => {
+    const mac = await setup();
+    const held: Client[] = [];
+    for (let i = 0; i < 3; i++) {
+      const c = await connect(mac.id, "phone", "198.51.100.42");
+      await c.next();
+      held.push(c);
+    }
+    const fourth = await connect(mac.id, "phone", "198.51.100.42");
+    expect(await fourth.closeCode()).toBe(4029);
+    const other = await connect(mac.id, "phone", "198.51.100.43");
+    expect((await other.next()).t).toBe("challenge");
+  });
+
+  it("a flood of throwaway connects does not stop a late badHandshake from counting", async () => {
+    const mac = await setup();
+    const conns: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      const phone = await phoneFrom(mac, "198.51.100.44");
+      await phone.next();
+      const note = await mac.host.next();
+      conns.push(note.conn);
+      phone.ws.close(1000);
+      await phone.closeCode();
+    }
+    for (let i = 0; i < 70; i++) await connect(mac.id, "phone", `203.0.113.${100 + (i % 100)}`);
+    for (const conn of conns) mac.host.send({ t: "badHandshake", conn });
+    await mac.host.quiet(100);
+    const blocked = await connect(mac.id, "phone", "198.51.100.44");
+    expect(await blocked.closeCode()).toBe(4001);
+  });
+});
+
+describe("claims by IPv6 prefix", () => {
+  it("addresses in one /64 share the claim limit", async () => {
+    for (let i = 0; i < 10; i++) {
+      const c = await claim(randomID(), await newKey(), undefined, `2001:db8:1:2::${i + 1}`);
+      expect((await c.next()).t).toBe("ready");
+    }
+    const eleventh = await claim(randomID(), await newKey(), undefined, "2001:db8:1:2:ffff::9");
+    expect(await eleventh.closeCode()).toBe(4029);
   });
 });

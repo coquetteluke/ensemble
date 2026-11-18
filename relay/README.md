@@ -7,9 +7,11 @@ A Cloudflare Worker with one Durable Object per paired Mac (a mailbox). It lets 
 ```bash
 cd relay
 npm install
-npm run types   # generates worker-configuration.d.ts (not committed)
+npm run types   # regenerates worker-configuration.d.ts (not committed)
 npx vitest run
 ```
+
+Run `npm run types` again whenever `wrangler.toml` changes (for example a new Durable Object binding), and before running the tests or deploying, or the `Env` type will be out of date.
 
 ## Deploy your own relay
 

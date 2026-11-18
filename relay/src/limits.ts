@@ -1,5 +1,10 @@
 // Limits that keep one mailbox, and the relay as a whole, inside the Workers free plan.
 
+/** Connections from one address that have not yet proved the access key. */
+export const MAX_UNPROVEN_PER_ADDRESS = 3;
+/** Addresses remembered for bad handshakes at once. */
+export const MAX_TRACKED_ADDRESSES = 256;
+
 /** Phones that may be waiting or paired at once for one Mac. */
 export const MAX_PHONES = 8;
 /** Phones that may be waiting for their data socket at once. */

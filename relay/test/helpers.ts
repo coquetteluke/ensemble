@@ -44,7 +44,7 @@ export async function proof(accessKey: string, id: string, nonce: string): Promi
 /** A WebSocket wrapper that queues messages and close events. */
 export class Client {
   messages: Array<string | ArrayBuffer> = [];
-  closed: { code: number } | null = null;
+  closed: { code: number; reason: string } | null = null;
   private waiters: Array<() => void> = [];
 
   constructor(readonly ws: WebSocket) {
@@ -54,7 +54,7 @@ export class Client {
       this.wake();
     });
     ws.addEventListener("close", (e) => {
-      this.closed = { code: e.code };
+      this.closed = { code: e.code, reason: e.reason };
       this.wake();
     });
   }
