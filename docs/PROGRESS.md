@@ -24,3 +24,4 @@ Newest first. One line per finished piece; details in commits.
 - GitHub reports the `coquetteluke` account as suspended (push refused, repo page 404). Keep committing locally; push when Luke has it restored. Do not create another account or push anywhere else.
 - Remote security fixes committed (protocol v2, mutual HMAC, pre-pairing limits). Mac side of the remote wired: Window > Pair iPhone.
 - Icon: Luke picked option 2, Constellation.
+- Luke paired his real iPhone Duo with the Mac over home Wi-Fi (protocol v2), confirmed 2026-11-18.
