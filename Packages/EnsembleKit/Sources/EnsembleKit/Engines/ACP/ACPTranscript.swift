@@ -350,6 +350,10 @@ struct ACPToolState: Equatable, Sendable {
                     kept[key] = value
                 }
             }
+            // Exactly one argument may say what runs, so the card can show all of it. A command next to
+            // `args` (or two command fields) is allowed for that request only.
+            let commandFields = kept.keys.filter { ACPAlwaysRules.commandKeys.contains(ACPAlwaysRules.normalized($0)) }
+            guard commandFields.count == 1 else { return nil }
             var summary = "command: \(command)"
             if let folder, folder != project { summary += " (in \(ACPFormatting.displayPath(folder, directory: project)))" }
             let extras = kept.filter { key, _ in

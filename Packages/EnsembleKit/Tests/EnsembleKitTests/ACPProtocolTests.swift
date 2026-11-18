@@ -411,6 +411,12 @@ struct ACPAlwaysRuleTests {
         let titleOnly = ["toolCallId": "t", "kind": "execute", "title": "echo hi", "rawInput": [:]] as JSONValue
         #expect(tool(titleOnly).alwaysRule(directory: Self.project) == nil)
         #expect(request(titleOnly).alwaysPatterns == [ACPAlwaysRules.thisRequestOnly])
+        // A command next to separate arguments could show one and run both: allowed once only.
+        let split = ["toolCallId": "t", "kind": "execute", "rawInput": ["command": "git", "args": ["push", "--force"]]] as JSONValue
+        #expect(tool(split).alwaysRule(directory: Self.project) == nil)
+        #expect(request(split).alwaysPatterns == [ACPAlwaysRules.thisRequestOnly])
+        let twoCommands = ["toolCallId": "t", "kind": "execute", "rawInput": ["command": "ls", "cmd": "rm -rf build"]] as JSONValue
+        #expect(tool(twoCommands).alwaysRule(directory: Self.project) == nil)
         // The folder a command runs in is part of the rule; a folder outside the project is never remembered.
         let inSub = tool(["toolCallId": "t", "kind": "execute", "rawInput": ["command": "make", "cwd": .string("\(Self.project)/sub")]])
         #expect(inSub.alwaysRule(directory: Self.project)?.summary == "command: make (in sub)")
