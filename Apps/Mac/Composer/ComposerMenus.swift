@@ -61,17 +61,14 @@ struct ModeMenuContent: View {
     }
 }
 
-/// Model picker grouped by who pays ("Your subscriptions", "API keys", "Free", "On this Mac") when the engine knows,
-/// otherwise by provider. Models without a key are listed but disabled.
+/// Model picker without a session (the schedule editor): the same folders by maker as the composer's picker
+/// (`ModelPickerView`), where a pick only sets the model.
 struct ModelMenuContent: View {
     let models: [ModelInfo]
     let current: ModelRef?
-    /// From `EngineModelBilling`; nil groups by provider.
+    /// From `EngineModelBilling`; nil treats Claude and Google plans as subscriptions and everything else as keys.
     let billing: [String: ModelBilling]?
     let onSelect: (ModelRef) -> Void
-    @Environment(\.theme) private var theme
-    @Environment(\.isSnapshot) private var isSnapshot
-    @State private var query = ""
 
     init(models: [ModelInfo], current: ModelRef?, billing: [String: ModelBilling]? = nil, onSelect: @escaping (ModelRef) -> Void) {
         self.models = models
@@ -81,102 +78,7 @@ struct ModelMenuContent: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if models.count > 8 {
-                InputField("Search models", text: $query, icon: "magnifyingglass", height: theme.z(28))
-                    .padding(theme.z(8))
-            }
-            AdaptiveScroll(.vertical) {
-                VStack(alignment: .leading, spacing: theme.z(2)) {
-                    ForEach(groups, id: \.name) { group in
-                        Text(group.name)
-                            .font(theme.font(size: 11, weight: .semibold))
-                            .foregroundStyle(theme.textTertiary)
-                            .padding(.horizontal, theme.z(10))
-                            .padding(.top, theme.z(8))
-                            .padding(.bottom, theme.z(2))
-                        ForEach(group.models) { model in
-                            row(model)
-                        }
-                    }
-                    if groups.isEmpty {
-                        Text(models.isEmpty ? "No models. Add an API key in Settings." : "No matches")
-                            .font(theme.font(size: 12.5))
-                            .foregroundStyle(theme.textTertiary)
-                            .padding(theme.z(10))
-                    }
-                }
-                .padding(theme.z(6))
-            }
-            .frame(maxHeight: theme.z(380))
-        }
-        .frame(width: theme.z(290))
-        .fixedSize(horizontal: false, vertical: true)
-        .background(theme.popover)
-    }
-
-    private struct Group {
-        let name: String
-        let models: [ModelInfo]
-    }
-
-    private var groups: [Group] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        let filtered = q.isEmpty ? models : models.filter {
-            $0.name.localizedCaseInsensitiveContains(q) || $0.ref.description.localizedCaseInsensitiveContains(q)
-        }
-        if let billing {
-            return ModelGroup.groups(filtered, billing: billing).map { Group(name: $0.title, models: $0.models) }
-        }
-        var order: [String] = []
-        var byProvider: [String: [ModelInfo]] = [:]
-        for model in filtered {
-            if byProvider[model.providerName] == nil { order.append(model.providerName) }
-            byProvider[model.providerName, default: []].append(model)
-        }
-        return order.map { Group(name: $0, models: byProvider[$0] ?? []) }
-    }
-
-    /// Under the name: the provider when the groups are by billing, and the context size.
-    private func detail(_ model: ModelInfo) -> String? {
-        var parts: [String] = []
-        if billing != nil, !model.providerName.isEmpty { parts.append(model.providerName) }
-        if let limit = model.contextLimit { parts.append("\(Format.tokens(limit)) context") }
-        return parts.isEmpty ? nil : parts.joined(separator: ", ")
-    }
-
-    private func row(_ model: ModelInfo) -> some View {
-        let selected = current.map { $0.providerID == model.ref.providerID && $0.id == model.ref.id } ?? false
-        return Button {
-            onSelect(model.ref)
-        } label: {
-            HStack(spacing: theme.z(8)) {
-                VStack(alignment: .leading, spacing: theme.z(1)) {
-                    Text(model.name)
-                        .font(theme.font(size: 13))
-                        .foregroundStyle(model.available ? theme.textPrimary : theme.textTertiary)
-                    if let detail = detail(model) {
-                        Text(detail)
-                            .font(theme.font(size: 11))
-                            .foregroundStyle(theme.textTertiary)
-                    }
-                }
-                Spacer(minLength: theme.z(8))
-                if !model.available {
-                    Text("No key")
-                        .font(theme.font(size: 11))
-                        .foregroundStyle(theme.textTertiary)
-                } else if selected {
-                    Image(systemName: "checkmark")
-                        .font(theme.font(size: 11, weight: .semibold))
-                        .foregroundStyle(theme.accent)
-                }
-            }
-            .padding(.horizontal, theme.z(10))
-            .padding(.vertical, theme.z(6))
-        }
-        .buttonStyle(RowButtonStyle(selected: false))
-        .disabled(!model.available)
+        ModelPickerView(models: models, billing: billing, current: current, context: nil, onPick: onSelect)
     }
 }
 

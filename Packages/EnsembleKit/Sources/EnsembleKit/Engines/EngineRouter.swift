@@ -451,11 +451,12 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
         try await owner(of: sessionID).engine.setPermissionMode(sessionID, mode: mode)
     }
 
-    /// Only within the session's engine: a session cannot move from one engine to another.
+    /// Only within the session's engine: a session cannot move from one engine to another (`engineChange` says so
+    /// before trying; `SessionStore.changeModel` starts the session over instead).
     public func switchModel(_ sessionID: String, model: ModelRef) async throws {
         let current = try await owner(of: sessionID)
         let target = registration(forProvider: model.providerID)
-        guard target.id == current.id else {
+        guard Self.sameEngine(current: current, target: target, untrustedID: untrustedFolderRegistration?.id) else {
             throw EngineRouterError.engineMismatch(sessionEngine: current.name, modelEngine: target.name, model: model.description)
         }
         try await current.engine.switchModel(sessionID, model: model)

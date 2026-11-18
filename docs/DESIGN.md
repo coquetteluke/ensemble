@@ -57,7 +57,7 @@ Ensemble is public, so it supports every subscription that can be linked legitim
 
 OpenCode also lists a "Claude Agent" integration that uses the official Claude Code login. Ensemble's own Claude Code engine is preferred (full Claude Code tools and subagents), with OpenCode's as a fallback to compare.
 
-The model picker groups models under "Your subscriptions" and "API keys". The usage popover shows each subscription's remaining limits where the engine reports them, so a long debate does not quietly use up a weekly allowance.
+The model picker has a folder per model maker (Claude, Gemini, ChatGPT, Grok, then DeepSeek, Qwen, Kimi, GLM, Mistral, Meta, MiniMax, free models and models on this Mac): the newest model of each tier first, the rest under Older models, with the session's maker at the top. The same model from several engines is one entry; picking it asks once whether to use the subscription or an API key (and takes the key right there when none is saved), and remembers the answer. The rules live in `ModelPicker/` in EnsembleKit. The usage popover shows each subscription's remaining limits where the engine reports them, so a long debate does not quietly use up a weekly allowance.
 
 ### Talking to OpenCode
 

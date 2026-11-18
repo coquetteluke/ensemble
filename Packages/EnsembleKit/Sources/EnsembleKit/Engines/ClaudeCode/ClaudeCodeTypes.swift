@@ -159,17 +159,26 @@ public enum ClaudeModels {
         let contextLimit: Int?
     }
 
-    /// Aliases always track the newest model of a family. Confirmed with `set_model` against claude 2.1.319:
-    /// opus -> claude-opus-5-5, sonnet -> claude-sonnet-5-5, haiku -> claude-haiku-5-5, fable -> claude-fable-5-1.
-    /// haiku's 1M window is from the CLI's own `modelUsage.contextWindow`; the others are filled in at runtime from
-    /// the same field once a turn has run.
+    /// The current models, one entry each, as the CLI's `initialize` answer lists them (claude 2.1.319, 2026-11-18).
+    /// Aliases track the newest model of a family: opus -> claude-opus-5-5, sonnet -> claude-sonnet-5-5,
+    /// haiku -> claude-haiku-5-5, fable -> claude-fable-5-1. The newest Fable (5.2) has no alias yet, so it is listed by
+    /// its full id. Every one has a 1M window with the plain id (`get_context_usage` answers 1,000,000 for each; the
+    /// `[1m]` suffix changes nothing for them). Used when the CLI cannot be asked. Notes:
+    /// `docs/reference/claude-code-engine-notes.md`.
     static let catalog: [Entry] = [
-        Entry(id: "opus", name: "Claude Opus", resolves: "claude-opus-5-5", contextLimit: 200_000),
-        Entry(id: "opus[1m]", name: "Claude Opus (1M context)", resolves: "claude-opus-5-5", contextLimit: 1_000_000),
-        Entry(id: "sonnet", name: "Claude Sonnet", resolves: "claude-sonnet-5-5", contextLimit: 200_000),
-        Entry(id: "sonnet[1m]", name: "Claude Sonnet (1M context)", resolves: "claude-sonnet-5-5", contextLimit: 1_000_000),
-        Entry(id: "haiku", name: "Claude Haiku", resolves: "claude-haiku-5-5", contextLimit: 1_000_000),
-        Entry(id: "fable", name: "Claude Fable", resolves: "claude-fable-5-1", contextLimit: nil),
+        Entry(id: "opus", name: "Opus 5.5", resolves: "claude-opus-5-5", contextLimit: 1_000_000),
+        Entry(id: "claude-fable-5-2", name: "Fable 5.2", resolves: "claude-fable-5-2", contextLimit: 1_000_000),
+        Entry(id: "sonnet", name: "Sonnet 5.5", resolves: "claude-sonnet-5-5", contextLimit: 1_000_000),
+        Entry(id: "haiku", name: "Haiku 5.5", resolves: "claude-haiku-5-5", contextLimit: 1_000_000),
+        Entry(id: "fable", name: "Fable 5.1", resolves: "claude-fable-5-1", contextLimit: 1_000_000),
+    ]
+
+    /// Context windows of the other models the CLI lists, from `get_context_usage` with each id (no prompt sent).
+    /// The 4.6 models and Haiku 4.5 have 200k; their `[1m]` ids have 1M.
+    static let knownContextWindows: [String: Int] = [
+        "claude-opus-5": 1_000_000, "claude-sonnet-5": 1_000_000, "claude-fable-5": 1_000_000,
+        "claude-opus-4-8": 1_000_000, "claude-opus-4-7": 1_000_000,
+        "claude-opus-4-6": 200_000, "claude-sonnet-4-6": 200_000, "claude-haiku-4-5-20251001": 200_000,
     ]
 
     static func isClaudeProvider(_ providerID: String) -> Bool {
@@ -180,15 +189,19 @@ public enum ClaudeModels {
         model?.providerID == apiKeyProviderID ? .apiKey : .subscription
     }
 
-    /// Context window for a model id or alias when known.
+    /// Context window for a model id or alias when known: what a turn reported (`observed`, from the CLI's
+    /// `modelUsage.contextWindow`), else the catalog. An id ending in `[1m]` asks for 1M.
     static func contextLimit(for id: String, observed: [String: Int]) -> Int? {
+        let base = id.hasSuffix("[1m]") ? String(id.dropLast(4)) : id
         if let value = observed[id] { return value }
-        if let entry = catalog.first(where: { $0.id == id }) {
-            if let resolved = entry.resolves, let value = observed[resolved], !id.hasSuffix("[1m]") { return value }
+        if base != id { return 1_000_000 }
+        if let value = observed[base] { return value }
+        if let entry = catalog.first(where: { $0.id == base }) {
+            if let resolved = entry.resolves, let value = observed[resolved] { return value }
             return entry.contextLimit
         }
-        if let entry = catalog.first(where: { $0.resolves == id && !$0.id.hasSuffix("[1m]") }) { return entry.contextLimit }
-        return nil
+        if let entry = catalog.first(where: { $0.resolves == base }) { return entry.contextLimit }
+        return knownContextWindows[base]
     }
 }
 

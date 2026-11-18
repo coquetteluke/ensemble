@@ -448,8 +448,10 @@ struct ClaudeImportTests {
 
     @Test func modelsMapToAliasesOnTheSubscription() {
         #expect(ClaudeImportScanner.modelRef("claude-opus-5-5", effort: "xhigh") == ModelRef(providerID: "claude-code", id: "opus", variant: "xhigh"))
-        #expect(ClaudeImportScanner.modelRef("claude-sonnet-5-5[1m]", effort: nil) == ModelRef(providerID: "claude-code", id: "sonnet[1m]"))
-        #expect(ClaudeImportScanner.modelRef("claude-fable-5-2", effort: "turbo")?.variant == nil)
+        #expect(ClaudeImportScanner.modelRef("claude-sonnet-5-5[1m]", effort: nil) == ModelRef(providerID: "claude-code", id: "sonnet"))
+        #expect(ClaudeImportScanner.modelRef("claude-fable-5-2", effort: "turbo") == ModelRef(providerID: "claude-code", id: "claude-fable-5-2"))
+        #expect(ClaudeImportScanner.modelRef("claude-fable-5-1", effort: nil) == ModelRef(providerID: "claude-code", id: "fable"))
+        #expect(ClaudeImportScanner.modelRef("claude-opus-4-8", effort: nil) == ModelRef(providerID: "claude-code", id: "opus"))
         #expect(ClaudeImportScanner.modelRef("gpt-9", effort: "high") == nil)
         #expect(ClaudeImportScanner.modelRef(nil, effort: "high") == nil)
     }

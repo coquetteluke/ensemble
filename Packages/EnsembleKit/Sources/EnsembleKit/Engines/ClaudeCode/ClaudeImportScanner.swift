@@ -127,12 +127,13 @@ struct ClaudeImportScanner: Sendable {
     }
 
     /// A model id the CLI or the desktop app recorded (`claude-opus-5-5`, `claude-sonnet-5-5[1m]`) as the Claude
-    /// alias of its family on the user's subscription, with the effort as the variant. Unknown ids give nil (the CLI's
-    /// default model).
+    /// model of the picker on the user's subscription (the catalog entry for that exact model, else the alias of its
+    /// family), with the effort as the variant. Unknown ids give nil (the CLI's default model).
     static func modelRef(_ raw: String?, effort: String?) -> ModelRef? {
-        guard let raw = raw?.lowercased(), !raw.isEmpty else { return nil }
+        guard var raw = raw?.lowercased(), !raw.isEmpty else { return nil }
+        if raw.hasSuffix("[1m]") { raw = String(raw.dropLast(4)) }
         guard let family = ["opus", "sonnet", "haiku", "fable"].first(where: { raw.contains($0) }) else { return nil }
-        let id = raw.hasSuffix("[1m]") && ClaudeModels.catalog.contains(where: { $0.id == family + "[1m]" }) ? family + "[1m]" : family
+        let id = ClaudeModels.catalog.first(where: { $0.resolves == raw })?.id ?? family
         let variant = effort.flatMap { ClaudeModels.effortLevels.contains($0) ? $0 : nil }
         return ModelRef(providerID: ClaudeModels.subscriptionProviderID, id: id, variant: variant)
     }

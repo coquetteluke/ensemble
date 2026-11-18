@@ -551,7 +551,7 @@ final class WindowState {
             if !query.isEmpty, let model = store.models.first(where: {
                 $0.available && ($0.name.lowercased().contains(query) || $0.ref.description.lowercased().contains(query))
             }) {
-                Task { await store.switchModel(model.ref, for: session.id) }
+                Task { await ModelSwitcher.pick(model.ref, session: session, store: store, window: self) }
             } else {
                 requestedMenu = .model
             }
