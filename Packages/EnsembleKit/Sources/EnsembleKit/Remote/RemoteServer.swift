@@ -7,6 +7,10 @@ import Synchronization
 /// the Tailscale addresses only, checks the phone's proof of the pairing token (`RemoteHandshake`, the token
 /// itself is never sent), proves itself back, and relays a `RemoteHost` to every paired phone.
 ///
+/// After a valid hello every frame in both directions is sealed by `RemoteChannel` (binary WebSocket frames,
+/// starting with the welcome). A frame that does not open as the next one, or any plaintext frame, closes the
+/// connection, so a relay on the local network can neither read nor change the traffic.
+///
 /// Connections that have not proved the token yet are limited separately (in total and per address) and are
 /// closed when the hello timeout runs out, whatever state they are in, so they can never use up the slots of
 /// paired phones.
@@ -31,11 +35,14 @@ public actor RemoteServer {
         public var maxMessageBytes: Int
         /// Largest message before the handshake is done (the hello is a few hundred bytes).
         public var maxPendingMessageBytes: Int
+        /// Host names the phone may say it dialed, besides the bind addresses and `localhost`: the MagicDNS
+        /// name and the LAN name from the pairing code. A phone that dialed anything else is refused.
+        public var acceptedHosts: [String]
 
         public init(port: UInt16 = UInt16(remoteDefaultPort), bindAddresses: [String] = ["127.0.0.1"], macName: String = "Mac",
                     appVersion: String = "0.1.0", heartbeatInterval: Duration = .seconds(15), helloTimeout: Duration = .seconds(10),
                     maxDevices: Int = 8, maxPending: Int = 8, maxPendingPerAddress: Int = 3,
-                    maxMessageBytes: Int = 1 << 20, maxPendingMessageBytes: Int = 4096) {
+                    maxMessageBytes: Int = 1 << 20, maxPendingMessageBytes: Int = 4096, acceptedHosts: [String] = []) {
             self.port = port
             self.bindAddresses = bindAddresses
             self.macName = macName
@@ -47,6 +54,7 @@ public actor RemoteServer {
             self.maxPendingPerAddress = maxPendingPerAddress
             self.maxMessageBytes = maxMessageBytes
             self.maxPendingMessageBytes = maxPendingMessageBytes
+            self.acceptedHosts = acceptedHosts
         }
     }
 
@@ -93,6 +101,8 @@ public actor RemoteServer {
         var authenticated = false
         /// Sent in the challenge; `nil` until the connection is ready.
         var serverNonce: Data?
+        /// Seals and opens every frame once the phone has proved the token.
+        var channel: RemoteChannel?
         var deviceID = ""
         var deviceName = ""
         var openSessions: Set<String> = []
@@ -158,6 +168,11 @@ public actor RemoteServer {
         for p in peers.values { p.connection.cancel() }
         peers = [:]
         publishStatus()
+    }
+
+    /// Updates the host names a phone may have dialed (the MagicDNS name can change).
+    public func setAcceptedHosts(_ hosts: [String]) {
+        config.acceptedHosts = hosts
     }
 
     /// Changes the listen addresses while running (Tailscale came up or went away).
@@ -411,8 +426,22 @@ public actor RemoteServer {
         case .close:
             dropPeer(id)
             return
-        case .text, .binary:
+        case .text where peers[id]?.channel == nil:
+            // Handshake frames are plaintext text.
             if let data = content { await handleFrame(id, data: data) }
+        case .binary where peers[id]?.channel != nil:
+            // After the handshake only sealed binary frames are accepted. Anything that does not open as the
+            // next frame (changed, replayed, reordered, other keys) closes the connection.
+            guard let data = content, var channel = peers[id]?.channel, let plaintext = try? channel.open(data) else {
+                dropPeer(id)
+                return
+            }
+            peers[id]?.channel = channel
+            await handleFrame(id, data: plaintext)
+        case .text, .binary:
+            // Plaintext after the handshake, or binary before it.
+            dropPeer(id)
+            return
         default:
             break
         }
@@ -481,6 +510,11 @@ public actor RemoteServer {
                  replyTo: replyTo, to: id, thenClose: true)
             return
         }
+        guard isOwnAddress(hello.dialedHost, port: hello.dialedPort) else {
+            send(.error(RemoteError(.badRequest, "This phone dialed an address this Mac does not use. Scan the pairing code again.")),
+                 replyTo: replyTo, to: id, thenClose: true)
+            return
+        }
         guard peers.values.count(where: { $0.authenticated }) < config.maxDevices else {
             send(.error(RemoteError(.busy, "This Mac already has the most phones connected.")), replyTo: replyTo, to: id, thenClose: true)
             return
@@ -489,11 +523,23 @@ public actor RemoteServer {
         peers[id]?.authenticated = true
         peers[id]?.deviceID = String(hello.deviceID.prefix(128))
         peers[id]?.deviceName = String(hello.deviceName.prefix(128))
+        // From here on every frame is sealed, starting with the welcome, so a relay cannot splice in its own.
+        peers[id]?.channel = RemoteChannel(token: token, serverNonce: serverNonce, clientNonce: clientNonce,
+                                           dialedHost: hello.dialedHost, dialedPort: hello.dialedPort, role: .server,
+                                           protocolVersion: min(remoteProtocolVersion, hello.protocolVersion))
         let serverProof = RemoteHandshake.serverProof(token: token, serverNonce: serverNonce, clientNonce: clientNonce)
         send(.welcome(RemoteWelcome(macName: config.macName, deviceID: hello.deviceID, appVersion: config.appVersion,
                                     serverProof: RemoteHandshake.encode(serverProof))),
              replyTo: replyTo, to: id)
         publishStatus()
+    }
+
+    /// True when `host:port` is one of this Mac's addresses: a bind address, `localhost`, or an accepted name,
+    /// on a port it listens on.
+    private func isOwnAddress(_ host: String, port: Int) -> Bool {
+        let names = Set((config.bindAddresses + config.acceptedHosts + ["localhost"]).map(RemoteChannel.normalizedHost))
+        let ports = Set(listeningPorts.values.map(Int.init))
+        return names.contains(RemoteChannel.normalizedHost(host)) && ports.contains(port)
     }
 
     private func handleRequest(_ id: Int, message: RemoteClientMessage, replyTo: String?) async {
@@ -513,18 +559,38 @@ public actor RemoteServer {
     // MARK: - Sending
 
     private func send(_ message: RemoteServerMessage, replyTo: String?, to id: Int, thenClose: Bool = false) {
-        guard let connection = peers[id]?.connection else { return }
+        guard peers[id] != nil else { return }
         guard let data = try? encoder.encode(RemoteServerFrame(message, replyTo: replyTo)) else { return }
-        Self.write(data, on: connection, thenClose: thenClose)
+        sendEncoded(data, to: id, thenClose: thenClose)
+    }
+
+    /// Writes one encoded frame: sealed binary once the phone is paired, plaintext text during the handshake.
+    /// Sealing and writing happen together on the actor, so frames reach the wire in counter order.
+    private func sendEncoded(_ data: Data, to id: Int, thenClose: Bool = false) {
+        guard let peer = peers[id] else { return }
+        if var channel = peer.channel {
+            guard let sealed = try? channel.seal(data) else {
+                dropPeer(id)
+                return
+            }
+            peers[id]?.channel = channel
+            Self.write(sealed, on: peer.connection, binary: true, thenClose: thenClose)
+        } else if !peer.authenticated {
+            Self.write(data, on: peer.connection, binary: false, thenClose: thenClose)
+        } else {
+            // A paired phone without a channel cannot happen; never fall back to plaintext.
+            dropPeer(id)
+            return
+        }
         if thenClose {
             peers[id] = nil
             publishStatus()
         }
     }
 
-    private static func write(_ data: Data, on connection: NWConnection, thenClose: Bool) {
-        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
-        let context = NWConnection.ContentContext(identifier: "text", metadata: [metadata])
+    private static func write(_ data: Data, on connection: NWConnection, binary: Bool, thenClose: Bool) {
+        let metadata = NWProtocolWebSocket.Metadata(opcode: binary ? .binary : .text)
+        let context = NWConnection.ContentContext(identifier: binary ? "binary" : "text", metadata: [metadata])
         connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { _ in
             if thenClose { connection.cancel() }
         })
@@ -544,9 +610,9 @@ public actor RemoteServer {
     private func broadcast(_ update: RemoteUpdate) {
         guard let data = try? encoder.encode(RemoteServerFrame(.update(update))) else { return }
         let onlyFor = update.transcriptSessionID
-        for p in peers.values where p.authenticated {
+        for (id, p) in peers where p.authenticated {
             if let sid = onlyFor, !p.openSessions.contains(sid) { continue }
-            Self.write(data, on: p.connection, thenClose: false)
+            sendEncoded(data, to: id)
         }
     }
 

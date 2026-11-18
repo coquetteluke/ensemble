@@ -1,9 +1,13 @@
 import Foundation
 
-// Wire format: every WebSocket text frame is one JSON object
-//   {"v": 1, "id": "7", "re": "3", "type": "hello", "data": {...}}
+// Wire format: every frame is one JSON object
+//   {"v": 3, "id": "7", "re": "3", "type": "hello", "data": {...}}
 // `v` is the sender's protocol version, `id` is set on phone requests, `re` on Mac replies to a request,
 // `type` names the message and `data` holds its payload (absent for messages without one).
+//
+// Handshake (WebSocket text frames, plaintext): Mac `challenge`, phone `hello`, or a plaintext `error`.
+// After a valid hello every frame in both directions is a WebSocket binary frame sealed by `RemoteChannel`,
+// starting with the Mac's `welcome`. A plaintext frame after the handshake closes the connection.
 
 /// Keys of the JSON object in every frame.
 public enum RemoteWireKey: String, CodingKey {
@@ -23,13 +27,20 @@ public struct RemoteHello: Codable, Hashable, Sendable {
     public var clientNonce: String
     /// `HMAC-SHA256(token, serverNonce || clientNonce || "ensemble-client")`, base64url.
     public var proof: String
+    /// The host the phone dialed, exactly as in the pairing code. Bound into the channel keys.
+    public var dialedHost: String
+    /// The port the phone dialed. Bound into the channel keys.
+    public var dialedPort: Int
 
-    public init(protocolVersion: Int = remoteProtocolVersion, deviceName: String, deviceID: String, clientNonce: String, proof: String) {
+    public init(protocolVersion: Int = remoteProtocolVersion, deviceName: String, deviceID: String, clientNonce: String, proof: String,
+                dialedHost: String, dialedPort: Int) {
         self.protocolVersion = protocolVersion
         self.deviceName = deviceName
         self.deviceID = deviceID
         self.clientNonce = clientNonce
         self.proof = proof
+        self.dialedHost = dialedHost
+        self.dialedPort = dialedPort
     }
 }
 
@@ -175,7 +186,7 @@ public struct RemoteChallenge: Codable, Hashable, Sendable {
     }
 }
 
-/// The Mac accepted the phone's proof. The phone must check `serverProof` before trusting anything else.
+/// The Mac accepted the phone's proof. Always the first sealed frame; the phone also checks `serverProof`.
 public struct RemoteWelcome: Codable, Hashable, Sendable {
     public var protocolVersion: Int
     public var macName: String

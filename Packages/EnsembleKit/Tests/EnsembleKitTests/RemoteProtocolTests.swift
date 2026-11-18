@@ -14,7 +14,8 @@ import Testing
     @Test func clientMessagesRoundTrip() throws {
         let room = RemoteDemoData.IDs.roomID
         let messages: [RemoteClientMessage] = [
-            .hello(RemoteHello(deviceName: "Test iPhone", deviceID: "dev-1", clientNonce: "bm9uY2U", proof: "cHJvb2Y")),
+            .hello(RemoteHello(deviceName: "Test iPhone", deviceID: "dev-1", clientNonce: "bm9uY2U", proof: "cHJvb2Y",
+                               dialedHost: "mac.example.ts.net", dialedPort: 47823)),
             .hubSnapshot,
             .openSession(sessionID: "s1"),
             .closeSession(sessionID: "s1"),
@@ -133,11 +134,153 @@ import Testing
         let client = RemoteHandshake.makeNonce()
         let proof = RemoteHandshake.clientProof(token: token, serverNonce: server, clientNonce: client)
         let hello = RemoteClientFrame(.hello(RemoteHello(deviceName: "p", deviceID: "d", clientNonce: RemoteHandshake.encode(client),
-                                                         proof: RemoteHandshake.encode(proof))), id: "1")
+                                                         proof: RemoteHandshake.encode(proof), dialedHost: "h", dialedPort: 1)), id: "1")
         let text = String(decoding: try RemoteCoding.encode(hello), as: UTF8.self)
         #expect(!text.contains(token))
         #expect(!text.contains("\"token\""))
-        #expect(remoteProtocolVersion == 2 && remoteMinimumProtocolVersion == 2)
+        #expect(remoteProtocolVersion == 3 && remoteMinimumProtocolVersion == 3)
+    }
+
+    // MARK: Channel encryption
+
+    struct ChannelPair {
+        var phone: RemoteChannel
+        var mac: RemoteChannel
+    }
+
+    func channels(token: String = "pairing-token", macToken: String? = nil, host: String = "mac.example.ts.net",
+                  macHost: String? = nil, port: Int = 47823) -> ChannelPair {
+        let server = Data(repeating: 7, count: 32)
+        let client = Data(repeating: 9, count: 32)
+        return ChannelPair(
+            phone: RemoteChannel(token: token, serverNonce: server, clientNonce: client, dialedHost: host, dialedPort: port, role: .client),
+            mac: RemoteChannel(token: macToken ?? token, serverNonce: server, clientNonce: client, dialedHost: macHost ?? host,
+                               dialedPort: port, role: .server))
+    }
+
+    @Test func sealedFramesRoundTripBothWays() throws {
+        var c = channels()
+        for i in 0..<5 {
+            let up = Data("request \(i)".utf8)
+            #expect(try c.mac.open(try c.phone.seal(up)) == up)
+            let down = Data("reply \(i)".utf8)
+            #expect(try c.phone.open(try c.mac.seal(down)) == down)
+        }
+        // An empty frame works too, and sealed bytes never contain the plaintext.
+        #expect(try c.mac.open(try c.phone.seal(Data())) == Data())
+        let secret = Data(#"{"type":"welcome","macName":"Loopback Mac"}"#.utf8)
+        let sealed = try c.mac.seal(secret)
+        #expect(sealed.range(of: Data("welcome".utf8)) == nil)
+        #expect(sealed.count == secret.count + 16)
+    }
+
+    @Test func sameFrameTwiceSealsDifferently() throws {
+        var c = channels()
+        let frame = Data("same".utf8)
+        #expect(try c.phone.seal(frame) != c.phone.seal(frame))
+    }
+
+    @Test func tamperedFrameIsRejected() throws {
+        var c = channels()
+        var sealed = try c.phone.seal(Data("send rm -rf".utf8))
+        sealed[3] ^= 0x01
+        #expect(throws: RemoteChannel.Failure.rejected) { try c.mac.open(sealed) }
+        // A cut-off frame and a frame with a changed tag are rejected as well.
+        var other = channels()
+        let good = try other.phone.seal(Data("hello".utf8))
+        #expect(throws: RemoteChannel.Failure.rejected) { try other.mac.open(good.prefix(10)) }
+        var badTag = good
+        badTag[badTag.count - 1] ^= 0x80
+        #expect(throws: RemoteChannel.Failure.rejected) { try other.mac.open(badTag) }
+        // Failures do not move the counter: the untouched frame still opens afterwards.
+        #expect(try other.mac.open(good) == Data("hello".utf8))
+    }
+
+    @Test func replayedAndReorderedFramesAreRejected() throws {
+        var c = channels()
+        let first = try c.phone.seal(Data("one".utf8))
+        let second = try c.phone.seal(Data("two".utf8))
+        #expect(try c.mac.open(first) == Data("one".utf8))
+        #expect(throws: RemoteChannel.Failure.rejected) { try c.mac.open(first) }   // replay
+
+        var d = channels()
+        let a = try d.phone.seal(Data("a".utf8))
+        let b = try d.phone.seal(Data("b".utf8))
+        #expect(throws: RemoteChannel.Failure.rejected) { try d.mac.open(b) }       // out of order
+        #expect(try d.mac.open(a) == Data("a".utf8))
+        #expect(try d.mac.open(b) == Data("b".utf8))
+        _ = second
+    }
+
+    @Test func wrongTokenOrHostCannotDecrypt() throws {
+        var wrongToken = channels(token: "pairing-token", macToken: "other-token")
+        #expect(throws: RemoteChannel.Failure.rejected) { try wrongToken.mac.open(try wrongToken.phone.seal(Data("x".utf8))) }
+
+        var wrongHost = channels(host: "mac.example.ts.net", macHost: "relay.local")
+        #expect(throws: RemoteChannel.Failure.rejected) { try wrongHost.mac.open(try wrongHost.phone.seal(Data("x".utf8))) }
+
+        // Host spelling is normalised: case, brackets, trailing dot.
+        var spelled = channels(host: "[FD7A:115C:A1E0::1]", macHost: "fd7a:115c:a1e0::1")
+        #expect(try spelled.mac.open(try spelled.phone.seal(Data("x".utf8))) == Data("x".utf8))
+        var dotted = channels(host: "Mac.Example.ts.net.", macHost: "mac.example.ts.net")
+        #expect(try dotted.mac.open(try dotted.phone.seal(Data("x".utf8))) == Data("x".utf8))
+    }
+
+    @Test func directionsUseDifferentKeys() throws {
+        var c = channels()
+        // A frame the phone sealed cannot be reflected back to the phone as if the Mac sent it.
+        let up = try c.phone.seal(Data("x".utf8))
+        #expect(throws: RemoteChannel.Failure.rejected) { try c.phone.open(up) }
+        #expect(RemoteChannel.info(version: 3, host: "h", port: 1, direction: "client-to-server")
+                != RemoteChannel.info(version: 3, host: "h", port: 1, direction: "server-to-client"))
+        #expect(String(decoding: RemoteChannel.info(version: 3, host: "H.", port: 2, direction: "d"), as: UTF8.self)
+                == "ensemble-remote/3|d|h|2")
+    }
+
+    @Test func noncesPortAndVersionAreBoundIntoTheKeys() throws {
+        let token = "pairing-token"
+        let s = Data(repeating: 7, count: 32)
+        let c = Data(repeating: 9, count: 32)
+        func pair(macServer: Data = s, macClient: Data = c, macPort: Int = 47823, macVersion: Int = 3) -> (RemoteChannel, RemoteChannel) {
+            (RemoteChannel(token: token, serverNonce: s, clientNonce: c, dialedHost: "h", dialedPort: 47823, role: .client, protocolVersion: 3),
+             RemoteChannel(token: token, serverNonce: macServer, clientNonce: macClient, dialedHost: "h", dialedPort: macPort,
+                           role: .server, protocolVersion: macVersion))
+        }
+        // Each changed input on one side: the other side's frames do not open. Swapped nonces count as changed.
+        for (var phone, var mac) in [pair(macServer: Data(repeating: 8, count: 32)), pair(macClient: Data(repeating: 8, count: 32)),
+                                     pair(macServer: c, macClient: s), pair(macPort: 47824), pair(macVersion: 4)] {
+            #expect(throws: RemoteChannel.Failure.rejected) { try mac.open(try phone.seal(Data("x".utf8))) }
+            #expect(throws: RemoteChannel.Failure.rejected) { try phone.open(try mac.seal(Data("y".utf8))) }
+        }
+        var (phone, mac) = pair()
+        #expect(try mac.open(try phone.seal(Data("x".utf8))) == Data("x".utf8))
+    }
+
+    /// Pins the key schedule so another implementation can interoperate: HKDF-SHA256 (RFC 5869) written out by
+    /// hand with HMAC, then ChaChaPoly with a 4-zero-byte plus big-endian counter nonce and the version as AAD.
+    @Test func channelMatchesTheSpecifiedKeySchedule() throws {
+        let token = "pairing-token"
+        let s = Data((0..<32).map { UInt8($0) })
+        let c = Data((0..<32).map { UInt8(255 - $0) })
+        var phone = RemoteChannel(token: token, serverNonce: s, clientNonce: c, dialedHost: "[FD7A::1]", dialedPort: 47823, role: .client)
+
+        func hmac(_ key: Data, _ message: Data) -> Data {
+            Data(HMAC<SHA256>.authenticationCode(for: message, using: SymmetricKey(data: key)))
+        }
+        let prk = hmac(s + c, Data(token.utf8))                                    // extract
+        let info = Data("ensemble-remote/3|client-to-server|fd7a::1|47823".utf8)
+        let key = SymmetricKey(data: hmac(prk, info + Data([1])))                  // expand, one block
+        let aad = Data("ensemble-remote/3".utf8)
+
+        for counter in 0..<3 {
+            let message = Data("frame \(counter)".utf8)
+            let sealed = try phone.seal(message)
+            var nonce = Data(count: 4)
+            withUnsafeBytes(of: UInt64(counter).bigEndian) { nonce.append(contentsOf: $0) }
+            let expected = try ChaChaPoly.seal(message, using: key, nonce: try ChaChaPoly.Nonce(data: nonce), authenticating: aad)
+            #expect(sealed == expected.ciphertext + expected.tag)
+            #expect(sealed.startIndex == 0)
+        }
     }
 
     @Test func unknownTypeIsReported() throws {

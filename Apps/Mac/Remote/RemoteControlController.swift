@@ -95,8 +95,11 @@ final class RemoteControlController {
         let addressesChanged = info.bindAddresses(includeLocalNetwork: allowLocalNetwork)
             != network.bindAddresses(includeLocalNetwork: allowLocalNetwork)
         network = info
-        if addressesChanged, let server {
-            await server.rebind(to: info.bindAddresses(includeLocalNetwork: allowLocalNetwork))
+        if let server {
+            await server.setAcceptedHosts(info.pairingHosts(includeLocalNetwork: allowLocalNetwork))
+            if addressesChanged {
+                await server.rebind(to: info.bindAddresses(includeLocalNetwork: allowLocalNetwork))
+            }
         }
         rebuildPairing()
     }
@@ -121,7 +124,8 @@ final class RemoteControlController {
             port: UInt16(port),
             bindAddresses: network.bindAddresses(includeLocalNetwork: allowLocalNetwork),
             macName: network.computerName,
-            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0")
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
+            acceptedHosts: network.pairingHosts(includeLocalNetwork: allowLocalNetwork))
         let server = RemoteServer(host: host, token: token, configuration: config)
         do {
             try await server.start()

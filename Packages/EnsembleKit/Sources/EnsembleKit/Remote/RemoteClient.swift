@@ -3,7 +3,8 @@ import Observation
 
 /// The phone side of the remote: connects to the Mac's `RemoteServer` over WebSocket, trying each pairing
 /// host in order and reconnecting with backoff, and keeps an observable copy of the hub, rooms, usage and
-/// the open chat. Also has an in-process mode that talks straight to a `RemoteHost` (demo and previews).
+/// the open chat. Every frame after the handshake is sealed by `RemoteChannel`; one that does not open drops
+/// the connection. Also has an in-process mode that talks straight to a `RemoteHost` (demo and previews).
 @MainActor @Observable
 public final class RemoteClient {
     public enum ConnectionState: Equatable, Sendable {
@@ -51,6 +52,8 @@ public final class RemoteClient {
     @ObservationIgnored private let urlSession: URLSession
     @ObservationIgnored private let localHost: (any RemoteHost)?
     @ObservationIgnored private var socket: URLSessionWebSocketTask?
+    /// Seals and opens frames on the current connection.
+    @ObservationIgnored private var channel: RemoteChannel?
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     @ObservationIgnored private var pingTask: Task<Void, Never>?
     @ObservationIgnored private var localUpdatesTask: Task<Void, Never>?
@@ -118,6 +121,7 @@ public final class RemoteClient {
         localUpdatesTask = nil
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
+        channel = nil
         failAllPending(RemoteError(.failed, "Disconnected"))
         state = .idle
     }
@@ -149,8 +153,9 @@ public final class RemoteClient {
                 guard let url = RemotePairing.webSocketURL(host: host, port: pairing.port) else { continue }
                 state = .connecting(host: host)
                 let task: URLSessionWebSocketTask
+                let sealedChannel: RemoteChannel
                 do {
-                    task = try await handshake(url: url)
+                    (task, sealedChannel) = try await handshake(url: url, host: host)
                 } catch let error as RemoteError where error.code == .unauthorized || error.code == .unsupportedVersion {
                     guard isCurrent(gen) else { return }
                     lastError = error.message
@@ -171,6 +176,7 @@ public final class RemoteClient {
                     return
                 }
                 socket = task
+                channel = sealedChannel
                 state = .connected(host: host)
                 lastError = nil
                 attempt = 0
@@ -179,7 +185,10 @@ public final class RemoteClient {
                 loadInitialState()
                 await receiveLoop(task, generation: gen)
                 pingTask?.cancel()
-                if socket === task { socket = nil }
+                if socket === task {
+                    socket = nil
+                    channel = nil
+                }
                 failAllPending(RemoteError(.failed, "Lost the connection to the Mac"))
                 break
             }
@@ -195,7 +204,7 @@ public final class RemoteClient {
         }
     }
 
-    private func handshake(url: URL) async throws -> URLSessionWebSocketTask {
+    private func handshake(url: URL, host: String) async throws -> (URLSessionWebSocketTask, RemoteChannel) {
         let task = urlSession.webSocketTask(with: url)
         task.maximumMessageSize = 64 << 20
         task.resume()
@@ -225,11 +234,30 @@ public final class RemoteClient {
             let clientNonce = RemoteHandshake.makeNonce()
             let proof = RemoteHandshake.clientProof(token: pairing.token, serverNonce: serverNonce, clientNonce: clientNonce)
             let hello = RemoteHello(deviceName: deviceName, deviceID: deviceID,
-                                    clientNonce: RemoteHandshake.encode(clientNonce), proof: RemoteHandshake.encode(proof))
+                                    clientNonce: RemoteHandshake.encode(clientNonce), proof: RemoteHandshake.encode(proof),
+                                    dialedHost: host, dialedPort: pairing.port)
             try await task.send(.string(try Self.encode(RemoteClientFrame(.hello(hello), id: nextRequestID()))))
 
-            // 3. The Mac must prove it knows the token too, before anything it says is trusted.
-            let reply = try Self.decode(try await task.receive())
+            // 3. The Mac must prove it knows the token too. Its welcome is the first sealed frame; a host without
+            //    the token (or a relay that changed the hello) cannot seal it, and a plaintext welcome is refused.
+            var sealedChannel = RemoteChannel(token: pairing.token, serverNonce: serverNonce, clientNonce: clientNonce,
+                                              dialedHost: host, dialedPort: pairing.port, role: .client,
+                                              protocolVersion: min(remoteProtocolVersion, challenge.protocolVersion))
+            let reply: RemoteServerFrame
+            switch try await task.receive() {
+            case .data(let sealed):
+                guard let plaintext = try? sealedChannel.open(sealed) else {
+                    throw RemoteError(.macNotVerified, "This host could not prove it is your Mac, so the iPhone did not connect.")
+                }
+                reply = try RemoteCoding.decode(RemoteServerFrame.self, from: plaintext)
+            case .string(let text):
+                // Only a refusal may come in plaintext.
+                let frame = try RemoteCoding.decode(RemoteServerFrame.self, from: Data(text.utf8))
+                if case .error(let error) = frame.message { throw error }
+                throw RemoteError(.macNotVerified, "This host could not prove it is your Mac, so the iPhone did not connect.")
+            @unknown default:
+                throw RemoteError(.badRequest, "Unexpected message from the Mac")
+            }
             switch reply.message {
             case .welcome(let welcome):
                 guard let serverProof = RemoteHandshake.decode(welcome.serverProof, expectedCount: 32),
@@ -237,9 +265,14 @@ public final class RemoteClient {
                                                          clientNonce: clientNonce) else {
                     throw RemoteError(.macNotVerified, "This host could not prove it is your Mac, so the iPhone did not connect.")
                 }
+                // The sealed welcome echoes the device ID the Mac read from the plaintext hello; a mismatch means
+                // the hello was changed on the way.
+                guard welcome.deviceID == deviceID else {
+                    throw RemoteError(.macNotVerified, "The pairing check was changed on the way to the Mac, so the iPhone did not connect.")
+                }
                 macName = welcome.macName
                 macAppVersion = welcome.appVersion
-                return task
+                return (task, sealedChannel)
             case .error(let error):
                 throw error
             default:
@@ -261,8 +294,16 @@ public final class RemoteClient {
                 return
             }
             guard isCurrent(gen) else { return }
+            // After the handshake every frame must be the next sealed frame. Anything else (plaintext, changed,
+            // replayed, reordered) means someone is interfering: drop the connection and reconnect.
+            guard case .data(let sealed) = message, var current = channel, let plaintext = try? current.open(sealed) else {
+                lastError = RemoteChannel.Failure.rejected.localizedDescription
+                task.cancel(with: .policyViolation, reason: nil)
+                return
+            }
+            channel = current
             // Frames of unknown types (a newer Mac) are skipped.
-            guard let frame = try? Self.decode(message) else { continue }
+            guard let frame = try? RemoteCoding.decode(RemoteServerFrame.self, from: plaintext) else { continue }
             handle(frame)
         }
     }
@@ -338,18 +379,28 @@ public final class RemoteClient {
             if case .error(let error) = reply { throw error }
             return reply
         }
-        guard let socket, state.isConnected else { throw RemoteError(.failed, "Not connected to the Mac") }
+        guard socket != nil, channel != nil, state.isConnected else { throw RemoteError(.failed, "Not connected to the Mac") }
         let id = nextRequestID()
-        let text = try Self.encode(RemoteClientFrame(message, id: id))
+        let plaintext = try RemoteCoding.encode(RemoteClientFrame(message, id: id))
         let timeout = requestTimeout
         return try await withCheckedThrowingContinuation { continuation in
+            // Sealed and handed to the socket in one step on this actor, so frames go out in counter order.
+            guard let socket, var current = channel else {
+                continuation.resume(throwing: RemoteError(.failed, "Not connected to the Mac"))
+                return
+            }
+            let sealed: Data
+            do {
+                sealed = try current.seal(plaintext)
+            } catch {
+                continuation.resume(throwing: error)
+                return
+            }
+            channel = current
             pending[id] = continuation
-            Task {
-                do {
-                    try await socket.send(.string(text))
-                } catch {
-                    self.resolve(id, with: .failure(error))
-                }
+            socket.send(.data(sealed)) { error in
+                guard let error else { return }
+                Task { @MainActor in self.resolve(id, with: .failure(error)) }
             }
             Task {
                 try? await Task.sleep(for: timeout)

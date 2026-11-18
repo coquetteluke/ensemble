@@ -2,9 +2,10 @@ import Foundation
 
 /// Version of the Mac/iPhone protocol. Bump when messages change incompatibly.
 /// 2: challenge-response pairing check; the token is never sent.
-public let remoteProtocolVersion = 2
-/// Oldest protocol version either side accepts. Version 1 sent the raw token, so it is refused.
-public let remoteMinimumProtocolVersion = 2
+/// 3: every frame after the handshake is encrypted (`RemoteChannel`); the welcome is the first sealed frame.
+public let remoteProtocolVersion = 3
+/// Oldest protocol version either side accepts. Older versions sent the token (1) or plaintext frames (2).
+public let remoteMinimumProtocolVersion = 3
 /// Port the Mac listens on unless the user picks another.
 public let remoteDefaultPort = 47823
 
