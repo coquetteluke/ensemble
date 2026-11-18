@@ -50,6 +50,8 @@ public final class SessionStore {
     public var planCommentDrafts: [String: [Int: String]] = [:]
     /// The mode each session was in before it switched to Plan; Proceed returns to it.
     @ObservationIgnored var modeBeforePlan: [String: PermissionMode] = [:]
+    /// Background shells, plan limit stops and auto-continue (`SessionStore+Background.swift`, `AutoContinue+Store.swift`).
+    public let background = SessionBackgroundState()
 
     @ObservationIgnored var byID: [String: SessionModel] = [:]
     @ObservationIgnored private(set) var eventTask: Task<Void, Never>?
@@ -298,7 +300,10 @@ public final class SessionStore {
 
     /// Applies one live engine event.
     public func apply(_ event: EngineEvent) {
-        defer { afterApply(event) }
+        defer {
+            afterApply(event)
+            backgroundDidApply(event)
+        }
         switch event {
         case .sessionCreated(let info), .sessionUpdated(let info):
             guard !deletedSessionIDs.contains(info.id) else { return }

@@ -1221,4 +1221,29 @@ actor ClaudeEngineCore {
         return info.engineCommands(skills: skills, terminalOnly: terminalCommands)
     }
 }
+
+// MARK: Background tasks and plan limit stops
+
+extension ClaudeEngineCore {
+    /// Background shells and tasks of every running process (`ClaudeTaskTracker`).
+    func backgroundTasks() -> [BackgroundTask] {
+        live.values.flatMap { $0.decoder.tasks.running() }
+    }
+
+    /// The CLI's task id for a running subagent session.
+    func subagentTaskID(_ childID: String) -> String? {
+        live[ClaudeSessionIDs.root(of: childID)]?.decoder.tasks.taskID(forChild: childID)
+    }
+
+    /// Ends one task (a background shell, a workflow or a subagent) with the `stop_task` control request.
+    func stopTask(_ taskID: String, root: String) async throws {
+        guard live[root] != nil else { throw ClaudeCodeError.processFailed("the agent is not running") }
+        _ = try await control(root, ["subtype": "stop_task", "task_id": .string(taskID)], timeout: .seconds(10))
+    }
+
+    /// The plan limit that ended the session's last turn.
+    func usageLimitStop(_ sessionID: String) -> UsageLimitInfo? {
+        live[ClaudeSessionIDs.root(of: sessionID)]?.decoder.lastLimitStop
+    }
+}
 #endif

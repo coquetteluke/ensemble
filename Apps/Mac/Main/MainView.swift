@@ -22,8 +22,9 @@ struct MainView: View {
     static let panelWidth: CGFloat = 303
     /// The narrowest the centre gets when a wide pane (file viewer, review) opens on the right.
     static let centreMinWidth: CGFloat = 400
-    /// Room the window's two toolbar buttons (changes, context panel) take at the top right, when no pane is open.
-    static let toolbarButtonsWidth: CGFloat = 92
+    /// Room the window's three toolbar buttons (background, changes, context panel) take at the top right, when no pane
+    /// is open.
+    static let toolbarButtonsWidth: CGFloat = 128
 
     /// Snapshots pass a fixed zoom; the app uses the stored View > Zoom setting.
     var zoomOverride: CGFloat?
@@ -77,6 +78,10 @@ struct MainView: View {
         .modifier(RoomsWindowSync(store: store, window: window, rooms: rooms))
         .navigationTitle(windowTitle)
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                BackgroundToolbarButton(store: store, window: window, rooms: rooms)
+            }
+            .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .primaryAction) {
                 ReviewToolbarButton(isOpen: window.reviewOpen) { window.toggleReview() }
             }

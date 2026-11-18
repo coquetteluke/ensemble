@@ -90,6 +90,12 @@ struct ClaudeStreamDecoder {
     private var streamedItems: Set<String> = []
     private(set) var children: [String: EngineSession] = [:]
     private var lastProcessCost: Double = 0
+    /// Background shells and tasks, and the task ids of subagents (`ClaudeTaskTracker`).
+    private(set) var tasks = ClaudeTaskTracker()
+    /// The newest `rate_limit_event`.
+    private(set) var lastRateLimit: ClaudePlanLimits?
+    /// Set when the last turn failed on a plan limit (`ClaudeUsageLimit`), cleared by the next turn's end.
+    private(set) var lastLimitStop: UsageLimitInfo?
 
     init(rootID: String, directory: String, usage: Usage = .zero) {
         self.rootID = rootID
@@ -163,7 +169,16 @@ struct ClaudeStreamDecoder {
             return [.initialized(info), .event(.activity(sessionID: rootID, .working))]
 
         case "task_started":
-            guard let toolID = json["tool_use_id"]?.stringValue else { return [] }
+            let taskType = json["task_type"]?.stringValue
+            let toolUseID = json["tool_use_id"]?.stringValue
+            if let taskID = json["task_id"]?.stringValue {
+                tasks.start(id: taskID, type: taskType, toolUseID: toolUseID, description: json["description"]?.stringValue ?? "",
+                            sessionID: toolUseID.flatMap { tools[$0]?.sessionID } ?? rootID,
+                            backgrounded: json["is_backgrounded"]?.boolValue)
+            }
+            // Shell commands, workflows and other tasks are background work, not child sessions.
+            guard ClaudeTaskTracker.isAgent(taskType) else { return [.event(.other(type: ClaudeEventTypes.backgroundTasks))] }
+            guard let toolID = toolUseID else { return [] }
             let childID = ClaudeSessionIDs.child(root: rootID, toolUseID: toolID)
             var out: [Output] = []
             if children[childID] == nil {
@@ -176,7 +191,21 @@ struct ClaudeStreamDecoder {
             out.append(.event(.activity(sessionID: childID, .working)))
             return out
 
+        case "task_updated":
+            guard let taskID = json["task_id"]?.stringValue, let patch = json["patch"],
+                  tasks.update(id: taskID, patch: patch), tasks.isBackgroundTask(taskID) else { return [] }
+            return [.event(.other(type: ClaudeEventTypes.backgroundTasks))]
+
+        case "background_tasks_changed":
+            tasks.replaceLive(json["tasks"]?.arrayValue ?? [], rootID: rootID)
+            return [.event(.other(type: ClaudeEventTypes.backgroundTasks))]
+
         case "task_notification":
+            if let taskID = json["task_id"]?.stringValue {
+                let background = tasks.isBackgroundTask(taskID)
+                tasks.end(id: taskID)
+                if background { return [.event(.other(type: ClaudeEventTypes.backgroundTasks))] }
+            }
             guard let toolID = json["tool_use_id"]?.stringValue else { return [] }
             let childID = ClaudeSessionIDs.child(root: rootID, toolUseID: toolID)
             let status = json["status"]?.stringValue ?? "completed"
@@ -406,7 +435,11 @@ struct ClaudeStreamDecoder {
         if outcome == "failed" {
             let text = json["result"]?.stringValue
             let errors = (json["errors"]?.arrayValue ?? []).compactMap(\.stringValue).filter { !$0.hasPrefix("[ede_diagnostic]") }
-            error = Self.friendlyError(text?.isEmpty == false ? text! : (errors.first ?? json["api_error_status"]?.stringValue ?? "The turn failed"))
+            let raw = text?.isEmpty == false ? text! : (errors.first ?? json["api_error_status"]?.stringValue ?? "The turn failed")
+            error = Self.friendlyError(raw)
+            lastLimitStop = ClaudeUsageLimit.stop(result: json, text: raw, lastRateLimit: lastRateLimit)
+        } else {
+            lastLimitStop = nil
         }
         let queued = json["queued_turn_count"]?.intValue ?? 0
         if !reportsCost { turn.costUSD = 0 }
@@ -434,7 +467,7 @@ struct ClaudeStreamDecoder {
         if lower.contains("not logged in") || lower.contains("please run /login") || (lower.contains("oauth") && lower.contains("expired")) {
             return "Claude Code is not signed in. Run `claude auth login` in Terminal. (\(text))"
         }
-        if lower.contains("usage limit") || (lower.contains("rate limit") && lower.contains("plan")) {
+        if UsageLimitText.isUsageLimit(text) || (lower.contains("rate limit") && lower.contains("plan")) {
             return "Your Claude plan's usage limit is reached. (\(text))"
         }
         if lower.contains("credit balance is too low") {
@@ -448,7 +481,7 @@ struct ClaudeStreamDecoder {
 
     // MARK: plan limits
 
-    private func rateLimit(_ json: JSONValue) -> [Output] {
+    private mutating func rateLimit(_ json: JSONValue) -> [Output] {
         guard let info = json["rate_limit_info"] else { return [] }
         func date(_ value: JSONValue?) -> Date? { value?.doubleValue.map { Date(timeIntervalSince1970: $0) } }
         var windows: [ClaudePlanLimits.Window] = []
@@ -458,7 +491,8 @@ struct ClaudeStreamDecoder {
         }
         let limits = ClaudePlanLimits(status: info["status"]?.stringValue ?? "allowed", limitType: info["rateLimitType"]?.stringValue,
                                       utilization: info["utilization"]?.doubleValue, resetsAt: date(info["resetsAt"]), windows: windows)
-        return [.rateLimit(limits), .event(.other(type: "claude.rate_limit"))]
+        lastRateLimit = limits
+        return [.rateLimit(limits), .event(.other(type: ClaudeEventTypes.rateLimit))]
     }
 
     // MARK: control

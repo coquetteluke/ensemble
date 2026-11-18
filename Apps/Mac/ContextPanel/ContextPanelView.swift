@@ -1,7 +1,7 @@
 import SwiftUI
 import EnsembleKit
 
-/// Right-hand context panel: Environment, Context, Outputs, Connectors.
+/// Right-hand context panel: Environment, Context, Background (while the session has running work), Outputs, Connectors.
 /// Sizes follow the reference panel (300 pt wide, 13 pt text, 31 pt rows, 23 pt breakdown rows).
 struct ContextPanelView: View {
     let store: SessionStore
@@ -11,6 +11,8 @@ struct ContextPanelView: View {
     var topInset: CGFloat = 52
     /// Snapshots can show the connectors list open.
     var connectorsInitiallyExpanded = false
+    /// Snapshots pass a fixed time for the Background section's elapsed times.
+    var backgroundNow: Date?
 
     @Environment(\.theme) private var theme
     @State private var showAllOutputs = false
@@ -33,6 +35,13 @@ struct ContextPanelView: View {
                     PanelSeparator()
                     contextSection
                     PanelSeparator()
+                    if let session {
+                        let running = store.backgroundWork(forSession: session.id)
+                        if !running.isEmpty {
+                            BackgroundPanelSection(store: store, session: session, items: running, now: backgroundNow)
+                            PanelSeparator()
+                        }
+                    }
                     outputsSection
                     PanelSeparator()
                     connectorsSection

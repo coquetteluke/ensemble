@@ -289,6 +289,8 @@ public struct TranscriptItemView: View {
     let resolution: PermissionResolution?
     let agents: [UUID: AgentSpec]
     @Environment(\.transcriptViewMode) private var mode
+    /// Knows which error rows are plan limit stops (`AutoContinue.swift`).
+    @Environment(\.interactionStore) private var store
 
     public init(item: TranscriptItem, previous: TranscriptItem? = nil, resolution: PermissionResolution? = nil, agents: [UUID: AgentSpec] = [:]) {
         self.item = item
@@ -315,8 +317,12 @@ public struct TranscriptItemView: View {
             PermissionCardView(request: request, resolution: resolution)
         case .board(_, let from, let to, let text, _):
             BoardRow(from: agents[from], to: to.compactMap { agents[$0] }, text: text)
-        case .error(_, let message):
-            ErrorRow(message: message)
+        case .error(let id, let message):
+            if let stop = store?.usageLimitStop(forItem: id) {
+                UsageLimitCard(stop: stop)
+            } else {
+                ErrorRow(message: message)
+            }
         case .notice(_, let text):
             NoticeRow(text: text)
         }
@@ -633,6 +639,105 @@ public struct ErrorRow: View {
         .padding(.vertical, theme.z(9))
         .background(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).fill(theme.danger.opacity(0.09)))
         .overlay(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).strokeBorder(theme.danger.opacity(0.3)))
+    }
+}
+
+/// In place of the error row of a turn that stopped on a plan limit: which limit, when it resets, and the switch that
+/// sends "Continue" a minute after the reset (on by default). After it sent, the card says when.
+public struct UsageLimitCard: View {
+    let stop: UsageLimitStop
+    var now: Date
+    @Environment(\.theme) private var theme
+    @Environment(\.interactionStore) private var store
+
+    public init(stop: UsageLimitStop, now: Date = Date()) {
+        self.stop = stop
+        self.now = now
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: theme.z(10)) {
+                Image(systemName: "hourglass")
+                    .font(theme.font(size: 12.5, weight: .medium))
+                    .foregroundStyle(theme.warning)
+                    .frame(width: theme.z(16))
+                VStack(alignment: .leading, spacing: theme.z(3)) {
+                    Text("\(stop.windowLabel) reached")
+                        .font(theme.font(size: 13.5, weight: .semibold))
+                        .foregroundStyle(theme.textPrimary)
+                    Text(resetLine)
+                        .font(theme.font(size: 12.5))
+                        .foregroundStyle(theme.textSecondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, theme.z(12))
+            .padding(.vertical, theme.z(10))
+            .help(stop.message)
+
+            if let footer {
+                Rectangle().fill(theme.warning.opacity(0.22)).frame(height: 1)
+                footer
+                    .padding(.horizontal, theme.z(12))
+                    .frame(minHeight: theme.z(36))
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .background(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).fill(theme.warning.opacity(0.08)))
+        .overlay(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).strokeBorder(theme.warning.opacity(0.32)))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var resetLine: String {
+        guard let resetsAt = stop.resetsAt else { return "Reset time not reported" }
+        let time = Self.timeText(resetsAt, now: now)
+        return resetsAt > now ? "Resets \(time)" : "Reset at \(time)"
+    }
+
+    private var footer: AnyView? {
+        switch stop.state {
+        case .waiting:
+            guard let continueAt = stop.continueAt else { return nil }
+            return AnyView(
+                HStack(spacing: theme.z(10)) {
+                    Text("Continue automatically at \(Self.timeText(continueAt, now: now))")
+                        .font(theme.font(size: 13))
+                        .foregroundStyle(theme.textPrimary)
+                    Spacer(minLength: theme.z(8))
+                    Toggle(isOn: Binding(get: { stop.autoContinue },
+                                         set: { store?.setAutoContinue($0, forItem: stop.id) })) { EmptyView() }
+                        .toggleStyle(CompactSwitchStyle())
+                        .accessibilityLabel("Continue automatically")
+                }
+                .help("Sends \u{201C}\(SessionStore.autoContinueText)\u{201D} to this session a minute after the limit resets, if it is idle")
+            )
+        case .sent:
+            let sentAt = stop.sentAt ?? stop.continueAt ?? now
+            return AnyView(
+                HStack(spacing: theme.z(8)) {
+                    Image(systemName: "checkmark")
+                        .font(theme.font(size: 11, weight: .semibold))
+                        .foregroundStyle(theme.success)
+                    Text("Sent \u{201C}\(SessionStore.autoContinueText)\u{201D} at \(Self.timeText(sentAt, now: now))")
+                        .font(theme.font(size: 13))
+                        .foregroundStyle(theme.textSecondary)
+                    Spacer(minLength: 0)
+                }
+            )
+        case .superseded:
+            return nil
+        }
+    }
+
+    /// "3:41 PM" today, "Thu 9:00 AM" within a week, "Nov 25, 9:00 AM" later.
+    public static func timeText(_ date: Date, now: Date) -> String {
+        let calendar = Calendar.current
+        if calendar.isDate(date, inSameDayAs: now) { return date.formatted(date: .omitted, time: .shortened) }
+        if abs(date.timeIntervalSince(now)) < 6 * 24 * 3600 {
+            return date.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+        }
+        return date.formatted(.dateTime.month(.abbreviated).day().hour().minute())
     }
 }
 

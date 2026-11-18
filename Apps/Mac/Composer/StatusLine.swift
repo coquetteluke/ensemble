@@ -1,11 +1,14 @@
 import SwiftUI
 import EnsembleKit
 
-/// Under the composer: session cost and tokens (opens the usage popover) and a small context meter.
+/// Under the composer: session cost and tokens (opens the usage popover), the Claude plan limit ring and a small context
+/// meter.
 struct StatusLine: View {
     let store: SessionStore
     let session: SessionModel
     @Bindable var window: WindowState
+    /// Snapshots pass a fixed plan meter; the app reads the Claude engine.
+    var planMeter: PlanLimitMeter?
     @Environment(\.theme) private var theme
     @State private var showUsage = false
 
@@ -40,6 +43,8 @@ struct StatusLine: View {
             PowerStatusChip(store: store)
 
             Spacer(minLength: theme.z(8))
+
+            PlanLimitStatusItem(store: store, fixedMeter: planMeter) { showUsage = true }
 
             Button {
                 if !window.showContextPanel { window.toggleContextPanel() }
