@@ -235,6 +235,8 @@ public enum RemoteServerMessage: Hashable, Sendable {
     /// Sent once, right after the connection opens.
     case challenge(RemoteChallenge)
     case welcome(RemoteWelcome)
+    /// Sent inside the sealed channel right after `welcome` (and when the Mac's relay moves) so paired phones learn it.
+    case relayDetails(RemotePairing.Relay)
     case hub(RemoteHubSnapshot)
     case transcript(RemoteTranscript)
     case rooms([RemoteRoom])
@@ -248,6 +250,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
         switch self {
         case .challenge: "challenge"
         case .welcome: "welcome"
+        case .relayDetails: "relayDetails"
         case .hub: "hub"
         case .transcript: "transcript"
         case .rooms: "rooms"
@@ -263,6 +266,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
         switch self {
         case .challenge(let p): try c.encode(p, forKey: .data)
         case .welcome(let p): try c.encode(p, forKey: .data)
+        case .relayDetails(let p): try c.encode(p, forKey: .data)
         case .hub(let p): try c.encode(p, forKey: .data)
         case .transcript(let p): try c.encode(p, forKey: .data)
         case .rooms(let p): try c.encode(RemoteRoomsPayload(rooms: p), forKey: .data)
@@ -278,6 +282,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
         switch type {
         case "challenge": return .challenge(try c.decode(RemoteChallenge.self, forKey: .data))
         case "welcome": return .welcome(try c.decode(RemoteWelcome.self, forKey: .data))
+        case "relayDetails": return .relayDetails(try c.decode(RemotePairing.Relay.self, forKey: .data))
         case "hub": return .hub(try c.decode(RemoteHubSnapshot.self, forKey: .data))
         case "transcript": return .transcript(try c.decode(RemoteTranscript.self, forKey: .data))
         case "rooms": return .rooms(try c.decode(RemoteRoomsPayload.self, forKey: .data).rooms)

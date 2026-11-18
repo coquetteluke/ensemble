@@ -195,7 +195,7 @@ final class RemoteAppModel {
 
     private func connect(_ pairing: RemotePairing) {
         client?.stop()
-        let c = RemoteClient(pairing: pairing, deviceName: UIDevice.current.name, deviceID: Self.deviceID())
+        let c = RemoteClient(pairing: pairing, deviceName: UIDevice.current.name, deviceID: Self.deviceID(), pairingStore: store)
         watchAlerts(c)
         c.start()
         client = c

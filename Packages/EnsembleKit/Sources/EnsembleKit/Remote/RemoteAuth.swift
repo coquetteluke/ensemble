@@ -221,26 +221,56 @@ public final class InMemoryRemoteTokenStore: RemoteTokenStore {
     public func deleteToken() throws { token.withLock { $0 = nil } }
 }
 
-/// Saves the phone's pairing in the Keychain.
+/// Saves the phone's pairing in the Keychain (or in memory for tests).
 public struct RemotePairingStore: Sendable {
+    private final class StorageBox: Sendable {
+        let value: Mutex<RemotePairing?>
+
+        init(_ initial: RemotePairing?) {
+            self.value = Mutex(initial)
+        }
+    }
+
     public var service: String
     public var account: String
+    private let memory: StorageBox?
 
     public init(service: String = RemoteKeychain.defaultService, account: String = "pairing") {
         self.service = service
         self.account = account
+        self.memory = nil
+    }
+
+    private init(memory: StorageBox) {
+        self.service = ""
+        self.account = ""
+        self.memory = memory
+    }
+
+    /// An in-memory store for tests and previews that never touches the Keychain.
+    public static func inMemory(initial: RemotePairing? = nil) -> RemotePairingStore {
+        RemotePairingStore(memory: StorageBox(initial))
     }
 
     public func load() -> RemotePairing? {
+        if let memory { return memory.value.withLock { $0 } }
         guard let data = try? RemoteKeychain.read(service: service, account: account) else { return nil }
         return try? JSONDecoder().decode(RemotePairing.self, from: data)
     }
 
     public func save(_ pairing: RemotePairing) throws {
+        if let memory {
+            memory.value.withLock { $0 = pairing }
+            return
+        }
         try RemoteKeychain.write(try JSONEncoder().encode(pairing), service: service, account: account)
     }
 
     public func delete() throws {
+        if let memory {
+            memory.value.withLock { $0 = nil }
+            return
+        }
         try RemoteKeychain.delete(service: service, account: account)
     }
 }

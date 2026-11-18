@@ -46,11 +46,14 @@ public actor RemoteServer {
         /// Host names the phone may say it dialed, besides the bind addresses and `localhost`: the MagicDNS
         /// name and the LAN name from the pairing code. A phone that dialed anything else is refused.
         public var acceptedHosts: [String]
+        /// The relay details paired phones should save over the sealed channel right after `welcome`.
+        public var activeRelay: RemotePairing.Relay?
 
         public init(port: UInt16 = UInt16(remoteDefaultPort), bindAddresses: [String] = ["127.0.0.1"], macName: String = "Mac",
                     appVersion: String = "0.1.0", heartbeatInterval: Duration = .seconds(15), helloTimeout: Duration = .seconds(10),
                     maxDevices: Int = 8, maxPending: Int = 8, maxRelayedPending: Int = 4, maxPendingPerAddress: Int = 3,
-                    maxMessageBytes: Int = 1 << 20, maxPendingMessageBytes: Int = 4096, acceptedHosts: [String] = []) {
+                    maxMessageBytes: Int = 1 << 20, maxPendingMessageBytes: Int = 4096, acceptedHosts: [String] = [],
+                    activeRelay: RemotePairing.Relay? = nil) {
             self.port = port
             self.bindAddresses = bindAddresses
             self.macName = macName
@@ -64,6 +67,7 @@ public actor RemoteServer {
             self.maxMessageBytes = maxMessageBytes
             self.maxPendingMessageBytes = maxPendingMessageBytes
             self.acceptedHosts = acceptedHosts
+            self.activeRelay = activeRelay
         }
     }
 
@@ -143,6 +147,7 @@ public actor RemoteServer {
     /// Relay identities phones may name, normalised, with how many relay hosts registered each.
     private var relayChannelHosts: [String: Int] = [:]
     private var relayFailureContinuations: [UUID: AsyncStream<String>.Continuation] = [:]
+    private var activeRelay: RemotePairing.Relay?
     private let encoder = RemoteCoding.encoder()
     private let decoder = RemoteCoding.decoder()
 
@@ -150,6 +155,7 @@ public actor RemoteServer {
         self.host = host
         self.token = token
         self.config = configuration
+        self.activeRelay = configuration.activeRelay
     }
 
     // MARK: - Lifecycle
@@ -218,6 +224,18 @@ public actor RemoteServer {
         for p in peers.values { p.connection.cancel() }
         peers = [:]
         publishStatus()
+    }
+
+    /// Sets the relay details sent to paired phones over the sealed channel right after `welcome`, and pushes a
+    /// changed non-nil relay to every paired phone already connected.
+    public func setActiveRelay(_ relay: RemotePairing.Relay?) {
+        guard relay != activeRelay else { return }
+        activeRelay = relay
+        guard let relay else { return }
+        let authenticatedIDs = peers.compactMap { $0.value.authenticated ? $0.key : nil }
+        for id in authenticatedIDs {
+            sendSealed(.relayDetails(relay), to: id)
+        }
     }
 
     /// Largest message a paired phone may send; a relay host opens its data sockets with this limit.
@@ -661,9 +679,12 @@ public actor RemoteServer {
                                            protocolVersion: min(remoteProtocolVersion, hello.protocolVersion))
         let serverProof = RemoteHandshake.serverProof(token: token, serverNonce: serverNonce, clientNonce: clientNonce,
                                                        macKey: macKey, phoneKey: phoneKey)
-        send(.welcome(RemoteWelcome(macName: config.macName, deviceID: hello.deviceID, appVersion: config.appVersion,
-                                    serverProof: RemoteHandshake.encode(serverProof))),
-             replyTo: replyTo, to: id)
+        sendSealed(.welcome(RemoteWelcome(macName: config.macName, deviceID: hello.deviceID, appVersion: config.appVersion,
+                                          serverProof: RemoteHandshake.encode(serverProof))),
+                   replyTo: replyTo, to: id)
+        if let activeRelay {
+            sendSealed(.relayDetails(activeRelay), to: id)
+        }
         publishStatus()
     }
 
@@ -698,9 +719,25 @@ public actor RemoteServer {
     // MARK: - Sending
 
     private func send(_ message: RemoteServerMessage, replyTo: String?, to id: Int, thenClose: Bool = false) {
+        if case .relayDetails = message {
+            sendSealed(message, replyTo: replyTo, to: id)
+            return
+        }
         guard peers[id] != nil else { return }
         guard let data = try? encoder.encode(RemoteServerFrame(message, replyTo: replyTo)) else { return }
         sendEncoded(data, to: id, thenClose: thenClose)
+    }
+
+    /// Writes one frame over the peer's sealed channel only; never writes plaintext, even if called out of turn.
+    private func sendSealed(_ message: RemoteServerMessage, replyTo: String? = nil, to id: Int) {
+        guard let peer = peers[id], peer.authenticated, var channel = peer.channel else { return }
+        guard let data = try? encoder.encode(RemoteServerFrame(message, replyTo: replyTo)),
+              let sealed = try? channel.seal(data) else {
+            dropPeer(id)
+            return
+        }
+        peers[id]?.channel = channel
+        Self.write(sealed, on: peer.connection, binary: true, thenClose: false)
     }
 
     /// Writes one encoded frame: sealed binary once the phone is paired, plaintext text during the handshake.

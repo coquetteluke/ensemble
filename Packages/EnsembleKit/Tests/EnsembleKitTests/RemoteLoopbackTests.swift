@@ -573,6 +573,222 @@ import Testing
         #expect(await h.server.status.devices.count == 1)
     }
 
+    // MARK: Relay details and rotation
+
+    @Test func relayDetailsAreSavedAfterWelcome() async throws {
+        let h = try await startServer(acceptedHosts: ["::1"])
+        defer { Task { await h.server.stop() } }
+
+        let firstRelay = RemotePairing.Relay(url: "wss://relay-one.example", mailbox: RelayIdentity.make().mailboxID)
+        await h.server.setActiveRelay(firstRelay)
+
+        // Check raw wire order and sealing first: welcome is frame 0, relayDetails is frame 1, both sealed binary.
+        var raw = try await rawPhone(h)
+        let welcomeFrame = try raw.open(raw.reply)
+        guard case .welcome = welcomeFrame.message else {
+            raw.task.cancel()
+            Issue.record("Expected welcome first, got \(welcomeFrame.message.typeName)")
+            return
+        }
+        let nextMessage = try await raw.task.receive()
+        guard case .data(let sealedRelay) = nextMessage else {
+            raw.task.cancel()
+            Issue.record("Expected relayDetails to arrive as a sealed binary frame")
+            return
+        }
+        #expect(sealedRelay.range(of: Data(firstRelay.url.utf8)) == nil)
+        #expect(sealedRelay.range(of: Data(firstRelay.mailbox.utf8)) == nil)
+        let detailsFrame = try raw.open(nextMessage)
+        #expect(detailsFrame.message == .relayDetails(firstRelay))
+        raw.task.cancel()
+
+        // Through a TCP proxy, verify RemoteClient saves the initial relay and later rotates to previousRelay,
+        // while no plaintext frame on the wire carries relayDetails, the relay URL or the mailbox ID.
+        let proxy = try await TCPRelay.start(listenHost: "::1", port: UInt16(h.port),
+                                             targetHost: "127.0.0.1", targetPort: UInt16(h.port))
+        defer { proxy.stop() }
+
+        let initialPairing = RemotePairing(hosts: ["::1"], port: h.port, token: h.token, macName: "Loopback Mac")
+        let store = RemotePairingStore.inMemory(initial: initialPairing)
+        let c = RemoteClient(pairing: initialPairing, deviceName: "Test Phone",
+                             deviceID: "test-\(UUID().uuidString)", pairingStore: store)
+        c.handshakeTimeout = .seconds(30)
+        c.requestTimeout = .seconds(60)
+        c.start()
+        defer { c.stop() }
+
+        try await waitUntil("initial relayDetails to be saved") {
+            c.state == .connected(via: .direct(host: "::1")) && c.pairing.relay == firstRelay
+        }
+        #expect(c.pairing.previousRelay == nil)
+        #expect(store.load()?.relay == firstRelay)
+        #expect(store.load()?.previousRelay == nil)
+
+        // When the Mac moves to a second relay while the phone is connected, the old relay becomes previousRelay.
+        let secondRelay = RemotePairing.Relay(url: "wss://relay-two.example", mailbox: RelayIdentity.make().mailboxID)
+        await h.server.setActiveRelay(secondRelay)
+        try await waitUntil("rotated relayDetails to be saved") {
+            c.pairing.relay == secondRelay
+        }
+        #expect(c.pairing.previousRelay == firstRelay)
+        #expect(store.load()?.relay == secondRelay)
+        #expect(store.load()?.previousRelay == firstRelay)
+
+        // Reconnecting directly does not drop previousRelay before the new relay itself works.
+        let countBeforeReconnect = proxy.connectionCount
+        c.reconnectNow()
+        try await waitUntil("direct reconnect to complete") {
+            proxy.connectionCount > countBeforeReconnect && c.state == .connected(via: .direct(host: "::1"))
+        }
+        try await c.refreshHub()
+        #expect(c.pairing.relay == secondRelay)
+        #expect(c.pairing.previousRelay == firstRelay)
+        #expect(store.load()?.previousRelay == firstRelay)
+
+        // Malformed or insecure relay details are ignored without overwriting the stored pairing.
+        await h.server.setActiveRelay(RemotePairing.Relay(url: "ws://insecure.example", mailbox: firstRelay.mailbox))
+        await h.server.setActiveRelay(RemotePairing.Relay(url: "wss://relay.example", mailbox: "short"))
+        try await c.refreshHub()
+        #expect(c.pairing.relay == secondRelay)
+        #expect(c.pairing.previousRelay == firstRelay)
+        #expect(store.load()?.relay == secondRelay)
+
+        let wireBytes = proxy.fromMac.all
+        #expect(!wireBytes.isEmpty)
+        for secret in ["relayDetails", firstRelay.url, firstRelay.mailbox, secondRelay.url, secondRelay.mailbox] {
+            #expect(wireBytes.range(of: Data(secret.utf8)) == nil, "\(secret) crossed the wire in plaintext")
+        }
+    }
+
+    @Test func previousRelayIsTriedWhenTheNewOneFails() async throws {
+        let oldFake = try await FakeRelay.start()
+        let newFake = try await FakeRelay.start()
+        let identity = RelayIdentity.make()
+        let token = RemoteToken.generate()
+        let host = DemoRemoteHost()
+        let config = RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Relay Mac",
+                                                helloTimeout: .seconds(30))
+        let server = RemoteServer(host: host, token: token, configuration: config)
+        try await server.start()
+
+        let oldRelay = RemotePairing.Relay(url: oldFake.url.absoluteString, mailbox: identity.mailboxID)
+        let newRelay = RemotePairing.Relay(url: newFake.url.absoluteString, mailbox: identity.mailboxID)
+        newFake.stop()
+        await server.setActiveRelay(newRelay)
+
+        let fallbackHost = RelayHost(relayURL: oldFake.url, identity: identity, token: token, server: server)
+        await fallbackHost.start()
+
+        do {
+            try await pollUntil("fallback relay host to sign in") {
+                await fallbackHost.status == .connected && oldFake.hostIsReady(identity.mailboxID)
+            }
+
+            let pairing = RemotePairing(hosts: [], port: remoteDefaultPort, token: token, macName: "Relay Mac",
+                                        relay: newRelay, previousRelay: oldRelay)
+            let store = RemotePairingStore.inMemory(initial: pairing)
+            let c = RemoteClient(pairing: pairing, deviceName: "Test Phone",
+                                 deviceID: "phone-\(UUID().uuidString)", pairingStore: store)
+            c.handshakeTimeout = .seconds(10)
+            c.requestTimeout = .seconds(30)
+            c.start()
+
+            do {
+                try await waitUntil("phone to connect through previousRelay") {
+                    c.state == .connected(via: .relay) && c.sessions.count == 4
+                }
+                #expect(oldFake.phoneConnections(identity.mailboxID).count == 1)
+                #expect(c.pairing.relay == newRelay)
+                #expect(c.pairing.previousRelay == oldRelay)
+                #expect(store.load()?.relay == newRelay)
+                #expect(store.load()?.previousRelay == oldRelay)
+                c.stop()
+            } catch {
+                c.stop()
+                throw error
+            }
+
+            await fallbackHost.stop()
+            await server.stop()
+            oldFake.stop()
+        } catch {
+            await fallbackHost.stop()
+            await server.stop()
+            oldFake.stop()
+            throw error
+        }
+    }
+
+    @Test func previousRelayIsDroppedAfterTheNewOneWorks() async throws {
+        let oldFake = try await FakeRelay.start()
+        let newFake = try await FakeRelay.start()
+        let identity = RelayIdentity.make()
+        let token = RemoteToken.generate()
+        let host = DemoRemoteHost()
+        let config = RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Relay Mac",
+                                                helloTimeout: .seconds(30))
+        let server = RemoteServer(host: host, token: token, configuration: config)
+        try await server.start()
+
+        let oldRelay = RemotePairing.Relay(url: oldFake.url.absoluteString, mailbox: identity.mailboxID)
+        let newRelay = RemotePairing.Relay(url: newFake.url.absoluteString, mailbox: identity.mailboxID)
+        await server.setActiveRelay(newRelay)
+
+        let fallbackHost = RelayHost(relayURL: oldFake.url, identity: identity, token: token, server: server)
+        let primaryHost = RelayHost(relayURL: newFake.url, identity: identity, token: token, server: server)
+        await fallbackHost.start()
+        await primaryHost.start()
+
+        do {
+            try await pollUntil("both relay hosts to sign in") {
+                let fallbackStatus = await fallbackHost.status
+                let primaryStatus = await primaryHost.status
+                return fallbackStatus == .connected
+                    && primaryStatus == .connected
+                    && oldFake.hostIsReady(identity.mailboxID)
+                    && newFake.hostIsReady(identity.mailboxID)
+            }
+
+            let pairing = RemotePairing(hosts: [], port: remoteDefaultPort, token: token, macName: "Relay Mac",
+                                        relay: newRelay, previousRelay: oldRelay)
+            let store = RemotePairingStore.inMemory(initial: pairing)
+            let c = RemoteClient(pairing: pairing, deviceName: "Test Phone",
+                                 deviceID: "phone-\(UUID().uuidString)", pairingStore: store)
+            c.handshakeTimeout = .seconds(10)
+            c.requestTimeout = .seconds(30)
+            c.start()
+
+            do {
+                try await waitUntil("phone to connect through the new relay and drop previousRelay") {
+                    c.state == .connected(via: .relay) && c.sessions.count == 4 && c.pairing.previousRelay == nil
+                }
+                #expect(newFake.phoneConnections(identity.mailboxID).count == 1)
+                #expect(oldFake.phoneConnections(identity.mailboxID).isEmpty)
+                #expect(c.pairing.relay == newRelay)
+                #expect(c.pairing.previousRelay == nil)
+                #expect(store.load()?.relay == newRelay)
+                #expect(store.load()?.previousRelay == nil)
+                c.stop()
+            } catch {
+                c.stop()
+                throw error
+            }
+
+            await primaryHost.stop()
+            await fallbackHost.stop()
+            await server.stop()
+            newFake.stop()
+            oldFake.stop()
+        } catch {
+            await primaryHost.stop()
+            await fallbackHost.stop()
+            await server.stop()
+            newFake.stop()
+            oldFake.stop()
+            throw error
+        }
+    }
+
     // MARK: Helpers
 
     static let sendHi = RemoteClientMessage.sendMessage(RemoteSendMessage(target: .session(RemoteDemoData.IDs.fixSession), text: "hi"))

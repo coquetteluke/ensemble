@@ -89,6 +89,7 @@ public final class RemoteClient {
     @ObservationIgnored private var alertedIDs: Set<String> = []
 
     @ObservationIgnored private let urlSession: URLSession
+    @ObservationIgnored private let pairingStore: RemotePairingStore?
     @ObservationIgnored private let localHost: (any RemoteHost)?
     @ObservationIgnored private var socket: URLSessionWebSocketTask?
     /// Seals and opens frames on the current connection.
@@ -101,11 +102,12 @@ public final class RemoteClient {
     @ObservationIgnored private var generation = 0
 
     /// A client for a paired Mac.
-    public init(pairing: RemotePairing, deviceName: String, deviceID: String) {
+    public init(pairing: RemotePairing, deviceName: String, deviceID: String, pairingStore: RemotePairingStore? = nil) {
         self.pairing = pairing
         self.macName = pairing.macName
         self.deviceName = deviceName
         self.deviceID = deviceID
+        self.pairingStore = pairingStore
         self.localHost = nil
         self.isInProcess = false
         let config = URLSessionConfiguration.ephemeral
@@ -120,6 +122,7 @@ public final class RemoteClient {
         self.macName = macName
         self.deviceName = "Demo"
         self.deviceID = "demo"
+        self.pairingStore = nil
         self.localHost = host
         self.isInProcess = true
         self.urlSession = URLSession(configuration: .ephemeral)
@@ -208,6 +211,7 @@ public final class RemoteClient {
     private struct ConnectedCandidate: Sendable {
         let path: RemoteConnectionPath
         let directIndex: Int?
+        let relay: RemotePairing.Relay?
         let socket: SocketBox
         let channel: RemoteChannel
         let welcome: RemoteWelcome
@@ -244,6 +248,10 @@ public final class RemoteClient {
                 guard let task = winner.socket.claim() else { continue }
                 macName = winner.welcome.macName
                 macAppVersion = winner.welcome.appVersion
+                if let usedRelay = winner.relay, usedRelay == pairing.relay, pairing.previousRelay != nil {
+                    pairing.previousRelay = nil
+                    try? pairingStore?.save(pairing)
+                }
                 socket = task
                 channel = winner.channel
                 state = .connected(via: winner.path)
@@ -501,7 +509,7 @@ public final class RemoteClient {
         let (box, channel, welcome) = try await handshake(
             over: task, token: token, deviceName: deviceName, deviceID: deviceID,
             dialedHost: host, dialedPort: port, timeout: timeout)
-        return ConnectedCandidate(path: .direct(host: host), directIndex: directIndex, socket: box,
+        return ConnectedCandidate(path: .direct(host: host), directIndex: directIndex, relay: nil, socket: box,
                                   channel: channel, welcome: welcome)
     }
 
@@ -523,7 +531,7 @@ public final class RemoteClient {
                 let (box, channel, welcome) = try await handshake(
                     over: task, token: token, deviceName: deviceName, deviceID: deviceID,
                     dialedHost: dialedHost, dialedPort: RelayIdentity.channelPort, timeout: timeout)
-                return ConnectedCandidate(path: .relay, directIndex: nil, socket: box,
+                return ConnectedCandidate(path: .relay, directIndex: nil, relay: relay, socket: box,
                                           channel: channel, welcome: welcome)
             } catch is CancellationError {
                 throw CancellationError()
@@ -779,6 +787,8 @@ public final class RemoteClient {
 
     private func handle(_ frame: RemoteServerFrame) {
         switch frame.message {
+        case .relayDetails(let relay):
+            applyRelayDetails(relay)
         case .hub(let hub):
             sessions = hub.sessions
             permissions = hub.permissions
@@ -800,6 +810,20 @@ public final class RemoteClient {
                 resolve(re, with: .success(frame.message))
             }
         }
+    }
+
+    private func applyRelayDetails(_ incoming: RemotePairing.Relay) {
+        guard !isInProcess,
+              let url = URL(string: incoming.url), RelayDialer.isAllowed(url),
+              RelayWire.isMailboxID(incoming.mailbox) else { return }
+        guard pairing.relay != incoming else { return }
+        if let old = pairing.relay {
+            pairing.previousRelay = old
+        } else if pairing.previousRelay == incoming {
+            pairing.previousRelay = nil
+        }
+        pairing.relay = incoming
+        try? pairingStore?.save(pairing)
     }
 
     // MARK: - Actions
