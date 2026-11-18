@@ -1,0 +1,216 @@
+import Foundation
+
+/// Errors from the Claude Code engine.
+public enum ClaudeCodeError: Error, LocalizedError, Equatable, Sendable {
+    /// The `claude` command was not found.
+    case notInstalled
+    /// `claude auth status` says nobody is signed in.
+    case notSignedIn
+    /// The engine only runs on macOS (it starts a local process).
+    case unsupportedPlatform
+    /// The feature does not exist in this engine (schedules, for example).
+    case notSupported(String)
+    case unknownSession(String)
+    case invalidArgument(String)
+    /// The `claude` process could not be started or ended unexpectedly.
+    case processFailed(String)
+    /// A control request (interrupt, set mode, context) was refused or timed out.
+    case controlFailed(String)
+    case keychain(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notInstalled:
+            "The claude command is not installed. Install Claude Code from claude.com/claude-code, then sign in with `claude auth login`."
+        case .notSignedIn:
+            "Claude Code is not signed in. Run `claude auth login` in Terminal and sign in with your own Claude account."
+        case .unsupportedPlatform:
+            "Claude agents run on the Mac only."
+        case .notSupported(let what):
+            what
+        case .unknownSession(let id):
+            "No Claude session with id \(id)."
+        case .invalidArgument(let message):
+            message
+        case .processFailed(let message):
+            "Claude Code stopped: \(message)"
+        case .controlFailed(let message):
+            "Claude Code did not accept the request: \(message)"
+        case .keychain(let message):
+            "Keychain error: \(message)"
+        }
+    }
+}
+
+/// Who pays for a Claude agent.
+public enum ClaudeBilling: String, Codable, Sendable, CaseIterable {
+    /// The signed-in Claude Pro or Max plan of the Mac's user (the default). Ensemble never touches the login.
+    case subscription
+    /// An Anthropic API key stored in Ensemble's own Keychain item, passed only to that agent's process.
+    case apiKey
+}
+
+/// Which of the user's Claude settings files a headless agent loads (`--setting-sources`).
+public enum ClaudeSettingSources: String, Codable, Sendable, CaseIterable {
+    /// User, project and local settings: the user's own hooks, skills, plugins, CLAUDE.md and permission rules apply,
+    /// exactly like their own `claude` sessions (the default, since it is their own Claude).
+    case all
+    /// Project and local settings only. The user's global hooks and settings (`~/.claude/settings.json`) are skipped.
+    case projectOnly
+    /// No settings files at all.
+    case none
+
+    /// The `--setting-sources` value, or nil to leave the CLI default.
+    var argument: String? {
+        switch self {
+        case .all: nil
+        case .projectOnly: "project,local"
+        case .none: ""
+        }
+    }
+}
+
+/// Plan usage from the CLI's `rate_limit_event` (subscription limits, not dollars).
+public struct ClaudePlanLimits: Codable, Hashable, Sendable {
+    public struct Window: Codable, Hashable, Sendable {
+        /// `five_hour`, `seven_day`, ...
+        public var name: String
+        /// 0...1.
+        public var utilization: Double
+        public var resetsAt: Date?
+        /// `allowed`, `allowed_warning`, `rejected`.
+        public var status: String?
+    }
+
+    /// `allowed`, `allowed_warning` (near a limit) or `rejected` (limit reached).
+    public var status: String
+    /// The window the status is about (`five_hour`, `seven_day`, ...).
+    public var limitType: String?
+    public var utilization: Double?
+    public var resetsAt: Date?
+    public var windows: [Window]
+    public var updated: Date
+
+    public init(status: String, limitType: String? = nil, utilization: Double? = nil, resetsAt: Date? = nil,
+                windows: [Window] = [], updated: Date = Date()) {
+        self.status = status
+        self.limitType = limitType
+        self.utilization = utilization
+        self.resetsAt = resetsAt
+        self.windows = windows
+        self.updated = updated
+    }
+
+    /// True when the plan refuses new work until `resetsAt`.
+    public var isLimited: Bool { status == "rejected" }
+}
+
+/// Model ids and names for Claude agents.
+public enum ClaudeModels {
+    /// Provider id for agents on the user's Claude subscription.
+    public static let subscriptionProviderID = "claude-code"
+    /// Provider id for Claude agents billed to an Anthropic API key (same CLI, `ANTHROPIC_API_KEY` set for that agent only).
+    public static let apiKeyProviderID = "claude-code-api"
+
+    public static let subscriptionProviderName = "Claude (your subscription)"
+    public static let apiKeyProviderName = "Claude (API key)"
+
+    /// Effort levels accepted by `claude --effort`, offered as model variants.
+    public static let effortLevels = ["low", "medium", "high", "xhigh", "max"]
+
+    struct Entry: Sendable {
+        let id: String
+        let name: String
+        /// What the CLI resolved the alias to on 2026-11-18 (claude 2.1.319), for display.
+        let resolves: String?
+        let contextLimit: Int?
+    }
+
+    /// Aliases always track the newest model of a family. Confirmed with `set_model` against claude 2.1.319:
+    /// opus -> claude-opus-5-5, sonnet -> claude-sonnet-5-5, haiku -> claude-haiku-5-5, fable -> claude-fable-5-1.
+    /// haiku's 1M window is from the CLI's own `modelUsage.contextWindow`; the others are filled in at runtime from
+    /// the same field once a turn has run.
+    static let catalog: [Entry] = [
+        Entry(id: "opus", name: "Claude Opus", resolves: "claude-opus-5-5", contextLimit: 200_000),
+        Entry(id: "opus[1m]", name: "Claude Opus (1M context)", resolves: "claude-opus-5-5", contextLimit: 1_000_000),
+        Entry(id: "sonnet", name: "Claude Sonnet", resolves: "claude-sonnet-5-5", contextLimit: 200_000),
+        Entry(id: "sonnet[1m]", name: "Claude Sonnet (1M context)", resolves: "claude-sonnet-5-5", contextLimit: 1_000_000),
+        Entry(id: "haiku", name: "Claude Haiku", resolves: "claude-haiku-5-5", contextLimit: 1_000_000),
+        Entry(id: "fable", name: "Claude Fable", resolves: "claude-fable-5-1", contextLimit: nil),
+    ]
+
+    static func isClaudeProvider(_ providerID: String) -> Bool {
+        providerID == subscriptionProviderID || providerID == apiKeyProviderID
+    }
+
+    static func billing(for model: ModelRef?) -> ClaudeBilling {
+        model?.providerID == apiKeyProviderID ? .apiKey : .subscription
+    }
+
+    /// Context window for a model id or alias when known.
+    static func contextLimit(for id: String, observed: [String: Int]) -> Int? {
+        if let value = observed[id] { return value }
+        if let entry = catalog.first(where: { $0.id == id }) {
+            if let resolved = entry.resolves, let value = observed[resolved], !id.hasSuffix("[1m]") { return value }
+            return entry.contextLimit
+        }
+        if let entry = catalog.first(where: { $0.resolves == id && !$0.id.hasSuffix("[1m]") }) { return entry.contextLimit }
+        return nil
+    }
+}
+
+/// Ids for Claude agent sessions.
+public enum ClaudeSessionIDs {
+    /// Subagent sessions have synthetic, stable ids built from the root session and the Agent tool call that started
+    /// them: `<root session uuid>.<tool use id>`. The same id comes back from live events and from reloading the
+    /// transcript, and it can be routed to the root session without any stored state.
+    public static func child(root: String, toolUseID: String) -> String { "\(root).\(toolUseID)" }
+
+    /// The root session of any id (itself for a root).
+    public static func root(of sessionID: String) -> String {
+        guard let dot = sessionID.firstIndex(of: ".") else { return sessionID }
+        return String(sessionID[..<dot])
+    }
+
+    /// The Agent tool call behind a subagent session id, or nil for a root session.
+    public static func toolUseID(of sessionID: String) -> String? {
+        guard let dot = sessionID.firstIndex(of: ".") else { return nil }
+        let rest = sessionID[sessionID.index(after: dot)...]
+        return rest.isEmpty ? nil : String(rest)
+    }
+
+    public static func isChild(_ sessionID: String) -> Bool { toolUseID(of: sessionID) != nil }
+
+    /// Ids of text and thinking rows: the API message id plus the content block index, the same in live
+    /// `stream_event`s and in the CLI's transcript file (`apiBlockIndex`).
+    static func block(messageID: String, index: Int) -> String { "\(messageID):\(index)" }
+}
+
+/// How Ensemble's permission modes map onto Claude Code's `--permission-mode`.
+public enum ClaudePermissionModes {
+    /// - ask: Claude's `default` mode; anything that needs approval is sent to Ensemble as a prompt.
+    /// - acceptEdits: file edits in the project run without asking; commands still ask.
+    /// - auto: Claude Code's own auto mode. Headless it does not prompt for most actions: an AI classifier approves or
+    ///   blocks each one (tested 2026-11-18: `echo hi > out.txt` and `git push --force origin main` both ran without a
+    ///   prompt, the second approved by the classifier). This is looser than Ensemble's allowlist-based Auto for
+    ///   OpenCode agents.
+    /// - bypass: `bypassPermissions`; the process must be launched with `--allow-dangerously-skip-permissions`.
+    public static func cliMode(_ mode: PermissionMode) -> String {
+        switch mode {
+        case .ask: "default"
+        case .acceptEdits: "acceptEdits"
+        case .auto: "auto"
+        case .bypass: "bypassPermissions"
+        }
+    }
+
+    static func ensembleMode(_ cliMode: String) -> PermissionMode? {
+        switch cliMode {
+        case "default", "manual": .ask
+        case "acceptEdits": .acceptEdits
+        case "auto": .auto
+        case "bypassPermissions": .bypass
+        default: nil
+        }
+    }
+}
