@@ -265,6 +265,7 @@ enum SnapshotRenderer {
         written += AttentionSnapshots.render(to: outputDirectory, zoom: zoom)
         ComposerQueueSnapshots.render(to: outputDirectory, zoom: zoom)
         PlanQuestionSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += GitHubSnapshots.render(to: outputDirectory, zoom: zoom)
         written += SearchSnapshots.render(to: outputDirectory, zoom: zoom)
         written += RoomSnapshots.render(to: outputDirectory, zoom: zoom)
         written += ReviewSnapshots.render(to: outputDirectory, zoom: zoom)

@@ -38,6 +38,9 @@ private struct SettingsTabs: View {
             Tab("Power", systemImage: "cup.and.saucer") {
                 PowerSettingsTab()
             }
+            Tab("GitHub", systemImage: "arrow.triangle.pull") {
+                GitHubSettingsTab()
+            }
         }
         .frame(width: theme.z(640), height: theme.z(560))
         .background(theme.background)
