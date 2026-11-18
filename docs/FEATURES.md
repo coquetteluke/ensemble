@@ -4,10 +4,10 @@ Built from the two research catalogs (`docs/research/claude-code-and-antigravity
 
 The deep polish (PLAN.md M5) starts only after Luke says go, when these waves are done.
 
-## Status (2026-11-18, night)
-- Done and committed: Gemini engine (WP-K), engine router and Accounts (WP-L), Wave 1 (W1-A, W1-B, W1-C), W2-B review pane, W2-C rooms in the window with one shared side pane.
-- Running: W2-A plan mode and question cards, WP-M import from Claude Code, WP-P GitHub pull request bar.
-- Next: W2-D background work and limits, W2-E workspace trust card, then Wave 3.
+## Status (2026-11-19, early morning)
+- Done and committed: engines (Claude, Gemini, OpenCode, router, Accounts), Wave 1 (alerts and sidebar states, composer queue, side questions, dictation, search, file links, view modes, palette), Wave 2 (review pane, rooms in the window, plan mode and question cards, background work, plan limit ring, auto-continue, workspace trust card with a private OpenCode server for untrusted folders), Claude session import, GitHub pull request bar, Inter and Ensemble Serif.
+- Running (Wave 3): W3-A Session Hub and split view, W3-B scheduled tasks and usage, W3-C rewind with choices and per-session worktrees, W3-D Customizations.
+- Later in Wave 3: terminal pane, browser pane, iPhone alerts, side-task cards, rooms on the iPhone.
 
 ## Wave 1 (files nobody else is editing)
 | Item | Features | Main files |
