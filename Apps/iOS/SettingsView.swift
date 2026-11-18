@@ -24,7 +24,7 @@ struct SettingsView: View {
 
             Section("Connection") {
                 LabeledContent("Status", value: statusText)
-                if let error = client.lastError, !client.state.isConnected {
+                if let error = client.lastError, !client.state.isConnected, error != statusText {
                     Text(error)
                         .font(.footnote)
                         .foregroundStyle(RemoteTheme.secondaryText)
@@ -51,6 +51,16 @@ struct SettingsView: View {
 
             if !client.isInProcess {
                 Section {
+                    if client.pairing.relay != nil {
+                        HStack {
+                            Text("Cloud relay")
+                                .font(.footnote)
+                            Spacer()
+                            if client.state == .connected(via: .relay) {
+                                Image(systemName: "checkmark").foregroundStyle(RemoteTheme.success)
+                            }
+                        }
+                    }
                     ForEach(client.pairing.hosts, id: \.self) { host in
                         HStack {
                             Text(host)
@@ -58,16 +68,20 @@ struct SettingsView: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer()
-                            if client.state == .connected(host: host) {
+                            if client.state == .connected(via: .direct(host: host)) {
                                 Image(systemName: "checkmark").foregroundStyle(RemoteTheme.success)
                             }
                         }
                     }
-                    LabeledContent("Port", value: String(client.pairing.port))
+                    if !client.pairing.hosts.isEmpty {
+                        LabeledContent("Port", value: String(client.pairing.port))
+                    }
                 } header: {
-                    Text("Addresses tried in order")
+                    Text("Connection paths")
                 } footer: {
-                    Text("Away from home the phone reaches your Mac through Tailscale. Keep it on on both devices.")
+                    if client.pairing.relay == nil {
+                        Text("Away from home the phone reaches your Mac through Tailscale. Keep it on on both devices.")
+                    }
                 }
                 .listRowBackground(RemoteTheme.card)
             }
@@ -102,13 +116,6 @@ struct SettingsView: View {
     }
 
     private var statusText: String {
-        if client.isInProcess { return "Demo, no Mac" }
-        switch client.state {
-        case .idle: return "Offline"
-        case .connecting(let host): return "Connecting to \(host)"
-        case .connected(let host): return "Connected via \(host)"
-        case .waiting(let s): return "Retrying in \(s)s"
-        case .rejected(let why): return why
-        }
+        client.statusText
     }
 }

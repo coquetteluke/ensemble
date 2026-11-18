@@ -31,9 +31,19 @@ struct UsageView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 8)
                 } else {
-                    ProgressView()
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 80)
+                    switch client.state {
+                    case .macOffline, .limitReached, .rejected:
+                        Text(client.state.statusText)
+                            .font(.headline)
+                            .foregroundStyle(RemoteTheme.secondaryText)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 80)
+                    default:
+                        ProgressView()
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 80)
+                    }
                 }
             }
             .padding(16)

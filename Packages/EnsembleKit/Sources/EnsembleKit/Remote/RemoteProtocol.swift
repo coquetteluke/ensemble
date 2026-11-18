@@ -657,9 +657,14 @@ public enum RemoteErrorCode: String, Codable, Sendable {
     case busy
     /// The host could not prove it knows the pairing token, so the phone refused it. Never sent by a Mac.
     case macNotVerified
+    /// The Mac is not signed in to its relay mailbox.
+    case macOffline
+    /// The relay's daily budget for this mailbox is spent.
+    case limit
 }
 
 public struct RemoteError: Codable, Hashable, Sendable, Error, LocalizedError {
+    public typealias Code = RemoteErrorCode
     public var code: RemoteErrorCode
     public var message: String
 

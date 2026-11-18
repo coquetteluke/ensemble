@@ -63,12 +63,21 @@ struct HubView: View {
             Image(systemName: "tray")
                 .font(.largeTitle)
                 .foregroundStyle(RemoteTheme.tertiaryText)
-            Text(client.state.isConnected ? "No sessions yet" : "Waiting for your Mac")
+            Text(emptyText)
                 .font(.headline)
                 .foregroundStyle(RemoteTheme.secondaryText)
+                .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 80)
+    }
+
+    private var emptyText: String {
+        switch client.state {
+        case .connected: return "No sessions yet"
+        case .macOffline, .limitReached, .rejected: return client.state.statusText
+        case .idle, .connecting, .waiting: return "Waiting for your Mac"
+        }
     }
 
     private func section(_ title: String, count: Int) -> some View {

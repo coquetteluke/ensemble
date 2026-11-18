@@ -47,7 +47,7 @@ import Testing
         c.start()
         defer { c.stop() }
 
-        try await waitUntil { c.state == .connected(host: "127.0.0.1") }
+        try await waitUntil { c.state == .connected(via: .direct(host: "127.0.0.1")) }
         try await waitUntil { c.sessions.count == 4 && c.rooms.count == 1 && c.usage != nil }
         #expect(c.macName == "Loopback Mac")
         #expect(c.permissions.map(\.id) == [RemoteDemoData.IDs.permission])
@@ -81,7 +81,7 @@ import Testing
         let c = client(h, hosts: ["127.0.0.2", "127.0.0.1"], handshakeTimeout: .seconds(3))
         c.start()
         defer { c.stop() }
-        try await waitUntil { c.state == .connected(host: "127.0.0.1") }
+        try await waitUntil { c.state == .connected(via: .direct(host: "127.0.0.1")) }
     }
 
     @Test func actionsReachTheHost() async throws {
@@ -433,7 +433,7 @@ import Testing
         let c = client(h, hosts: ["::1"])
         c.start()
         defer { c.stop() }
-        try await waitUntil { c.state == .connected(host: "::1") && c.sessions.count == 4 }
+        try await waitUntil { c.state == .connected(via: .direct(host: "::1")) && c.sessions.count == 4 }
         try await c.open(sessionID: RemoteDemoData.IDs.fixSession)
         #expect(c.openTranscript?.items.isEmpty == false)
 
@@ -501,7 +501,7 @@ import Testing
         let c = client(h, hosts: ["::1", "127.0.0.1"])
         c.start()
         defer { c.stop() }
-        try await waitUntil { c.state == .connected(host: "127.0.0.1") }
+        try await waitUntil { c.state == .connected(via: .direct(host: "127.0.0.1")) }
         #expect(fake.log.all.count >= 1)
         try await waitUntil { c.sessions.count == 4 }
     }

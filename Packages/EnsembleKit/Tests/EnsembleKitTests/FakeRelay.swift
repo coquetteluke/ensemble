@@ -134,6 +134,30 @@ final class FakeRelay: Sendable {
         for host in hosts { send(#"{"t":"limit","kind":"daily","resetsAt":\#(resetsAt)}"#, to: host) }
     }
 
+    /// Drops every active phone socket for the mailbox, closing its paired data socket too while leaving the host
+    /// control socket signed in.
+    func dropPhones(_ mailbox: String) {
+        let phones = state.withLock { s in
+            s.sockets.values.map(\.socket).filter { $0.mailbox == mailbox && $0.role == .phone }
+        }
+        for phone in phones {
+            unpair(phone)
+            phone.connection.cancel()
+        }
+    }
+
+    /// Refuses new phone TCP connections for the mailbox, as if the phone's network is down between Wi-Fi and cellular.
+    func setRefusePhones(_ mailbox: String, _ refuse: Bool) {
+        state.withLock { s in
+            if refuse { _ = s.refusedPhones.insert(mailbox) } else { _ = s.refusedPhones.remove(mailbox) }
+        }
+    }
+
+    /// Marks the mailbox's daily budget spent for new phone connections until `resetsAt` (nil clears it).
+    func setPhoneLimit(_ mailbox: String, resetsAt: Int?) {
+        state.withLock { $0.phoneLimits[mailbox] = resetsAt }
+    }
+
     // MARK: - State
 
     private struct Mailbox {
@@ -159,6 +183,8 @@ final class FakeRelay: Sendable {
         var badHandshakes: [String: [String]] = [:]
         var phoneConnections: [String: [String]] = [:]
         var takeOnClaim: Set<String> = []
+        var refusedPhones: Set<String> = []
+        var phoneLimits: [String: Int] = [:]
         var pings = 0
         var dataSockets = 0
         var dataWithoutToken = 0
@@ -236,6 +262,10 @@ final class FakeRelay: Sendable {
               let route = Self.route(String(requestLine[1])) else {
             let notFound = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
             connection.send(content: Data(notFound.utf8), completion: .contentProcessed { _ in connection.cancel() })
+            return
+        }
+        if route.role == .phone && state.withLock({ $0.refusedPhones.contains(route.mailbox) }) {
+            connection.cancel()
             return
         }
         let accept = Data(Insecure.SHA1.hash(data: Data((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").utf8))).base64EncodedString()
@@ -546,6 +576,10 @@ final class FakeRelay: Sendable {
               let conn = socket.conn else {
             return [.send(socket, opcode: 0x1, payload: Array(#"{"t":"error","code":"macOffline","message":"The Mac is offline."}"#.utf8)),
                     .close(socket, code: 4010, reason: "mac offline")]
+        }
+        if let resetsAt = s.phoneLimits[socket.mailbox] {
+            return [.send(socket, opcode: 0x1, payload: Array(#"{"t":"limit","kind":"daily","resetsAt":\#(resetsAt)}"#.utf8)),
+                    .close(socket, code: 4029, reason: "limit \(resetsAt)")]
         }
         let token = RemoteHandshake.encode(Self.randomBytes(32))
         s.sockets[socket.id]?.authed = true

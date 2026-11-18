@@ -202,6 +202,8 @@ struct StatusPill: View {
         case .idle: return "Offline"
         case .connecting: return "Connecting"
         case .connected: return client.macName
+        case .macOffline: return "Mac offline"
+        case .limitReached: return "Relay limit"
         case .waiting(let s): return "Retry in \(s)s"
         case .rejected: return "Pair again"
         }
@@ -211,8 +213,8 @@ struct StatusPill: View {
         if client.isInProcess { return .accentColor }
         switch client.state {
         case .connected: return RemoteTheme.success
-        case .connecting, .waiting: return RemoteTheme.warning
-        case .idle, .rejected: return RemoteTheme.danger
+        case .connecting, .waiting, .macOffline: return RemoteTheme.warning
+        case .idle, .rejected, .limitReached: return RemoteTheme.danger
         }
     }
 }
