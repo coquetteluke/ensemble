@@ -2,14 +2,15 @@ import AppKit
 import SwiftUI
 import EnsembleKit
 
-/// Settings window: General, Accounts (subscriptions, sign-ins and API keys), Alerts, Models, Engine, Power, GitHub,
-/// Customizations.
+/// Settings window: General, Accounts (subscriptions, sign-ins and API keys), Alerts, Models, Engine, Power, Remote,
+/// GitHub, Customizations.
 struct SettingsView: View {
     let store: SessionStore
+    var remote: RemoteControlController? = nil
     @AppStorage(Zoom.storageKey) private var zoom = 1.0
 
     var body: some View {
-        SettingsTabs(store: store)
+        SettingsTabs(store: store, remote: remote)
             .ensembleTheme()
             .environment(\.zoom, CGFloat(Zoom.clamped(zoom)))
     }
@@ -17,6 +18,7 @@ struct SettingsView: View {
 
 private struct SettingsTabs: View {
     let store: SessionStore
+    let remote: RemoteControlController?
     @Environment(\.theme) private var theme
     /// The selected tab, kept so other screens can open Settings on a tab (`CustomizationsFocus.show`).
     @AppStorage(CustomizationsFocus.tabKey) private var tab = "general"
@@ -40,6 +42,11 @@ private struct SettingsTabs: View {
             }
             Tab("Power", systemImage: "cup.and.saucer", value: "power") {
                 PowerSettingsTab()
+            }
+            if let remote {
+                Tab("Remote", systemImage: "iphone", value: "remote") {
+                    RemoteControlSettingsView(controller: remote)
+                }
             }
             Tab("GitHub", systemImage: "arrow.triangle.pull", value: "github") {
                 GitHubSettingsTab()

@@ -1,10 +1,11 @@
 import AppKit
+import CryptoKit
 import EnsembleKit
 import Observation
 
-/// Starts and stops the iPhone remote server from the Remote Control toggle, keeps the pairing code and
-/// QR image current, and lists connected phones. The app creates one with its `RemoteHost` and calls
-/// `restore()` at launch.
+/// Starts and stops the iPhone remote server from the Remote Control toggle, keeps the pairing code,
+/// relay host and QR image current, and lists connected phones. The app creates one with its `RemoteHost`
+/// and calls `restore()` at launch.
 @MainActor @Observable
 final class RemoteControlController {
     enum Phase: Equatable {
@@ -14,6 +15,26 @@ final class RemoteControlController {
         case failed(String)
     }
 
+    enum RelayURLError: LocalizedError, Equatable {
+        case invalidScheme
+        case invalidAddress
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidScheme:
+                #if DEBUG
+                "Relay address must start with wss:// (or ws://127.0.0.1 in Debug)."
+                #else
+                "Relay address must start with wss://."
+                #endif
+            case .invalidAddress:
+                "Enter a valid relay address such as wss://relay.coquettemc.com."
+            }
+        }
+    }
+
+    static let previousRelayWindow: TimeInterval = 30 * 24 * 60 * 60
+
     private(set) var phase: Phase = .off
     private(set) var network = RemoteNetworkInfo()
     private(set) var pairing: RemotePairing?
@@ -21,6 +42,10 @@ final class RemoteControlController {
     private(set) var status: RemoteServer.Status = .stopped
     private(set) var port: Int
     private(set) var allowLocalNetwork: Bool
+    private(set) var relayEnabled: Bool
+    private(set) var relayURL: String
+    private(set) var relayStatus: RelayHostStatus = .off
+    private(set) var needsRescanNotice = false
     /// Set when the Keychain could not be read or written.
     private(set) var tokenError: String?
 
@@ -29,25 +54,125 @@ final class RemoteControlController {
 
     @ObservationIgnored private let host: any RemoteHost
     @ObservationIgnored private let tokenStore: any RemoteTokenStore
+    @ObservationIgnored private let identityStore: any RelayIdentityStore
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var server: RemoteServer?
     @ObservationIgnored private var token: String?
+    @ObservationIgnored private var identity: RelayIdentity?
     @ObservationIgnored private var statusTask: Task<Void, Never>?
     @ObservationIgnored private var networkTask: Task<Void, Never>?
+    @ObservationIgnored private var relayHost: RelayHost?
+    @ObservationIgnored private var relayStatusTask: Task<Void, Never>?
+    @ObservationIgnored private var previousRelayHost: RelayHost?
+    @ObservationIgnored private var previousRelayExpiryTask: Task<Void, Never>?
+    @ObservationIgnored private var rotatedTakenMailboxOnce = false
 
-    private enum Keys {
+    enum Keys {
         static let enabled = "remote.enabled"
         static let port = "remote.port"
         static let allowLocalNetwork = "remote.allowLocalNetwork"
+        static let relayEnabled = "remoteRelayEnabled"
+        static let relayURL = "remoteRelayURL"
+        static let relayPreviousURL = "remoteRelayPreviousURL"
+        static let relayPreviousUntil = "remoteRelayPreviousUntil"
     }
 
-    init(host: any RemoteHost, tokenStore: any RemoteTokenStore = KeychainRemoteTokenStore(), defaults: UserDefaults = .standard) {
+    init(host: any RemoteHost,
+         tokenStore: any RemoteTokenStore = KeychainRemoteTokenStore(),
+         identityStore: any RelayIdentityStore = KeychainRelayIdentityStore(),
+         defaults: UserDefaults = .standard) {
         self.host = host
         self.tokenStore = tokenStore
+        self.identityStore = identityStore
         self.defaults = defaults
         let savedPort = defaults.integer(forKey: Keys.port)
         self.port = (1...65535).contains(savedPort) ? savedPort : remoteDefaultPort
         self.allowLocalNetwork = defaults.bool(forKey: Keys.allowLocalNetwork)
+        self.relayEnabled = (defaults.object(forKey: Keys.relayEnabled) as? Bool) ?? true
+        if let savedURL = defaults.string(forKey: Keys.relayURL),
+           case .success(let normalized) = Self.validateRelayURL(savedURL) {
+            self.relayURL = normalized
+        } else {
+            self.relayURL = RelayDefaults.url
+        }
+        _ = activePreviousRelay()
+    }
+
+    /// Deterministic controller for snapshots and SwiftUI previews; never touches Keychain, saved settings or the network.
+    static func snapshot(phase: Phase = .on,
+                         listening: [String] = ["127.0.0.1:47823"],
+                         failedAddresses: [String: String] = [:],
+                         network: RemoteNetworkInfo = .init(computerName: "Luke's MacBook Air"),
+                         relayEnabled: Bool = true,
+                         relayURL: String = RelayDefaults.url,
+                         relayStatus: RelayHostStatus = .connected,
+                         needsRescanNotice: Bool = false) -> RemoteControlController {
+        let suiteName = "ensemble.remote.snapshot.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName) ?? .standard
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults.set(relayEnabled, forKey: Keys.relayEnabled)
+        defaults.set(relayURL, forKey: Keys.relayURL)
+        let tokenStore = InMemoryRemoteTokenStore(token: "preview-token")
+        let identityStore = InMemoryRelayIdentityStore()
+        let fixedBytes = Data((0..<32).map(UInt8.init))
+        let mailboxID = RemoteHandshake.encode(fixedBytes)
+        if let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: fixedBytes) {
+            try? identityStore.saveIdentity(RelayIdentity(mailboxID: mailboxID, hostKey: key))
+        }
+        let controller = RemoteControlController(host: DemoRemoteHost(), tokenStore: tokenStore,
+                                                 identityStore: identityStore, defaults: defaults)
+        var status = RemoteServer.Status.stopped
+        status.running = phase == .on
+        status.listening = phase == .on ? listening : []
+        status.failedAddresses = failedAddresses
+        controller.phase = phase
+        controller.status = status
+        controller.network = network
+        controller.relayStatus = relayEnabled ? relayStatus : .off
+        controller.needsRescanNotice = needsRescanNotice
+        controller.rebuildPairing()
+        return controller
+    }
+
+    /// Validates and normalizes a relay URL (`wss://` in all builds, plus `ws://127.0.0.1` in Debug).
+    static func validateRelayURL(_ raw: String) -> Result<String, RelayURLError> {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, var components = URLComponents(string: trimmed) else {
+            return .failure(.invalidAddress)
+        }
+        guard let scheme = components.scheme?.lowercased() else {
+            return .failure(.invalidScheme)
+        }
+        guard let host = components.host?.lowercased(), !host.isEmpty else {
+            return scheme == "wss" || scheme == "ws" ? .failure(.invalidAddress) : .failure(.invalidScheme)
+        }
+        switch scheme {
+        case "wss":
+            break
+        case "ws":
+            #if DEBUG
+            guard host == "127.0.0.1" else { return .failure(.invalidScheme) }
+            #else
+            return .failure(.invalidScheme)
+            #endif
+        default:
+            return .failure(.invalidScheme)
+        }
+        guard components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              components.path.isEmpty || components.path == "/" else {
+            return .failure(.invalidAddress)
+        }
+        if let port = components.port, !(1...65535).contains(port) {
+            return .failure(.invalidAddress)
+        }
+        components.scheme = scheme
+        components.host = host
+        components.path = ""
+        if scheme == "wss", components.port == 443 { components.port = nil }
+        if scheme == "ws", components.port == 80 { components.port = nil }
+        guard let url = components.url else { return .failure(.invalidAddress) }
+        return .success(url.absoluteString)
     }
 
     /// Turns the server back on at launch if it was on when the app quit.
@@ -74,19 +199,75 @@ final class RemoteControlController {
         await restartIfOn()
     }
 
-    /// Makes a new token. Every paired phone is disconnected and must scan the new code.
+    func setRelayEnabled(_ enabled: Bool) async {
+        guard enabled != relayEnabled else { return }
+        relayEnabled = enabled
+        defaults.set(enabled, forKey: Keys.relayEnabled)
+        rotatedTakenMailboxOnce = false
+        if enabled {
+            rebuildPairing()
+            await server?.setActiveRelay(currentActiveRelay())
+            if let server, let token = loadToken() {
+                await startRelayHosts(server: server, token: token)
+            }
+        } else {
+            await stopRelayHosts()
+            await server?.setActiveRelay(nil)
+            rebuildPairing()
+        }
+    }
+
+    /// Updates the relay address when valid, returning `nil` on success or a short validation message on failure.
+    @discardableResult
+    func setRelayURL(_ raw: String) async -> String? {
+        let normalized: String
+        switch Self.validateRelayURL(raw) {
+        case .success(let valid):
+            normalized = valid
+        case .failure(let error):
+            return error.errorDescription
+        }
+        guard normalized != relayURL else { return nil }
+        recordPreviousRelay(changingFrom: relayURL, to: normalized)
+        relayURL = normalized
+        defaults.set(normalized, forKey: Keys.relayURL)
+        rotatedTakenMailboxOnce = false
+        rebuildPairing()
+        await server?.setActiveRelay(currentActiveRelay())
+        if relayEnabled, let server, let token = loadToken() {
+            await startRelayHosts(server: server, token: token)
+        }
+        return nil
+    }
+
+    func dismissRescanNotice() {
+        needsRescanNotice = false
+    }
+
+    /// Makes a new token and relay identity. Every paired phone is disconnected and must scan the new code.
     func regenerateCode() async {
         let fresh = RemoteToken.generate()
+        let freshIdentity: RelayIdentity
         do {
             try tokenStore.saveToken(fresh)
+            freshIdentity = try RelayIdentity.regenerate(in: identityStore)
             tokenError = nil
         } catch {
             tokenError = error.localizedDescription
             return
         }
         token = fresh
+        identity = freshIdentity
+        needsRescanNotice = false
+        rotatedTakenMailboxOnce = false
+        clearPreviousRelay()
+        await stopRelayHosts()
         await server?.setToken(fresh)
+        await server?.setActiveRelay(currentActiveRelay())
         rebuildPairing()
+        if relayEnabled, let server {
+            await startRelayHosts(server: server, token: fresh)
+        }
     }
 
     /// Re-reads the Mac's Tailscale and LAN addresses.
@@ -119,13 +300,18 @@ final class RemoteControlController {
             phase = .failed(tokenError ?? "Could not read the pairing token")
             return
         }
+        if relayEnabled, loadIdentity() == nil {
+            phase = .failed(tokenError ?? "Could not read the relay identity")
+            return
+        }
         network = await RemoteNetworkInfo.detect()
         let config = RemoteServer.Configuration(
             port: UInt16(port),
             bindAddresses: network.bindAddresses(includeLocalNetwork: allowLocalNetwork),
             macName: network.computerName,
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
-            acceptedHosts: network.pairingHosts(includeLocalNetwork: allowLocalNetwork))
+            acceptedHosts: network.pairingHosts(includeLocalNetwork: allowLocalNetwork),
+            activeRelay: currentActiveRelay())
         let server = RemoteServer(host: host, token: token, configuration: config)
         do {
             try await server.start()
@@ -135,8 +321,14 @@ final class RemoteControlController {
         }
         self.server = server
         phase = .on
+        rotatedTakenMailboxOnce = false
         rebuildPairing()
         watch(server)
+        if relayEnabled {
+            await startRelayHosts(server: server, token: token)
+        } else {
+            relayStatus = .off
+        }
     }
 
     private func stop() async {
@@ -144,8 +336,10 @@ final class RemoteControlController {
         statusTask = nil
         networkTask?.cancel()
         networkTask = nil
-        await server?.stop()
+        await stopRelayHosts()
+        let runningServer = server
         server = nil
+        await runningServer?.stop()
         status = .stopped
         phase = .off
     }
@@ -176,6 +370,136 @@ final class RemoteControlController {
         }
     }
 
+    // MARK: - Relay
+
+    private func startRelayHosts(server: RemoteServer, token: String) async {
+        await stopRelayHosts()
+        guard relayEnabled, self.server === server,
+              let identity = loadIdentity(),
+              let primaryURL = URL(string: relayURL) else { return }
+        let primary = RelayHost(relayURL: primaryURL, identity: identity, token: token, server: server)
+        relayHost = primary
+        relayStatus = .connecting
+        let updates = await primary.statusUpdates()
+        guard relayHost === primary else {
+            await primary.stop()
+            return
+        }
+        relayStatusTask = Task { [weak self] in
+            for await s in updates {
+                guard !Task.isCancelled, let self else { return }
+                await self.handleRelayStatus(s, from: primary)
+            }
+        }
+        await primary.start()
+        guard relayHost === primary else { return }
+
+        if let prev = activePreviousRelay(), prev.url != relayURL, let prevURL = URL(string: prev.url) {
+            let secondary = RelayHost(relayURL: prevURL, identity: identity, token: token, server: server)
+            previousRelayHost = secondary
+            let waitSeconds = max(0, prev.until.timeIntervalSinceNow)
+            previousRelayExpiryTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(waitSeconds))
+                guard !Task.isCancelled, let self else { return }
+                await self.expirePreviousRelayHost(secondary)
+            }
+            await secondary.start()
+        }
+    }
+
+    private func stopRelayHosts() async {
+        relayStatusTask?.cancel()
+        relayStatusTask = nil
+        previousRelayExpiryTask?.cancel()
+        previousRelayExpiryTask = nil
+        let primary = relayHost
+        let secondary = previousRelayHost
+        relayHost = nil
+        previousRelayHost = nil
+        relayStatus = .off
+        await primary?.stop()
+        await secondary?.stop()
+    }
+
+    private func handleRelayStatus(_ newStatus: RelayHostStatus, from source: RelayHost) async {
+        guard relayHost === source else { return }
+        if newStatus == .mailboxTaken {
+            guard !rotatedTakenMailboxOnce else {
+                relayStatus = .mailboxTaken
+                needsRescanNotice = true
+                return
+            }
+            rotatedTakenMailboxOnce = true
+            do {
+                identity = try RelayIdentity.regenerate(in: identityStore)
+                tokenError = nil
+            } catch {
+                tokenError = error.localizedDescription
+                relayStatus = .mailboxTaken
+                return
+            }
+            clearPreviousRelay()
+            needsRescanNotice = true
+            rebuildPairing()
+            await server?.setActiveRelay(currentActiveRelay())
+            if let server, let token = loadToken(), relayEnabled {
+                await startRelayHosts(server: server, token: token)
+            } else {
+                await stopRelayHosts()
+            }
+            return
+        }
+        if newStatus == .connected {
+            rotatedTakenMailboxOnce = false
+        }
+        relayStatus = newStatus
+    }
+
+    private func expirePreviousRelayHost(_ host: RelayHost) async {
+        guard previousRelayHost === host else { return }
+        previousRelayExpiryTask = nil
+        previousRelayHost = nil
+        clearPreviousRelay()
+        await host.stop()
+    }
+
+    /// Returns the unexpired previous relay URL and deadline, clearing expired entries from UserDefaults.
+    func activePreviousRelay(now: Date = Date()) -> (url: String, until: Date)? {
+        guard let rawURL = defaults.string(forKey: Keys.relayPreviousURL),
+              let untilTimestamp = defaults.object(forKey: Keys.relayPreviousUntil) as? Double else {
+            return nil
+        }
+        let until = Date(timeIntervalSince1970: untilTimestamp)
+        guard until > now, case .success(let normalized) = Self.validateRelayURL(rawURL) else {
+            clearPreviousRelay()
+            return nil
+        }
+        return (normalized, until)
+    }
+
+    private func recordPreviousRelay(changingFrom oldURL: String, to newURL: String, now: Date = Date()) {
+        if let existing = activePreviousRelay(now: now), existing.url != oldURL {
+            if existing.url == newURL {
+                clearPreviousRelay()
+            } else {
+                defaults.set(now.addingTimeInterval(Self.previousRelayWindow).timeIntervalSince1970,
+                             forKey: Keys.relayPreviousUntil)
+            }
+            return
+        }
+        guard oldURL != newURL else { return }
+        defaults.set(oldURL, forKey: Keys.relayPreviousURL)
+        defaults.set(now.addingTimeInterval(Self.previousRelayWindow).timeIntervalSince1970,
+                     forKey: Keys.relayPreviousUntil)
+    }
+
+    private func clearPreviousRelay() {
+        defaults.removeObject(forKey: Keys.relayPreviousURL)
+        defaults.removeObject(forKey: Keys.relayPreviousUntil)
+    }
+
+    // MARK: - Credentials and pairing
+
     private func loadToken() -> String? {
         if let token { return token }
         do {
@@ -189,6 +513,24 @@ final class RemoteControlController {
         }
     }
 
+    private func loadIdentity() -> RelayIdentity? {
+        if let identity { return identity }
+        do {
+            let loaded = try RelayIdentity.loadOrCreate(in: identityStore)
+            identity = loaded
+            tokenError = nil
+            return loaded
+        } catch {
+            tokenError = error.localizedDescription
+            return nil
+        }
+    }
+
+    private func currentActiveRelay() -> RemotePairing.Relay? {
+        guard relayEnabled, let identity = loadIdentity() else { return nil }
+        return RemotePairing.Relay(url: relayURL, mailbox: identity.mailboxID)
+    }
+
     /// The pairing shown as a QR code. Built even while off, so the sheet can show it next to the toggle.
     func rebuildPairing() {
         guard let token = loadToken() else {
@@ -196,13 +538,14 @@ final class RemoteControlController {
             qrImage = nil
             return
         }
+        let relay = currentActiveRelay()
         let hosts = network.pairingHosts(includeLocalNetwork: allowLocalNetwork)
-        guard !hosts.isEmpty else {
+        guard !hosts.isEmpty || relay != nil else {
             pairing = nil
             qrImage = nil
             return
         }
-        let p = RemotePairing(hosts: hosts, port: port, token: token, macName: network.computerName)
+        let p = RemotePairing(hosts: hosts, port: port, token: token, macName: network.computerName, relay: relay)
         if p != pairing {
             pairing = p
             qrImage = RemoteQRCode.cgImage(for: p.code(), scale: 10)

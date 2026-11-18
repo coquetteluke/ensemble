@@ -78,7 +78,10 @@ final class AppEngine {
         // Ensemble's tools for agents (propose_session, the browser tools); never in previews.
         if !Self.usePreview { AgentToolsCenter.shared.start(store: newStore) }
         let remoteHost = MacRemoteHost(store: newStore)
-        let remoteControl = RemoteControlController(host: remoteHost)
+        let remoteControl = RemoteControlController(
+            host: remoteHost,
+            tokenStore: Self.usePreview ? InMemoryRemoteTokenStore() : KeychainRemoteTokenStore(),
+            identityStore: Self.usePreview ? InMemoryRelayIdentityStore() : KeychainRelayIdentityStore())
         remote = remoteControl
         // Sample data keeps its rooms in memory and never runs git, so it never touches saved rooms or real folders.
         let roomsController = RoomsController(api: newStore.engine,
@@ -150,6 +153,7 @@ struct EnsembleApp: App {
     @State private var search = SearchCenter()
     @State private var power = PowerController.makeForMac()
     @AppStorage("appearance") private var appearance = AppearanceSetting.dark.rawValue
+    @AppStorage(Zoom.storageKey) private var zoom = 1.0
 
     init() {
         // `--render-snapshots <dir>` writes PNGs of key views and quits before any window opens.
@@ -198,16 +202,17 @@ struct EnsembleApp: App {
                     EngineStatusView(status: app.status, retry: app.retry)
                 }
             }
-            .frame(minWidth: 480, minHeight: 520)
+            .frame(minWidth: 520, minHeight: 580)
             .ensembleTheme()
+            .environment(\.zoom, CGFloat(Zoom.clamped(zoom)))
             .preferredColorScheme(colorScheme)
         }
-        .defaultSize(width: 520, height: 600)
+        .defaultSize(width: 560, height: 640)
 
         Settings {
             Group {
                 if let store = app.store {
-                    SettingsView(store: store)
+                    SettingsView(store: store, remote: app.remote)
                 } else {
                     EngineStatusView(status: app.status, retry: app.retry)
                         .frame(width: 520, height: 320)

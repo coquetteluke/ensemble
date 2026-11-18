@@ -286,6 +286,7 @@ enum SnapshotRenderer {
         written += ModelPickerSnapshots.render(to: outputDirectory, zoom: zoom)
         written += ConstellationSnapshots.render(to: outputDirectory, zoom: zoom)
         written += PlanUsageSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += RelaySnapshots.render(to: outputDirectory, zoom: zoom)
 
         print("Rendered \(written.count) snapshots:")
         for path in written { print(path) }
