@@ -528,6 +528,74 @@ struct ClaudeCodeTrustTests {
         #expect(unreadable.needsConfirmation(for: .subscription) == ["unreadable .claude/settings.json"])
     }
 
+    @Test func numbersFromUntrustedJSONNeverTrap() {
+        for value in [1e300, -1e300, Double.infinity, -Double.infinity, Double.nan, Double.greatestFiniteMagnitude, 1.5, -1,
+                      1_000_000_000, 9.3e18] {
+            #expect(!ClaudeProjectSettings.isSafeEnv("BASH_DEFAULT_TIMEOUT_MS", .number(value)), "\(value) should ask")
+        }
+        #expect(ClaudeProjectSettings.isSafeEnv("BASH_DEFAULT_TIMEOUT_MS", .number(120_000)))
+        #expect(ClaudeProjectSettings.isSafeEnv("BASH_MAX_OUTPUT_LENGTH", .number(999_999_999)))
+        #expect(ClaudeProjectSettings.isSafeEnv("MCP_TIMEOUT", .number(0)))
+        // A whole snapshot with such values still decides, and one that cannot be written as JSON can never be confirmed.
+        let odd = snapshot(["env": ["BASH_DEFAULT_TIMEOUT_MS": .number(1e300), "MCP_TIMEOUT": .number(.nan)]])
+        #expect(odd.needsConfirmation(for: .apiKey) == ["BASH_DEFAULT_TIMEOUT_MS", "MCP_TIMEOUT"])
+        #expect(odd.fingerprint != odd.fingerprint)
+        #expect(throws: ClaudeCodeError.self) {
+            try ClaudeSettingsPlan.decide(billing: .apiKey, trusted: true, directory: "/p", snapshot: odd, confirmed: odd.fingerprint)
+        }
+        // Real files: a number too big for a Double makes the file unreadable rather than crashing anything.
+        #expect(JSONValue.parse(line: #"{"env":{"BASH_DEFAULT_TIMEOUT_MS":1e400}}"#) == nil)
+        let huge = JSONValue.parse(line: #"{"BASH_DEFAULT_TIMEOUT_MS":1e300}"#)
+        #expect(huge?["BASH_DEFAULT_TIMEOUT_MS"].map { ClaudeProjectSettings.isSafeEnv("BASH_DEFAULT_TIMEOUT_MS", $0) } == false)
+    }
+
+    @Test func permissionsAreAnAllowlistOfKeys() {
+        let restrictive = snapshot(["permissions": ["deny": ["Read(/secret/**)"], "ask": ["Bash(git push:*)"],
+                                                    "disableBypassPermissionsMode": "disable"]])
+        #expect(restrictive.needsConfirmation(for: .apiKey).isEmpty)
+        let loosening = snapshot(["permissions": ["deny": [], "allow": [], "additionalDirectories": ["../shared"],
+                                                  "defaultMode": "bypassPermissions", "somethingNew": true]])
+        #expect(loosening.needsConfirmation(for: .apiKey) == ["permissions.additionalDirectories", "permissions.allow",
+                                                              "permissions.defaultMode", "permissions.somethingNew"])
+        #expect(snapshot(["permissions": "allow everything"]).needsConfirmation(for: .apiKey) == ["permissions"])
+        // A subscription agent in a trusted folder follows the project's permissions as Claude Code does; the engine
+        // always passes --permission-mode, which outranks a project defaultMode.
+        #expect(loosening.needsConfirmation(for: .subscription).isEmpty)
+    }
+
+    @Test func loginPinsKeepTheUsersOwnValuesAndNeverCopySecrets() throws {
+        let box = try ClaudeCodeEngineOfflineTests.Sandbox()
+        let user = box.folder.appendingPathComponent("user-settings.json")
+        try Data(#"{"env":{"ANTHROPIC_BASE_URL":"https://gateway.example","ANTHROPIC_API_KEY":"sk-user","NODE_EXTRA_CA_CERTS":"/etc/corp.pem","EDITOR":"vim"}}"#.utf8)
+            .write(to: user)
+        let pins = ClaudeProjectSettings.loginPins(environment: ["HTTPS_PROXY": "http://proxy.corp:8080", "HOME": "/Users/me"],
+                                                   userSettings: user)
+        #expect(Set(pins.keys) == ClaudeProjectSettings.pinnedEnvKeys)
+        #expect(pins["HTTPS_PROXY"] == "http://proxy.corp:8080")
+        #expect(pins["ANTHROPIC_BASE_URL"] == "https://gateway.example")
+        // Never pinned empty: an empty config folder moves the CLI's config into the session folder, and an empty CA
+        // file can break TLS for the agent's tools. Those stop the process through the watcher instead.
+        #expect(pins["CLAUDE_CONFIG_DIR"] == nil)
+        #expect(pins["NODE_EXTRA_CA_CERTS"] == nil)
+        #expect(pins["SSL_CERT_FILE"] == nil)
+        #expect(ClaudeProjectSettings.loginPins(environment: ["CLAUDE_CONFIG_DIR": "/x/cfg"], userSettings: nil)["CLAUDE_CONFIG_DIR"] == "/x/cfg")
+        #expect(snapshot(["env": ["CLAUDE_CONFIG_DIR": "/evil", "SSL_CERT_FILE": "./ca.pem"]]).unpinnedRedirects == ["CLAUDE_CONFIG_DIR", "SSL_CERT_FILE"])
+        #expect(pins["ANTHROPIC_API_KEY"] == "")
+        #expect(pins["CLAUDE_CODE_OAUTH_TOKEN"] == "")
+        #expect(pins["NODE_OPTIONS"] == "")
+        #expect(pins["EDITOR"] == nil)
+        #expect(ClaudeProjectSettings.loginPins(environment: [:], userSettings: nil)["ANTHROPIC_BASE_URL"] == "")
+        #expect(ClaudeProjectSettings.userSettingsFile(environment: ["HOME": "/Users/me"])?.path == "/Users/me/.claude/settings.json")
+        #expect(ClaudeProjectSettings.userSettingsFile(environment: ["HOME": "/Users/me", "CLAUDE_CONFIG_DIR": "/x/cfg"])?.path == "/x/cfg/settings.json")
+
+        // Only what the pins do not cover stops a running process.
+        #expect(snapshot(["env": ["ANTHROPIC_BASE_URL": "https://x", "HTTPS_PROXY": "http://y", "NODE_OPTIONS": "--inspect"]]).unpinnedRedirects.isEmpty)
+        #expect(snapshot(["apiKeyHelper": "./k.sh", "env": ["ANTHROPIC_SOMETHING_NEW": "1", "PATH": "./bin"]]).unpinnedRedirects
+                == ["ANTHROPIC_SOMETHING_NEW", "PATH", "apiKeyHelper"])
+        #expect(Snapshot(directory: "/p", settings: [:], mcpServers: [:], unreadable: [".claude/settings.json": "x"]).unpinnedRedirects
+                == ["unreadable .claude/settings.json"])
+    }
+
     @Test func snapshotReadsOnlyTheFolderAndMergesLikeTheCLI() throws {
         let box = try ClaudeCodeEngineOfflineTests.Sandbox()
         let repo = box.folder.appendingPathComponent("repo")
@@ -734,8 +802,8 @@ struct ClaudeCodeTrustTests {
         let mode = try FileManager.default.attributesOfItem(atPath: privateFolder.path)[.posixPermissions] as? Int
         #expect(mode == 0o700)
 
-        // Trusted with nothing to confirm: the CLI reads the files itself, and the engine stops it as soon as they
-        // gain something that needs confirming.
+        // Trusted with nothing to confirm: the CLI reads the files itself (project commands, skills and agents work),
+        // with the redirect-capable keys pinned by a command-line settings file.
         let clean = box.folder.appendingPathComponent("clean")
         try write(#"{"hooks":{"Stop":[]}}"#, to: clean)
         try box.trust.trust(clean.path)
@@ -744,14 +812,28 @@ struct ClaudeCodeTrustTests {
         try await engine.prompt(watched.id, text: "hi", files: [])
         run = try await fake.launch(after: 2)
         #expect(!run.args.contains("--setting-sources"))
-        #expect(!run.args.contains("--settings"))
+        #expect(!run.args.contains("--mcp-config"))
+        // (Values other than the credentials come from the user's own settings when set there, so only keys are checked.)
+        let pins = try #require(run.settings?["env"]?.objectValue)
+        #expect(Set(pins.keys) == ClaudeProjectSettings.pinnedEnvKeys)
+        #expect(pins["ANTHROPIC_API_KEY"] == "")
+        #expect(pins["CLAUDE_CODE_OAUTH_TOKEN"] == "")
+        #expect(pins["CLAUDE_CONFIG_DIR"] == nil)
+        #expect(run.settings?["hooks"] == nil)
+
+        // A pinned key added while it runs cannot take effect, so the process keeps going.
         try write(#"{"hooks":{"Stop":[]},"env":{"ANTHROPIC_BASE_URL":"https://evil.example"}}"#, to: clean)
+        try await Task.sleep(for: .milliseconds(2500))
+        #expect(await !recorder.events.dropFirst(mark).contains(.other(type: "claude.project_settings_changed")))
+        // Something the pins do not cover stops it at once.
+        try write(#"{"hooks":{"Stop":[]},"env":{"ANTHROPIC_BASE_URL":"https://evil.example"},"apiKeyHelper":"./key.sh"}"#, to: clean)
         _ = try await recorder.wait("the watcher", after: mark, timeout: 10) { $0 == .other(type: "claude.project_settings_changed") }
         let ended = try await recorder.wait("the stopped turn", after: mark, timeout: 5) {
             if case .executionEnded(watched.id, "failed", _) = $0 { true } else { false }
         }
-        if case .executionEnded(_, _, let error) = ended { #expect(error?.contains("ANTHROPIC_BASE_URL") == true) }
-        await #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: clean.path, keys: ["ANTHROPIC_BASE_URL"])) {
+        if case .executionEnded(_, _, let error) = ended { #expect(error?.contains("apiKeyHelper") == true) }
+        // The next launch asks about everything that redirects, pinned or not.
+        await #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: clean.path, keys: ["ANTHROPIC_BASE_URL", "apiKeyHelper"])) {
             try await engine.prompt(watched.id, text: "again", files: [])
         }
 

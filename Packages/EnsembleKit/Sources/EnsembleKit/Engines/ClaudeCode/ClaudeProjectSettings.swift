@@ -30,12 +30,18 @@ enum ClaudeProjectSettings {
 
     /// Top-level settings that do not run programs, reach the network or loosen permissions. Anything else (hooks,
     /// `statusLine`, `apiKeyHelper`, plugins, MCP switches, keys added in later CLI versions) asks for API-key agents.
-    /// `permissions` counts only without `allow` rules: a project allow rule would run commands without asking, and a
-    /// command can read the CLI's environment.
+    /// `permissions` is checked key by key (`inertPermissionKeys`).
     static let inertTopLevelKeys: Set<String> = [
         "$schema", "permissions", "model", "includeCoAuthoredBy", "attribution", "cleanupPeriodDays", "outputStyle",
         "alwaysThinkingEnabled", "spinnerTipsEnabled", "respectGitignore", "language", "disabledMcpjsonServers",
     ]
+
+    /// `permissions` keys that only take permissions away. Everything else asks for API-key agents as
+    /// `permissions.<key>`: `allow` (would run commands without asking, and a command can read the CLI's environment),
+    /// `additionalDirectories` (widens what tools reach), `defaultMode` (overridden by `--permission-mode`, which the
+    /// engine always passes: a project `defaultMode` of `acceptEdits` or `bypassPermissions` still started in
+    /// `default`, checked live 2026-11-18, but it is not worth trusting), and any key added later.
+    static let inertPermissionKeys: Set<String> = ["deny", "ask", "disableBypassPermissionsMode"]
 
     /// Top-level settings that produce credentials by running a program.
     static let credentialHelperKeys: Set<String> = ["apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "otelHeadersHelper"]
@@ -55,12 +61,70 @@ enum ClaudeProjectSettings {
         let text: String
         switch value {
         case .string(let string): text = string
-        case .number(let number): text = number.rounded() == number ? String(Int(number)) : "x"
+        case .number(let number):
+            // `Int(exactly:)` is nil for fractions, NaN, infinities and anything too large, so no value can trap.
+            guard let whole = Int(exactly: number), (0...999_999_999).contains(whole) else { return false }
+            text = String(whole)
         case .bool(let flag): text = flag ? "true" : "false"
         default: return false
         }
         if !text.isEmpty, text.count <= 9, text.allSatisfy(\.isASCII), text.allSatisfy(\.isNumber) { return true }
         return ["true", "false", "yes", "no", "on", "off"].contains(text.lowercased())
+    }
+
+    /// `env` keys pinned for a trusted folder whose files the CLI reads itself (`ClaudeSettingsPlan.project`): the
+    /// engine passes them in a command-line `--settings` file, which outranks project and local settings, so a value a
+    /// project adds later (the CLI reloads settings while it runs) has no effect. Checked live 2026-11-18 with one haiku
+    /// turn each: a fake `ANTHROPIC_BASE_URL` added mid-session stalled the turn without the pin and did nothing with
+    /// it.
+    ///
+    /// Only keys where an empty value means "unset" are pinned empty (the endpoint, credential and provider switches,
+    /// proxies, `NODE_OPTIONS`, `NODE_TLS_REJECT_UNAUTHORIZED`). Left out on purpose: `CLAUDE_CONFIG_DIR` (an empty value
+    /// made the CLI use the session folder as its config folder; it is pinned only to the value it already has), and
+    /// the CA file variables (an empty value can break TLS for the agent's own tools, and with the proxies and endpoint
+    /// pinned a new CA has nothing to intercept). Those still stop the process through the watcher.
+    static let pinnedEnvKeys: Set<String> = Set<String>([
+        "ANTHROPIC_BASE_URL", "ANTHROPIC_CUSTOM_HEADERS", "ANTHROPIC_BEDROCK_BASE_URL", "ANTHROPIC_VERTEX_BASE_URL",
+        "ANTHROPIC_FOUNDRY_BASE_URL", "ANTHROPIC_FOUNDRY_RESOURCE", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+        "NODE_OPTIONS", "NODE_TLS_REJECT_UNAUTHORIZED",
+    ]).union(pinnedSecretKeys)
+
+    /// Credentials, always pinned empty for a subscription agent and never copied from anywhere.
+    static let pinnedSecretKeys: Set<String> = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_FOUNDRY_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+
+    /// The pinned values: what the CLI would use without the project, that is the value in the child's environment,
+    /// else the one in the user's own `settings.json` (non-secret keys only), else empty. `CLAUDE_CONFIG_DIR` is added
+    /// only when the child's environment sets it, with that value.
+    static func loginPins(environment: [String: String], userSettings: URL?) -> [String: JSONValue] {
+        var userEnv: [String: JSONValue] = [:]
+        if let userSettings, let data = try? Data(contentsOf: userSettings), let json = JSONValue.parse(data: data) {
+            userEnv = json["env"]?.objectValue ?? [:]
+        }
+        var pins: [String: JSONValue] = [:]
+        for key in pinnedEnvKeys {
+            if pinnedSecretKeys.contains(key) {
+                pins[key] = ""
+            } else if let value = environment[key] {
+                pins[key] = .string(value)
+            } else if let value = userEnv[key]?.stringValue {
+                pins[key] = .string(value)
+            } else {
+                pins[key] = ""
+            }
+        }
+        if let config = environment["CLAUDE_CONFIG_DIR"], !config.isEmpty { pins["CLAUDE_CONFIG_DIR"] = .string(config) }
+        return pins
+    }
+
+    /// The user's own Claude settings file (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`).
+    static func userSettingsFile(environment: [String: String]) -> URL? {
+        if let config = environment["CLAUDE_CONFIG_DIR"], !config.isEmpty {
+            return URL(fileURLWithPath: (config as NSString).expandingTildeInPath).appendingPathComponent("settings.json")
+        }
+        guard let home = environment["HOME"], !home.isEmpty else { return nil }
+        return URL(fileURLWithPath: home).appendingPathComponent(".claude/settings.json")
     }
 
     /// Permission rules whose `/path` form means "relative to the settings file's project", rewritten to the absolute
@@ -81,11 +145,21 @@ enum ClaudeProjectSettings {
 
         var isEmpty: Bool { settings.isEmpty && mcpServers.isEmpty && unreadable.isEmpty }
 
-        /// A hash of everything above, so a confirmation stops counting once any of it changes.
+        /// A hash of everything above, so a confirmation stops counting once any of it changes. Fails closed: a
+        /// snapshot that cannot be written as JSON gets a new random value each time, so it can never match.
         var fingerprint: String {
             let body: JSONValue = ["settings": .object(settings), "mcpServers": .object(mcpServers),
                                    "unreadable": .object(unreadable.mapValues(JSONValue.string))]
-            return SHA256.hash(data: Data(body.jsonText.utf8)).map { String(format: "%02x", $0) }.joined()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+            guard let data = try? encoder.encode(body) else { return "unconfirmable-" + UUID().uuidString }
+            return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        }
+
+        /// What can redirect requests or the login and is not neutralised by `ClaudeProjectSettings.loginPins`. For a
+        /// process that reads the project's files itself, these stop it at once when they appear.
+        var unpinnedRedirects: [String] {
+            needsConfirmation(for: .subscription).filter { !ClaudeProjectSettings.pinnedEnvKeys.contains($0) }
         }
 
         /// What needs the user's confirmation before an agent with this billing may load these settings. Values are
@@ -100,8 +174,10 @@ enum ClaudeProjectSettings {
                 switch billing {
                 case .apiKey:
                     if key == "permissions" {
-                        if !(value["allow"]?.arrayValue ?? []).isEmpty || (value["allow"] != nil && value["allow"]?.arrayValue == nil) {
-                            keys.append("permissions.allow")
+                        if let object = value.objectValue {
+                            keys += object.keys.filter { !ClaudeProjectSettings.inertPermissionKeys.contains($0) }.map { "permissions.\($0)" }
+                        } else {
+                            keys.append("permissions")
                         }
                     } else if !ClaudeProjectSettings.inertTopLevelKeys.contains(key) {
                         keys.append(key)
@@ -201,7 +277,10 @@ enum ClaudeSettingsPlan: Equatable, Sendable {
     /// (`--setting-sources user`).
     case userOnly
     /// Trusted folder with nothing that needs confirming for a subscription agent: the CLI reads the project's files as
-    /// usual, and the engine watches them and stops the process if something that needs confirming appears.
+    /// usual (so the project's commands, skills and agents work), with the redirect-capable `env` keys pinned by a
+    /// command-line `--settings` file (`loginPins`), so a later edit cannot redirect requests or the login. The engine
+    /// also watches the files and stops the process at once if something the pins do not cover appears
+    /// (`Snapshot.unpinnedRedirects`, for example `apiKeyHelper` or an unreadable file).
     case project
     /// The confirmed values, passed as private `--settings` and `--mcp-config` files with `--setting-sources user`, so
     /// the CLI never reads the project's files and nothing added to them later can take effect. Used for every

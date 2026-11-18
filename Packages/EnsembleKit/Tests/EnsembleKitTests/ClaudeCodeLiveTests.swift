@@ -260,9 +260,10 @@ struct ClaudeCodeLiveTests {
     }
 
     /// Confirmed project settings are pinned for the session: the CLI gets a private copy, so edits to the project's
-    /// files while it runs do nothing (without the copy, the raw CLI picks them up on the next prompt). And in a
-    /// trusted folder the CLI reads itself, the engine stops the process once the files start redirecting requests.
-    /// Three haiku turns.
+    /// files while it runs do nothing (without the copy, the raw CLI picks them up on the next prompt). In a trusted
+    /// folder the CLI reads itself, a base URL added mid-session is outranked by the pins, and a key the pins do not
+    /// cover stops the process.
+    /// Four haiku turns.
     @Test func confirmedSettingsArePinnedAndChangesAreWatched() async throws {
         let harness = try ClaudeLiveHarness()
         defer { harness.finish() }
@@ -304,7 +305,8 @@ struct ClaudeCodeLiveTests {
         await engine.shutdown()
         await #expect(throws: ClaudeCodeError.self) { try await engine.prompt(session.id, text: "Reply with exactly: ok", files: []) }
 
-        // A trusted folder with nothing to confirm: the CLI reads its files, and the engine watches them.
+        // A trusted folder with nothing to confirm: the CLI reads its files (so project commands, skills and agents
+        // work), with the redirect-capable keys pinned by a command-line settings file, and the engine watches them.
         let clean = harness.folder.appendingPathComponent("clean")
         try FileManager.default.createDirectory(at: clean.appendingPathComponent(".claude"), withIntermediateDirectories: true)
         try Data("{}".utf8).write(to: clean.appendingPathComponent(".claude/settings.json"))
@@ -315,10 +317,19 @@ struct ClaudeCodeLiveTests {
         try await engine.prompt(watched.id, text: "Reply with exactly: ok", files: [])
         #expect(try await harness.ended(watched.id, after: mark) == "succeeded")
         mark = await harness.recorder.mark()
-        // A closed local port: even if the CLI used it, nothing would leave the Mac.
-        try Data(#"{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}}"#.utf8).write(to: clean.appendingPathComponent(".claude/settings.json"))
+        // A fake base URL added while it runs (a closed local port, so nothing could leave the Mac). Without the pin the
+        // CLI picks it up and the next turn stalls; with it, the process keeps going and the turn succeeds.
+        let cleanSettings = clean.appendingPathComponent(".claude/settings.json")
+        try Data(#"{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}}"#.utf8).write(to: cleanSettings)
+        try await Task.sleep(for: .seconds(4))
+        #expect(await !harness.recorder.events.dropFirst(mark).contains(.other(type: "claude.project_settings_changed")))
+        try await engine.prompt(watched.id, text: "Reply with exactly: ok", files: [])
+        #expect(try await harness.ended(watched.id, after: mark, timeout: 60) == "succeeded")
+        // Something the pins do not cover stops the process at once, and the next launch asks.
+        mark = await harness.recorder.mark()
+        try Data(#"{"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}, "apiKeyHelper": "./missing-helper.sh"}"#.utf8).write(to: cleanSettings)
         _ = try await harness.recorder.wait("the watcher", after: mark, timeout: 10) { $0 == .other(type: "claude.project_settings_changed") }
-        await #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: clean.path, keys: ["ANTHROPIC_BASE_URL"])) {
+        await #expect(throws: ClaudeCodeError.projectOverridesAPISettings(directory: clean.path, keys: ["ANTHROPIC_BASE_URL", "apiKeyHelper"])) {
             try await engine.prompt(watched.id, text: "Reply with exactly: ok", files: [])
         }
         await engine.shutdown()

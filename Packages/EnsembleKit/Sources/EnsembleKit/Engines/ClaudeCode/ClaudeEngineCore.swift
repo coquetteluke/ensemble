@@ -118,17 +118,27 @@ actor ClaudeEngineCore {
                                              confirmed: store.confirmedAPISettings[key])
     }
 
+    /// Why a process that reads a trusted folder's own files must stop now, or nil. The pinned keys cannot take
+    /// effect (`ClaudeProjectSettings.loginPins`), so only what the pins do not cover counts, unless the user confirmed
+    /// exactly these files.
+    private func projectFilesProblem(_ record: ClaudeSessionRecord) -> ClaudeCodeError? {
+        guard configuration.trust.isTrusted(record.directory) else { return .folderNotTrusted(record.directory) }
+        guard let snapshot = ClaudeProjectSettings.snapshot(directory: record.directory) else {
+            return .invalidArgument("The project folder can no longer be read: \(record.directory)")
+        }
+        let unpinned = snapshot.unpinnedRedirects
+        let key = WorkspaceTrust.resolvedPath(record.directory) ?? record.directory
+        guard !unpinned.isEmpty, store.confirmedAPISettings[key] != snapshot.fingerprint else { return nil }
+        return .projectOverridesAPISettings(directory: record.directory, keys: unpinned)
+    }
+
     /// Called about once a second while the CLI reads a trusted folder's own settings files (the CLI reloads them while
-    /// it runs). When they now hold something that needs confirming, the process is stopped at once. Returns false
+    /// it runs). When they now hold something the pins do not cover, the process is stopped at once. Returns false
     /// when there is nothing left to watch.
     private func watchProjectSettings(root: String, generation: Int) -> Bool {
         guard let session = live[root], session.process.generation == generation, session.readsProjectFiles,
               let record = store[root] else { return false }
-        do {
-            _ = try settingsPlan(directory: record.directory, billing: record.billing,
-                                 trusted: configuration.trust.isTrusted(record.directory))
-            return true
-        } catch {
+        if let error = projectFilesProblem(record) {
             live[root] = nil
             session.process.terminate()
             failWaiters(root: root, message: "the project's Claude settings changed")
@@ -140,6 +150,7 @@ actor ClaudeEngineCore {
             emit(.other(type: "claude.project_settings_changed"))
             return false
         }
+        return true
     }
     func currentConnectors() -> [ConnectorInfo] { connectors }
 
@@ -360,9 +371,7 @@ actor ClaudeEngineCore {
             // A trust change takes effect once the process is idle: the next prompt starts a new one. So does a change
             // to project files the process reads that now needs confirming (checked again below, which throws).
             var current = session.trusted == trusted
-            if current, session.readsProjectFiles {
-                current = (try? settingsPlan(directory: record.directory, billing: record.billing, trusted: trusted)) == .project
-            }
+            if current, session.readsProjectFiles { current = projectFilesProblem(record) == nil }
             if current { return }
             stopProcess(id)
         }
@@ -388,21 +397,31 @@ actor ClaudeEngineCore {
             start = record.started ? .resume : .new
         }
         let model = record.model.map(\.id).flatMap { $0 == "default" ? nil : $0 }
+        let env = ClaudeCLI.environment(base: configuration.baseEnvironment, billing: record.billing, apiKey: apiKey,
+                                        fileCheckpointing: configuration.fileCheckpointing)
         // A snapshot plan hands the CLI a private copy of the confirmed settings; it never reads the project's files.
+        // A project plan pins the redirect-capable keys with a command-line settings file, which outranks the project's.
         var snapshotArguments: [String] = []
         var snapshotFolder: URL?
-        if case .snapshot(let snapshot) = plan {
+        switch plan {
+        case .snapshot(let snapshot):
             let written = try Self.writeSnapshot(snapshot)
             snapshotFolder = written.folder
             snapshotArguments = written.arguments
+        case .project:
+            let pins = ClaudeProjectSettings.loginPins(environment: env,
+                                                       userSettings: ClaudeProjectSettings.userSettingsFile(environment: env))
+            let written = try Self.writePrivateFiles([("settings.json", JSONValue.object(["env": .object(pins)]).lineData, "--settings")])
+            snapshotFolder = written.folder
+            snapshotArguments = written.arguments
+        case .userOnly:
+            break
         }
         let options = ClaudeLaunchOptions(sessionID: record.cliID, start: start, resumeAt: start == .new ? nil : record.resumeAt,
                                           model: model, effort: record.effort, permissionMode: record.permissionMode,
                                           settingSources: configuration.settingSources.effective(trusted: plan == .project),
                                           thinkingDisplay: configuration.thinkingDisplay,
                                           fastMode: record.fastMode, extraArguments: configuration.extraArguments + snapshotArguments)
-        let env = ClaudeCLI.environment(base: configuration.baseEnvironment, billing: record.billing, apiKey: apiKey,
-                                        fileCheckpointing: configuration.fileCheckpointing)
         generation += 1
         let process: ClaudeProcess
         do {
@@ -444,21 +463,24 @@ actor ClaudeEngineCore {
 
     /// Writes a snapshot's `--settings` and `--mcp-config` files into a new folder only the user can read.
     static func writeSnapshot(_ snapshot: ClaudeProjectSettings.Snapshot) throws -> (folder: URL, arguments: [String]) {
+        var files: [(name: String, data: Data, flag: String)] = [("settings.json", snapshot.settingsData, "--settings")]
+        if let mcp = snapshot.mcpData { files.append(("mcp.json", mcp, "--mcp-config")) }
+        return try writePrivateFiles(files)
+    }
+
+    /// Writes files into a new folder only the user can read and returns the flags that pass them to the CLI.
+    static func writePrivateFiles(_ files: [(name: String, data: Data, flag: String)]) throws -> (folder: URL, arguments: [String]) {
         let fm = FileManager.default
         let folder = fm.temporaryDirectory.appendingPathComponent("ensemble-claude-settings-\(UUID().uuidString.lowercased())")
         do {
             try fm.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-            let settings = folder.appendingPathComponent("settings.json")
-            guard fm.createFile(atPath: settings.path, contents: snapshot.settingsData, attributes: [.posixPermissions: 0o600]) else {
-                throw ClaudeCodeError.processFailed("could not write the project's settings for the agent")
-            }
-            var arguments = ["--settings", settings.path]
-            if let mcp = snapshot.mcpData {
-                let file = folder.appendingPathComponent("mcp.json")
-                guard fm.createFile(atPath: file.path, contents: mcp, attributes: [.posixPermissions: 0o600]) else {
-                    throw ClaudeCodeError.processFailed("could not write the project's MCP servers for the agent")
+            var arguments: [String] = []
+            for file in files {
+                let url = folder.appendingPathComponent(file.name)
+                guard fm.createFile(atPath: url.path, contents: file.data, attributes: [.posixPermissions: 0o600]) else {
+                    throw ClaudeCodeError.processFailed("could not write the agent's settings file")
                 }
-                arguments += ["--mcp-config", file.path]
+                arguments += [file.flag, url.path]
             }
             return (folder, arguments)
         } catch {
