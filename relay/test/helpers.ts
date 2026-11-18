@@ -90,10 +90,10 @@ export class Client {
     return this.closed!.code;
   }
 
-  /** Waits a short moment and reports whether any message arrived. */
-  async quiet(ms = 150): Promise<boolean> {
+  /** Waits long enough for events to land, then reports that nothing arrived and the socket is still open. */
+  async quiet(ms = 200): Promise<boolean> {
     await new Promise((r) => setTimeout(r, ms));
-    return this.messages.length === 0;
+    return this.messages.length === 0 && this.closed === null;
   }
 
   send(obj: unknown) {

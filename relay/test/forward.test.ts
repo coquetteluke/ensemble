@@ -1,19 +1,21 @@
 import { env, evictDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { b64url, claim, Client, connect, newKey, proof, randomID } from "./helpers";
+import { auth, b64url, claim, Client, connect, type Key, newKey, proof, randomID } from "./helpers";
 
 interface Mac {
   id: string;
   accessKey: string;
   host: Client;
+  key: Key;
 }
 
 async function setup(): Promise<Mac> {
   const id = randomID();
   const accessKey = b64url(crypto.getRandomValues(new Uint8Array(32)));
-  const host = await claim(id, await newKey(), accessKey);
+  const key = await newKey();
+  const host = await claim(id, key, accessKey);
   expect((await host.next()).t).toBe("ready");
-  return { id, accessKey, host };
+  return { id, accessKey, host, key };
 }
 
 /** Connects a phone and sends a valid proof. Returns once the phone is waiting. */
@@ -39,6 +41,15 @@ async function paired(mac: Mac) {
   const data = await dataSocket(mac, p.conn, p.token);
   expect(await p.phone.next()).toEqual({ t: "paired" });
   return { ...p, data };
+}
+
+async function pairStillWorks(phone: Client, data: Client) {
+  expect(await phone.quiet()).toBe(true);
+  expect(await data.quiet()).toBe(true);
+  phone.ws.send("still here");
+  expect(await data.nextRaw()).toBe("still here");
+  data.ws.send("yes");
+  expect(await phone.nextRaw()).toBe("yes");
 }
 
 describe("phone pairing and forwarding", () => {
@@ -97,11 +108,14 @@ describe("phone pairing and forwarding", () => {
 
   it("a data socket with a wrong token is refused", async () => {
     const mac = await setup();
-    const { phone, conn } = await phoneWaiting(mac);
+    const { phone, conn, token } = await phoneWaiting(mac);
     const data = await dataSocket(mac, conn, b64url(crypto.getRandomValues(new Uint8Array(32))));
     expect(await data.closeCode()).toBe(4001);
-    expect(phone.closed).toBeNull();
     expect(await phone.quiet()).toBe(true);
+    // The phone is still waiting and the real Mac can still pair it.
+    const real = await dataSocket(mac, conn, token);
+    expect(await phone.next()).toEqual({ t: "paired" });
+    real.ws.close(1000);
   });
 
   it("a data socket cannot attach to another phone's conn", async () => {
@@ -112,6 +126,9 @@ describe("phone pairing and forwarding", () => {
     expect(await data.closeCode()).toBe(4001);
     expect(await one.phone.quiet()).toBe(true);
     expect(await two.phone.quiet()).toBe(true);
+    const real = await dataSocket(mac, two.conn, two.token);
+    expect(await two.phone.next()).toEqual({ t: "paired" });
+    real.ws.close(1000);
   });
 
   it("a data socket for an unknown conn is refused", async () => {
@@ -122,12 +139,54 @@ describe("phone pairing and forwarding", () => {
 
   it("the token is single use", async () => {
     const mac = await setup();
-    const { phone, conn, token, ...rest } = await paired(mac);
-    void rest;
+    const { phone, conn, token, data } = await paired(mac);
     const second = await dataSocket(mac, conn, token);
     expect(await second.closeCode()).toBe(4001);
-    // The pair is unharmed.
-    expect(phone.closed).toBeNull();
+    await pairStillWorks(phone, data);
+  });
+
+  it("an idle duplicate data socket closing does not touch the live pair", async () => {
+    const mac = await setup();
+    const { phone, conn, data } = await paired(mac);
+    const extra = await connect(mac.id, `data/${conn}`);
+    extra.ws.close(1000);
+    await pairStillWorks(phone, data);
+  });
+
+  it("an unpaired data socket never receives phone frames", async () => {
+    const mac = await setup();
+    const { phone, conn, token } = await phoneWaiting(mac);
+    const idle = await connect(mac.id, `data/${conn}`);
+    const real = await dataSocket(mac, conn, token);
+    expect(await phone.next()).toEqual({ t: "paired" });
+    phone.ws.send("secret");
+    expect(await real.nextRaw()).toBe("secret");
+    expect(await idle.quiet()).toBe(true);
+    real.ws.send("reply");
+    expect(await phone.nextRaw()).toBe("reply");
+    expect(await idle.quiet()).toBe(true);
+  });
+
+  it("a second access frame closes the phone with 4002", async () => {
+    const mac = await setup();
+    const phone = await connect(mac.id, "phone");
+    const ch = await phone.next();
+    const p = await proof(mac.accessKey, mac.id, ch.nonce);
+    phone.send({ t: "access", proof: p });
+    phone.send({ t: "access", proof: p });
+    expect(await phone.closeCode()).toBe(4002);
+  });
+
+  it("after the host is replaced the notice reaches the new host", async () => {
+    const mac = await setup();
+    const second = await auth(mac.id, mac.key);
+    expect((await second.next()).t).toBe("ready");
+    const phone = await connect(mac.id, "phone");
+    const ch = await phone.next();
+    phone.send({ t: "access", proof: await proof(mac.accessKey, mac.id, ch.nonce) });
+    expect(await phone.next()).toEqual({ t: "waiting" });
+    expect((await second.next()).t).toBe("phone");
+    expect(mac.host.messages.length).toBe(0);
   });
 
   it("a data socket may only send its token frame first", async () => {

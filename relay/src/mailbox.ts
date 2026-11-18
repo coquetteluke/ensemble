@@ -108,7 +108,7 @@ export class Mailbox extends DurableObject<Env> {
   private async phoneMessage(ws: WebSocket, att: Attachment, message: string | ArrayBuffer) {
     if (att.paired) {
       if (byteLength(message) > MAX_PHONE_FRAME) return this.closeBoth(ws, att, Close.tooBig, "too big");
-      const data = this.ctx.getWebSockets(`data:${att.conn}`)[0];
+      const data = this.pairedSocket(`data:${att.conn}`);
       if (!data) return ws.close(Close.macOffline, "mac offline");
       return data.send(message);
     }
@@ -122,9 +122,13 @@ export class Mailbox extends DurableObject<Env> {
     }
     // The proof check awaited. Re-read the attachment so a repeated `access` frame cannot mint a second token.
     const now = ws.deserializeAttachment() as Attachment | null;
-    if (!now || now.authed || ws.readyState !== WebSocket.READY_STATE_OPEN) return;
+    if (!now || ws.readyState !== WebSocket.READY_STATE_OPEN) return;
+    // A second `access` frame, sent before the first finished, is a frame before paired.
+    if (now.authed) return ws.close(Close.protocol, "protocol");
 
-    const host = this.ctx.getWebSockets("host").find((h) => (h.deserializeAttachment() as Attachment | null)?.authed);
+    const host = this.ctx
+      .getWebSockets("host")
+      .find((h) => h.readyState === WebSocket.READY_STATE_OPEN && (h.deserializeAttachment() as Attachment | null)?.authed);
     if (!host) {
       ws.send(encodeControl({ t: "error", code: "macOffline", message: "The Mac is offline." }));
       return ws.close(Close.macOffline, "mac offline");
@@ -139,7 +143,7 @@ export class Mailbox extends DurableObject<Env> {
   private async dataMessage(ws: WebSocket, att: Attachment, message: string | ArrayBuffer) {
     if (att.paired) {
       if (byteLength(message) > MAX_MAC_FRAME) return this.closeBoth(ws, att, Close.tooBig, "too big");
-      const phone = this.ctx.getWebSockets(`phone:${att.conn}`)[0];
+      const phone = this.pairedSocket(`phone:${att.conn}`);
       if (!phone) return ws.close(Close.protocol, "no phone");
       return phone.send(message);
     }
@@ -157,17 +161,25 @@ export class Mailbox extends DurableObject<Env> {
     phone.send(encodeControl({ t: "paired" }));
   }
 
-  /** Closes the other half of a phone and data pair. */
+  /** The socket with this tag that has completed pairing, if any. Unpaired sockets are never a peer. */
+  private pairedSocket(tag: string): WebSocket | undefined {
+    return this.ctx.getWebSockets(tag).find((w) => (w.deserializeAttachment() as Attachment | null)?.paired);
+  }
+
+  /**
+   * Closes the other half of a pair. Only a paired socket has a peer: a phone that is still waiting, or a data
+   * socket that never proved the token, closing or failing affects nobody else.
+   */
   private closePeer(ws: WebSocket, code: number) {
     const att = ws.deserializeAttachment() as Attachment | null;
-    if (!att || (att.role !== "phone" && att.role !== "data")) return;
+    if (!att || !att.paired || (att.role !== "phone" && att.role !== "data")) return;
     const peerTag = att.role === "phone" ? `data:${att.conn}` : `phone:${att.conn}`;
-    for (const peer of this.ctx.getWebSockets(peerTag)) {
-      try {
-        peer.close(sendableCode(code), "peer closed");
-      } catch {
-        // Already closed.
-      }
+    const peer = this.pairedSocket(peerTag);
+    if (!peer || peer === ws) return;
+    try {
+      peer.close(sendableCode(code), "peer closed");
+    } catch {
+      // Already closed.
     }
   }
 
@@ -197,7 +209,12 @@ export class Mailbox extends DurableObject<Env> {
   private becomeHost(ws: WebSocket, att: Attachment) {
     for (const other of this.ctx.getWebSockets("host")) {
       if (other === ws) continue;
-      if ((other.deserializeAttachment() as Attachment | null)?.authed) other.close(Close.taken, "replaced");
+      const otherAtt = other.deserializeAttachment() as Attachment | null;
+      if (otherAtt?.authed) {
+        // Mark it signed out first: it can linger in getWebSockets until its close handshake ends.
+        other.serializeAttachment({ ...otherAtt, authed: false } satisfies Attachment);
+        other.close(Close.taken, "replaced");
+      }
     }
     ws.serializeAttachment({ ...att, authed: true, nonce: undefined } satisfies Attachment);
     ws.send(encodeControl({ t: "ready" }));
