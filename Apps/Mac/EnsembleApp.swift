@@ -86,6 +86,9 @@ final class AppEngine {
         AttentionCenter.shared.extraNeedsYou = { [weak roomsController] in roomsController?.decisionsWaiting ?? 0 }
         Task {
             await newStore.start()
+            // Scheduled tasks and usage totals run inside Ensemble, for every engine.
+            ScheduleCenter.shared.start(store: newStore, preview: Self.usePreview)
+            UsageCenter.shared.start(store: newStore, preview: Self.usePreview)
             await roomsController.start()
             roomsController.syncAgents(into: newStore)
             // Preview builds (often ad-hoc signed) never touch the real pairing in the keychain.
@@ -170,6 +173,7 @@ struct EnsembleApp: App {
             .environment(power)
             .task { app.start() }
             .task { await power.start() }
+            .task { ScheduleCenter.shared.power = power }
             .task { MenuShortcuts.install() }
         }
         .defaultSize(width: 1440, height: 900)
