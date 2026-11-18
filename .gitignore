@@ -35,3 +35,6 @@ screenshots/tmp/
 
 # Personal signing team
 Config/Local.xcconfig
+
+# Local design references (screenshots of other apps; never published)
+.design-ref/
