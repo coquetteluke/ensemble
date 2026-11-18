@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd job that keeps Ensemble Remote signed on your iPhone (free Apple accounts sign for 7 days).
+  It runs once a day at 10:00 and at login; the script only rebuilds when the last install is 5 or more
+  days old and an iPhone is connected (USB, or Wi-Fi with the phone paired in Xcode).
+
+  Install:
+    sed -e "s|__REPO__|$PWD|g" -e "s|__HOME__|$HOME|g" scripts/com.ensemble.ios-resign.plist.template \
+      > ~/Library/LaunchAgents/com.ensemble.ios-resign.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ensemble.ios-resign.plist
+
+  Run now:    launchctl kickstart gui/$(id -u)/com.ensemble.ios-resign
+  Remove:     launchctl bootout gui/$(id -u)/com.ensemble.ios-resign
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.ensemble.ios-resign</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>__REPO__/scripts/ios-resign-weekly.sh</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>ENSEMBLE_RESIGN_DAYS</key>
+		<string>5</string>
+	</dict>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>10</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>__HOME__/Library/Logs/Ensemble/ios-resign.log</string>
+	<key>StandardErrorPath</key>
+	<string>__HOME__/Library/Logs/Ensemble/ios-resign.log</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+</dict>
+</plist>
