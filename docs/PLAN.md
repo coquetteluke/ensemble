@@ -61,6 +61,10 @@ Done when: one room runs a Claude agent on the Claude subscription and a Gemini 
 - **Transcript polish (WP-B, queued):** collapsible activity groups, a live working row (spinner, current step, elapsed time), a pinned task-list card from agents' todo tools, hover actions on user messages (relative time with exact-time tooltip; Fork, Rewind, Edit, Copy icons; Rewind and Edit disabled while the agent works), inline visuals from `widget` code blocks in a sandboxed web view, effort and fast-mode pickers, and a `/` command menu (Ensemble commands plus each engine's commands and skills). Engines expose these through the optional protocols in `OpenCode/EngineCapabilities.swift`.
 - **WP-P GitHub** (owns `Packages/EnsembleKit/Sources/EnsembleKit/GitHub/`, `Apps/Mac/GitHub/`): use the official `gh` CLI when it is installed and signed in (fall back to GitHub's device sign-in flow later). Shows the repo, branch and changes for the session's folder; Commit and push, Create pull request (title and body drafted by the agent), pull request status with CI checks in the context panel, review comments into the session, a "Fix CI" action that hands failing logs to the agent, open in browser. Never stores GitHub tokens itself.
 
+## M1.9: Workspace trust (security, 2026-11-18)
+
+- First time a folder is used, Ensemble asks "Trust this folder?" (like Claude Code). Until trusted, every engine runs without that folder's own settings, hooks, config and instructions: Claude Code with `--setting-sources user`, OpenCode without project `opencode.json`/plugins (mechanism being checked), agy without workspace `.agents/` hooks and plugins. Shared `WorkspaceTrust` store in `Engines/WorkspaceTrust.swift`; the prompt and a Trusted folders list in Settings come with the UI work.
+
 ## M2: Rooms (multi-agent)
 
 - **WP-C RoomEngine** (owns `Rooms/`, its tests): room model and persistence, Team / Debate / Round table / Solo, board, relay via `session/synthetic`, lead plan and assignments, worktrees per agent in git projects, review step, pause/resume, `@agent` routing, spending caps.
