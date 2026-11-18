@@ -23,7 +23,8 @@ public final class DevServerProcess {
     public let folder: String
     /// Each line of output, without colour codes.
     public var onOutput: ((DevServerOutput) -> Void)?
-    /// The exit status (or the signal number for a process that was killed), once it has ended.
+    /// The exit status (or the signal number for a process that was killed), once it has ended and its last output
+    /// has been delivered.
     public var onExit: ((Int32) -> Void)?
 
     public private(set) var pid: pid_t?
@@ -32,8 +33,14 @@ public final class DevServerProcess {
     public private(set) var exitStatus: Int32?
     private var process: Process?
     private var partial: [Bool: Data] = [:]
+    /// The streams (keyed by `isError`) that have reached end of file.
+    private var endedStreams: Set<Bool> = []
+    private var exitReported = false
 
     public static let maxLineLength = 4000
+    /// How long the exit report waits for output still in the pipes. A process the server started can hold a pipe
+    /// open after the server itself has exited, so the report never waits for longer than this.
+    public static let exitOutputGrace: TimeInterval = 2
 
     /// - Parameters:
     ///   - executable: the program, already resolved (`LaunchCommand.resolveExecutable`).
@@ -82,6 +89,8 @@ public final class DevServerProcess {
             // End of the stream: what is left is the last line.
             if !buffer.isEmpty { emit(buffer, isError: isError) }
             partial[isError] = nil
+            endedStreams.insert(isError)
+            if endedStreams.count == 2, exitStatus != nil { reportExit() }
             return
         }
         while let newline = buffer.firstIndex(of: 0x0A) {
@@ -106,7 +115,9 @@ public final class DevServerProcess {
         onOutput?(DevServerOutput(text: text, isError: isError))
     }
 
-    /// The program ended. Anything it left running in its group is stopped too, so no server outlives its entry.
+    /// The program ended. Anything it left running in its group is stopped too, so no server outlives its entry. The
+    /// exit is reported once both pipes are drained, so its last lines come before it (the exit and the output reach the
+    /// main queue separately).
     private func finished(_ status: Int32) {
         guard exitStatus == nil else { return }
         exitStatus = status
@@ -114,7 +125,19 @@ public final class DevServerProcess {
             let targets = ProcessTree.signal(root: nil, group: group, SIGTERM)
             Task.detached(priority: .utility) { ProcessTree.waitForExit(targets, group: group, grace: 3) }
         }
-        onExit?(status)
+        if endedStreams.count == 2 {
+            reportExit()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.exitOutputGrace) { [weak self] in
+                MainActor.assumeIsolated { self?.reportExit() }
+            }
+        }
+    }
+
+    private func reportExit() {
+        guard !exitReported, let exitStatus else { return }
+        exitReported = true
+        onExit?(exitStatus)
     }
 
     /// Signals the tree to stop and waits (off the main actor) until it is gone, killing what is left after `grace`.
