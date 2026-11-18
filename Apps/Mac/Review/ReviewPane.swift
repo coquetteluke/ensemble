@@ -46,6 +46,10 @@ struct ReviewPane: View {
             guard !isSnapshot else { return }
             await model.loadIfNeeded()
         }
+        // The folder was trusted (here or elsewhere): git can run now.
+        .onChange(of: model.untrustedFolder.map { model.service.trust.isTrusted($0) } ?? false) { _, trusted in
+            if trusted, !isSnapshot { Task { await model.reload() } }
+        }
         // The agent's turn just ended: show what it changed.
         .onChange(of: model.environment.isAgentWorking(nil)) { _, working in
             if !working, !isSnapshot { Task { await model.reload() } }
@@ -73,12 +77,17 @@ struct ReviewPane: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if model.files.isEmpty {
-            ReviewMessage(symbol: "checkmark.circle", title: "No changes", detail: model.result?.comparison ?? "") { EmptyView() }
+            VStack(spacing: 0) {
+                if let folder = model.untrustedFolder { untrustedNotice(folder) }
+                ReviewMessage(symbol: "checkmark.circle", title: "No changes", detail: model.result?.comparison ?? "") { EmptyView() }
+            }
         } else {
             ScrollViewReader { proxy in
                 AdaptiveScroll(.vertical) {
                     ReviewStack(spacing: 0) {
-                        if !model.isGit {
+                        if let folder = model.untrustedFolder {
+                            untrustedNotice(folder)
+                        } else if !model.isGit {
                             notGitNotice
                         }
                         ReviewFileList(model: model) { file in
@@ -94,6 +103,38 @@ struct ReviewPane: View {
                 }
             }
         }
+    }
+
+    /// Why git is not running here, and the button that trusts the folder.
+    private func untrustedNotice(_ folder: String) -> some View {
+        VStack(alignment: .leading, spacing: theme.z(8)) {
+            HStack(alignment: .top, spacing: theme.z(8)) {
+                Image(systemName: "lock.shield")
+                    .font(theme.font(size: 12.5))
+                    .foregroundStyle(theme.warning)
+                Text("Git does not run in folders you have not trusted, because a repository's own settings can start programs. "
+                     + "These diffs come from the agent's record of its edits, and staging and commits are off.")
+                    .font(theme.font(size: 12))
+                    .foregroundStyle(theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: theme.z(8)) {
+                Button("Trust this folder") { Task { await model.trustFolder() } }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .help("Trust \(folder) so git can run in it")
+                Text(Format.abbreviatedPath(folder))
+                    .font(theme.font(size: 11.5))
+                    .foregroundStyle(theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
+            }
+            .padding(.leading, theme.z(20))
+        }
+        .padding(.horizontal, theme.z(14))
+        .padding(.vertical, theme.z(10))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.panel)
+        .overlay(alignment: .bottom) { HLine() }
     }
 
     private var notGitNotice: some View {

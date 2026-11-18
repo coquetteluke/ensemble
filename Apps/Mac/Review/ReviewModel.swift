@@ -58,6 +58,8 @@ final class ReviewModel {
     private(set) var isWritingMessage = false
     private(set) var isCommitting = false
     private(set) var lastCommit: String?
+    /// Commit with `--no-verify` and no hooks. Off again after each commit.
+    var skipHooks = false
     private(set) var busyFiles: Set<String> = []
     /// The last git or agent action that failed, in a line.
     var actionError: String?
@@ -97,6 +99,8 @@ final class ReviewModel {
 
     var files: [ReviewFileDiff] { result?.files ?? [] }
     var isGit: Bool { result?.isGit ?? false }
+    /// The repository folder to trust before git can run here, when it is not trusted.
+    var untrustedFolder: String? { result?.untrustedFolder }
     var totals: (additions: Int, deletions: Int) {
         files.reduce((0, 0)) { ($0.0 + $1.additions, $0.1 + $1.deletions) }
     }
@@ -109,7 +113,7 @@ final class ReviewModel {
         return roots.compactMap { branches[$0] }.sorted().joined(separator: ", ")
     }
 
-    var commitTitle: String { stagedFiles.isEmpty ? "Stage all and commit" : "Commit" }
+    var commitTitle: String { stagedFiles.isEmpty && untrustedFolder == nil ? "Stage all and commit" : "Commit" }
     var canCommit: Bool {
         isGit && !isCommitting && !commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !uncommittedFiles.isEmpty
     }
@@ -222,6 +226,18 @@ final class ReviewModel {
         await run(file) { try await $0.apply(action, root: file.root) }
     }
 
+    /// Trusts the repository folder, so git runs in it from now on, and reloads.
+    func trustFolder() async {
+        guard let folder = untrustedFolder else { return }
+        do {
+            try service.trust.trust(folder)
+            actionError = nil
+        } catch {
+            actionError = error.localizedDescription
+        }
+        await reload()
+    }
+
     func confirmDiscard(_ file: ReviewFileDiff) {
         discardCandidate = file
     }
@@ -275,9 +291,10 @@ final class ReviewModel {
             var made: [String] = []
             for root in Set(files.map(\.root)) where !root.isEmpty {
                 guard await service.hasStagedChanges(root) else { continue }
-                made.append(try await service.commit(message: message, root: root))
+                made.append(try await service.commit(message: message, root: root, skipHooks: skipHooks))
             }
             lastCommit = made.isEmpty ? nil : made.joined(separator: ", ")
+            if !made.isEmpty { skipHooks = false }
             if !made.isEmpty { commitMessage = "" }
             actionError = nil
         } catch {

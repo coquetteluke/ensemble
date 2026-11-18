@@ -82,11 +82,14 @@ public struct ReviewResult: Sendable, Equatable {
     public var isGit: Bool
     /// What the diff is compared with, in a few words.
     public var comparison: String
+    /// The repository folder to trust before git can run, when that is why these diffs come from the engine.
+    public var untrustedFolder: String?
 
-    public init(files: [ReviewFileDiff], isGit: Bool, comparison: String) {
+    public init(files: [ReviewFileDiff], isGit: Bool, comparison: String, untrustedFolder: String? = nil) {
         self.files = files
         self.isGit = isGit
         self.comparison = comparison
+        self.untrustedFolder = untrustedFolder
     }
 }
 
@@ -152,7 +155,8 @@ public enum ReviewEngineDiffs {
 #if os(macOS)
 /// Loads a review: the git diff of the session's folder against the snapshot from before its first turn
 /// (or its last turn), with stage states, falling back to the engine's own record of edits where git cannot
-/// answer.
+/// answer. Git runs only when the repository is trusted (`service.trust`); otherwise the engine's record is
+/// shown with the folder to trust, and no git command runs at all.
 public struct GitReviewLoader: Sendable {
     public var service: GitReviewService
 
@@ -163,7 +167,17 @@ public struct GitReviewLoader: Sendable {
     /// `marks` holds each target session's turn snapshots (from `GitTurnSnapshots`).
     public func load(_ target: ReviewTarget, scope: ReviewScope, marks: [String: [GitTurnMark]],
                      engine: ReviewEngineData) async throws -> ReviewResult {
-        guard let top = await service.topLevel(target.directory) else {
+        let folder: String?
+        do {
+            folder = try service.trustedRepository(target.directory)
+        } catch let error as GitUntrustedError {
+            var result = nonGit(target, scope: scope, engine: engine)
+            result.untrustedFolder = error.folder
+            result.comparison = "The agent's record of its edits, because git does not run in folders you have not trusted"
+            return result
+        }
+        // git must agree on the folder: a repository whose config moves its work tree elsewhere is not reviewed.
+        guard let folder, let top = await service.topLevel(target.directory), WorkspaceTrust.resolvedPath(top) == folder else {
             return nonGit(target, scope: scope, engine: engine)
         }
         if target.isRoom {
@@ -222,7 +236,8 @@ public struct GitReviewLoader: Sendable {
         var worktreeAgents: [(ReviewAgentSource, String)] = []
         for agent in target.agents {
             if let worktree = agent.worktree, FileManager.default.fileExists(atPath: worktree),
-               let root = await service.topLevel(worktree), root != top {
+               let folder = try? service.trustedRepository(worktree),
+               let root = await service.topLevel(worktree), root != top, WorkspaceTrust.resolvedPath(root) == folder {
                 worktreeAgents.append((agent, root))
             }
         }

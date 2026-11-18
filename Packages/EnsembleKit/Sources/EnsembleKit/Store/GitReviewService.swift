@@ -2,17 +2,37 @@ import Foundation
 
 #if os(macOS)
 /// The git work behind the review pane: diffs between snapshots, stage and unstage (whole files or single
-/// hunks), discard and commit. Every command runs through `GitRunner` with explicit arguments in the folder it
-/// is given. It never pushes, never forces anything, never switches or edits branches, and never touches
-/// the real index except through `stage`, `unstage`, `discard` and `commit`.
+/// hunks), discard and commit. Every command runs through `GitRunner` (no repository setting can start a
+/// program) with explicit arguments in the folder it is given. It never pushes, never forces anything, never
+/// switches or edits branches, and never touches the real index except through `stage`, `unstage`, `discard`
+/// and `commit`, which work only in folders `trust` trusts. Only `commit` may run the repository's hooks.
 public struct GitReviewService: Sendable {
     public var runner: GitRunner
     /// Removes a new file on Discard. The app moves it to the Trash; tests delete it.
     public var removeFile: @Sendable (URL) throws -> Void
+    /// Folders where git may run on its own (snapshots, loading) and where staging and commits are allowed.
+    public var trust: WorkspaceTrust
 
-    public init(runner: GitRunner = GitRunner(), removeFile: @escaping @Sendable (URL) throws -> Void = GitReviewService.moveToTrash) {
+    public init(runner: GitRunner = GitRunner(), removeFile: @escaping @Sendable (URL) throws -> Void = GitReviewService.moveToTrash,
+                trust: WorkspaceTrust = .shared) {
         self.runner = runner
         self.removeFile = removeFile
+        self.trust = trust
+    }
+
+    /// The repository holding `directory` when it is trusted, found without running git. Nil when the folder is in
+    /// no repository; throws when the repository is not trusted.
+    public func trustedRepository(_ directory: String) throws -> String? {
+        guard let folder = GitSafety.repositoryFolder(containing: directory) else { return nil }
+        guard trust.isTrusted(folder) else { throw GitUntrustedError(folder: folder) }
+        return folder
+    }
+
+    /// Throws unless `root` is in a trusted folder.
+    func requireTrusted(_ root: String) throws {
+        guard trust.isTrusted(root) else {
+            throw GitUntrustedError(folder: GitSafety.repositoryFolder(containing: root) ?? root)
+        }
     }
 
     public static let moveToTrash: @Sendable (URL) throws -> Void = { url in
@@ -102,13 +122,13 @@ public struct GitReviewService: Sendable {
 
     /// Path -> state for every path with uncommitted changes.
     public func stageStates(_ root: String) async -> [String: GitDiffParsing.StatusEntry] {
-        let r = await runner.run(["status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames"], in: root)
+        let r = await runner.run(["status", "--porcelain=v2", "-z", "--untracked-files=all", "--no-renames", "--ignore-submodules=all"], in: root)
         return r.succeeded ? GitDiffParsing.status(r.stdout) : [:]
     }
 
     /// Per-file patches of the index against the work tree (`staged: false`) or of HEAD against the index.
     func indexPatches(_ root: String, staged: Bool) async -> [String: String] {
-        let args = ["diff"] + Self.diffFlags + (staged ? ["--cached"] : []) + ["--no-renames"]
+        let args = ["diff"] + Self.diffFlags + (staged ? ["--cached"] : []) + ["--no-renames", "--ignore-submodules=all"]
         let numstat = await runner.run(args + ["--numstat", "-z", "--"], in: root)
         let patch = await runner.run(args + ["--"], in: root)
         guard numstat.succeeded, patch.succeeded else { return [:] }
@@ -164,9 +184,11 @@ public struct GitReviewService: Sendable {
     }
 
     public func stage(paths: [String], root: String) async throws {
+        try requireTrusted(root)
         let states = await stageStates(root)
         let present = paths.filter { states[$0] != nil }
         guard !present.isEmpty else { return }
+        try await refuseFiltered(present, root: root, action: "stage")
         try await checked(["add", "-A", "--"] + present, in: root, label: "add")
     }
 
@@ -176,6 +198,7 @@ public struct GitReviewService: Sendable {
     }
 
     public func unstage(paths: [String], root: String) async throws {
+        try requireTrusted(root)
         let states = await stageStates(root)
         let staged = paths.filter { states[$0].map { $0.index != "." } ?? false }
         guard !staged.isEmpty else { return }
@@ -188,6 +211,7 @@ public struct GitReviewService: Sendable {
 
     /// Applies one hunk to the index (stage) or takes it out (unstage).
     public func apply(_ action: ReviewHunkAction, root: String) async throws {
+        try requireTrusted(root)
         let temp = (NSTemporaryDirectory() as NSString).appendingPathComponent("ensemble-hunk-\(UUID().uuidString).patch")
         try action.patch.write(toFile: temp, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(atPath: temp) }
@@ -200,8 +224,10 @@ public struct GitReviewService: Sendable {
     /// not have is taken out of the index and removed with `removeFile` (the Trash in the app).
     public func discard(_ file: ReviewFileDiff) async throws {
         let root = file.root
+        try requireTrusted(root)
         let hasHead = await head(root) != nil
         let states = await stageStates(root)
+        try await refuseFiltered(file.gitPaths.filter { states[$0] != nil }, root: root, action: "discard changes to")
         for path in file.gitPaths {
             guard let state = states[path] else { continue }
             if state.conflicted { throw GitError(command: "discard", output: "\(path) has a merge conflict.", status: 1) }
@@ -218,9 +244,42 @@ public struct GitReviewService: Sendable {
         }
     }
 
+    /// Files whose attributes pick a filter the repository configures (Git LFS, for example), by path. Ensemble
+    /// never runs filters, so staging them would store the raw file and restoring them would write the stored form.
+    public func filteredPaths(_ paths: [String], root: String) async -> [String: String] {
+        guard !paths.isEmpty else { return [:] }
+        let config = await runner.run(["config", "--show-scope", "-z", "--list"], in: root)
+        var drivers = Set<String>()
+        for entry in GitSafety.parseConfigList(config.stdout) {
+            let (section, subsection, variable) = entry.parts
+            if section == "filter", let subsection, ["clean", "smudge", "process"].contains(variable), !(entry.value ?? "").isEmpty {
+                drivers.insert(subsection)
+            }
+        }
+        guard !drivers.isEmpty else { return [:] }
+        let r = await runner.run(["check-attr", "-z", "filter", "--"] + paths, in: root)
+        guard r.succeeded else { return Dictionary(uniqueKeysWithValues: paths.map { ($0, "unknown") }) }
+        let tokens = GitDiffParsing.nulTokens(r.stdout)
+        var result: [String: String] = [:]
+        var i = 0
+        while i + 2 < tokens.count {
+            let (path, value) = (tokens[i], tokens[i + 2])
+            if drivers.contains(value) { result[path] = value }
+            i += 3
+        }
+        return result
+    }
+
+    private func refuseFiltered(_ paths: [String], root: String, action: String) async throws {
+        let filtered = await filteredPaths(paths, root: root)
+        guard let (path, filter) = filtered.sorted(by: { $0.key < $1.key }).first else { return }
+        throw GitError(command: action, output: "\(path) goes through the repository's \(filter) filter, which Ensemble does not run. "
+                       + "Use a terminal to \(action) it.", status: 1)
+    }
+
     /// True when something is staged.
     public func hasStagedChanges(_ root: String) async -> Bool {
-        let r = await runner.run(["diff", "--cached", "--quiet", "--no-ext-diff"], in: root)
+        let r = await runner.run(["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all"], in: root)
         return r.status == 1
     }
 
@@ -230,14 +289,22 @@ public struct GitReviewService: Sendable {
         return r.succeeded && !r.line.isEmpty ? r.line : nil
     }
 
-    /// Commits what is staged on the branch checked out, with the repository's own identity and hooks.
-    /// Returns the new commit's short id.
+    /// Commits what is staged on the branch checked out, with the repository's own identity. The repository's
+    /// hooks run, as with `git commit` in a terminal, unless `skipHooks` (then `--no-verify` and no hooks at all);
+    /// nothing else the repository configures can start a program. Trusted folders only. Returns the short id.
     @discardableResult
-    public func commit(message: String, root: String) async throws -> String {
+    public func commit(message: String, root: String, skipHooks: Bool = false) async throws -> String {
+        try requireTrusted(root)
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw GitError(command: "commit", output: "The commit message is empty.", status: 1) }
         guard await hasStagedChanges(root) else { throw GitError(command: "commit", output: "Nothing is staged.", status: 1) }
-        try await checked(["commit", "--quiet", "-m", trimmed], in: root, label: "commit")
+        var committer = runner
+        committer.allowsHooks = !skipHooks
+        let args = ["commit", "--quiet"] + (skipHooks ? ["--no-verify"] : []) + ["-m", trimmed]
+        let r = await committer.run(args, in: root)
+        guard r.succeeded else {
+            throw GitError(command: "commit", output: r.stderr.isEmpty ? r.text : r.stderr, status: r.status)
+        }
         return await runner.run(["rev-parse", "--short", "HEAD"], in: root).line
     }
 
@@ -249,6 +316,19 @@ public struct GitReviewService: Sendable {
             throw GitError(command: label, output: detail, status: r.status)
         }
         return r
+    }
+}
+/// Git was not run because the folder is not trusted.
+public struct GitUntrustedError: Error, LocalizedError, Hashable, Sendable {
+    /// The repository folder to trust.
+    public var folder: String
+
+    public init(folder: String) {
+        self.folder = folder
+    }
+
+    public var errorDescription: String? {
+        "\(Format.abbreviatedPath(folder)) is not a trusted folder, so Ensemble does not run git in it."
     }
 }
 #endif

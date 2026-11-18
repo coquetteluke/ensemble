@@ -16,7 +16,7 @@ struct ReviewFooter: View {
                 HLine()
                 errorRow(error)
             }
-            if model.isGit, !model.files.isEmpty {
+            if (model.isGit || model.untrustedFolder != nil), !model.files.isEmpty {
                 HLine()
                 ReviewCommitBox(model: model)
             }
@@ -132,8 +132,11 @@ struct ReviewCommitBox: View {
                     }
                 }
                 .buttonStyle(SecondaryButtonStyle())
-                .disabled(model.isWritingMessage || model.uncommittedFiles.isEmpty)
+                .disabled(model.isWritingMessage || model.uncommittedFiles.isEmpty || model.untrustedFolder != nil)
                 .help("Ask the agent for a one-line summary of what will be committed")
+                ReviewCheckbox(title: "Skip hooks", isOn: $model.skipHooks,
+                               help: "Commit with --no-verify, so the repository's hooks do not run for this commit")
+                    .disabled(model.untrustedFolder != nil)
                 if let commit = model.lastCommit {
                     HStack(spacing: theme.z(5)) {
                         Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.success)
@@ -161,6 +164,7 @@ struct ReviewCommitBox: View {
     }
 
     private var summary: String {
+        if model.untrustedFolder != nil { return "Staging and commits need a trusted folder" }
         let staged = model.stagedFiles.count
         let total = model.uncommittedFiles.count
         let files = total == 0 ? "Nothing to commit" : (staged == 0 ? "Nothing staged" : "\(staged) of \(total) staged")
@@ -188,5 +192,45 @@ struct ReviewCommitBox: View {
         .frame(minHeight: theme.z(34), alignment: .topLeading)
         .background(shape.fill(theme.isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.035)))
         .overlay(shape.strokeBorder(theme.border, lineWidth: 1))
+    }
+}
+
+/// A small checkbox with a label, drawn in SwiftUI so it also renders in snapshots.
+struct ReviewCheckbox: View {
+    let title: String
+    @Binding var isOn: Bool
+    var help: String
+    @Environment(\.theme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button {
+            isOn.toggle()
+        } label: {
+            HStack(spacing: theme.z(6)) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: theme.z(3.5), style: .continuous)
+                        .fill(isOn ? theme.accent : Color.clear)
+                    RoundedRectangle(cornerRadius: theme.z(3.5), style: .continuous)
+                        .strokeBorder(isOn ? theme.accent : theme.textTertiary.opacity(0.8), lineWidth: theme.z(1.2))
+                    if isOn {
+                        Image(systemName: "checkmark")
+                            .font(theme.font(size: 8.5, weight: .bold))
+                            .foregroundStyle(theme.onAccent)
+                    }
+                }
+                .frame(width: theme.z(14), height: theme.z(14))
+                Text(title)
+                    .font(theme.font(size: 12))
+                    .foregroundStyle(theme.textSecondary)
+                    .lineLimit(1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(isEnabled ? 1 : 0.45)
+        .help(help)
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityValue(isOn ? "On" : "Off")
     }
 }

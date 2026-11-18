@@ -13,6 +13,7 @@ enum ReviewSnapshots {
     static func render(to directory: URL, zoom: CGFloat) -> [String] {
         let session = sessionModel()
         let room = roomModel()
+        let untrusted = untrustedModel()
         let diffFile = session.files.first { $0.path.hasSuffix("DiffView.swift") }
         var written: [String] = []
         for scheme in [ColorScheme.dark, .light] {
@@ -35,6 +36,9 @@ enum ReviewSnapshots {
             written += save("review-room-\(suffix)", to: directory, width: 560, height: 560, zoom: zoom, scheme: scheme) {
                 ReviewPane(model: room)
             }
+            written += save("review-untrusted-\(suffix)", to: directory, width: 560, height: 520, zoom: zoom, scheme: scheme) {
+                ReviewPane(model: untrusted)
+            }
         }
         written += checkLive(to: directory)
         return written
@@ -49,21 +53,29 @@ enum ReviewSnapshots {
     private static func checkLive(to directory: URL) -> [String] {
         guard let repo = ProcessInfo.processInfo.environment["ENSEMBLE_REVIEW_CHECK_REPO"], !repo.isEmpty else { return [] }
         let target = ReviewTarget.session(id: "ses_live", title: "Live check", directory: repo, created: Date())
-        let snapshots = GitTurnSnapshots(fileURL: nil)
+        // Its own trust list (never the app's): untrusted first, to check nothing runs, then trusted.
+        let trustFile = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("ensemble-review-trust-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: trustFile) }
+        let trust = WorkspaceTrust(fileURL: trustFile)
+        let service = GitReviewService(trust: trust)
+        let snapshots = GitTurnSnapshots(fileURL: nil, service: service)
         final class Sent { var texts: [String] = [] }
         let sent = Sent()
         let environment = ReviewEnvironment(currentTarget: { target }, engineData: { _ in ReviewEngineData() },
                                             send: { text, _ in sent.texts.append(text) },
                                             draftMessage: { _, _ in "Update the notes" }, isAgentWorking: { _ in false })
-        let model = ReviewModel(target: target, environment: environment, snapshots: snapshots)
+        let model = ReviewModel(target: target, environment: environment, service: service, snapshots: snapshots)
         func spin(_ seconds: TimeInterval) { RunLoop.main.run(until: Date().addingTimeInterval(seconds)) }
         func wait(_ condition: () -> Bool) {
             let deadline = Date().addingTimeInterval(10)
             while !condition(), Date() < deadline { spin(0.05) }
         }
 
+        var untrustedSkipped = false
         var snapshotTaken = false
         Task { @MainActor in
+            untrustedSkipped = await snapshots.recordTurnStart(sessionID: "ses_live", directory: repo) == nil
+            try? trust.trust(repo)
             snapshotTaken = await snapshots.recordTurnStart(sessionID: "ses_live", directory: repo) != nil
         }
         wait { snapshotTaken }
@@ -114,7 +126,7 @@ enum ReviewSnapshots {
         }
         wait { done }
         window.close()
-        print("Review check: snapshot \(snapshotTaken), files load \(loaded), comment sent \(commented), write message \(wrote), "
+        print("Review check: untrusted folder skipped \(untrustedSkipped), snapshot \(snapshotTaken), files load \(loaded), comment sent \(commented), write message \(wrote), "
               + "stage \(staged), commit \(committed)")
         return paths
     }
@@ -181,6 +193,17 @@ enum ReviewSnapshots {
         let model = ReviewModel.preview(target: target, result: result, lineCounts: [a.id: 64])
         model.collapsed = [b.id, c.id]
         return model
+    }
+
+    /// A session in a folder that is not trusted: the agent's own diffs, no git.
+    static func untrustedModel() -> ReviewModel {
+        let target = ReviewTarget.session(id: "ses_untrusted", title: "Cloned project", directory: root, created: Date())
+        var parser = file("Sources/Parser.swift", .modified, stage: .notGit, patch: parserPatch)
+        parser.fromGit = false
+        let result = ReviewResult(files: [parser], isGit: false,
+                                  comparison: "The agent's record of its edits, because git does not run in folders you have not trusted",
+                                  untrustedFolder: root)
+        return ReviewModel.preview(target: target, result: result, branch: nil)
     }
 
     static func file(_ path: String, _ kind: ReviewChangeKind, stage: ReviewStageState, patch: String, oldPath: String? = nil) -> ReviewFileDiff {

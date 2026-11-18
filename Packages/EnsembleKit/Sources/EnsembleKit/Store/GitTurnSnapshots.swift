@@ -22,7 +22,8 @@ public struct GitTurnMark: Codable, Hashable, Sendable {
 #if os(macOS)
 /// Snapshots of each session's folder at the start of its turns, so the review pane can show what the whole
 /// session changed (since the first turn) and what the last turn changed. Saved as JSON; the snapshots
-/// themselves are git tree objects written without touching the index, the work tree or any branch.
+/// themselves are git tree objects written without touching the index, the work tree or any branch. Only
+/// repositories trusted in `service.trust` are snapshotted.
 @MainActor
 public final class GitTurnSnapshots {
     public static let shared = GitTurnSnapshots(fileURL: GitTurnSnapshots.defaultFileURL)
@@ -52,14 +53,16 @@ public final class GitTurnSnapshots {
         }
     }
 
-    /// Snapshots `directory`'s repository as a turn of `sessionID` begins. Does nothing outside git, or while a
-    /// snapshot for the same session is still being written.
+    /// Snapshots `directory`'s repository as a turn of `sessionID` begins. Does nothing outside git, in a repository
+    /// that is not trusted (no git command runs there at all), or while a snapshot for the same session is still
+    /// being written.
     @discardableResult
     public func recordTurnStart(sessionID: String, directory: String, date: Date = Date()) async -> GitTurnMark? {
         guard !inFlight.contains(sessionID) else { return nil }
+        guard let folder = try? service.trustedRepository(directory) else { return nil }
         inFlight.insert(sessionID)
         defer { inFlight.remove(sessionID) }
-        guard let root = await topLevel(directory) else { return nil }
+        guard let root = await topLevel(directory), WorkspaceTrust.resolvedPath(root) == folder else { return nil }
         guard let tree = try? await service.snapshotTree(root) else { return nil }
         let mark = GitTurnMark(date: date, root: root, tree: tree, head: await service.head(root))
         var list = marks[sessionID] ?? []

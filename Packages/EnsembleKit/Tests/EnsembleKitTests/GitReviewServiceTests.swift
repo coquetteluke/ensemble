@@ -7,7 +7,16 @@ import Testing
 /// Each test makes its own repository in the temporary folder; nothing outside it is touched (new files
 /// that Discard removes are deleted, not sent to the Trash).
 @Suite struct GitReviewServiceTests {
-    let service = GitReviewService(removeFile: { url in try FileManager.default.removeItem(at: url) })
+    /// A trust list of the tests' own (never the app's); `makeRepo` trusts each repository it makes.
+    let trust: WorkspaceTrust
+    let service: GitReviewService
+
+    init() {
+        let parent = ProcessInfo.processInfo.environment["ENSEMBLE_GIT_TEST_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.temporaryDirectory
+        trust = WorkspaceTrust(fileURL: parent.appendingPathComponent("ensemble-trust-\(UUID().uuidString).json"))
+        service = GitReviewService(removeFile: { url in try FileManager.default.removeItem(at: url) }, trust: trust)
+    }
 
     // MARK: Helpers
 
@@ -55,6 +64,7 @@ import Testing
             try git(["add", "-A"], in: dir)
             try git(["commit", "-q", "-m", "base"], in: dir)
         }
+        try trust.trust(dir.path)
         return dir
     }
 
