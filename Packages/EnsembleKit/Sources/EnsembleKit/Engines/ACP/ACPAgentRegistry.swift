@@ -48,6 +48,10 @@ public struct ACPAgentDefinition: Sendable, Hashable, Identifiable {
     /// The tool's session mode for each Ensemble permission mode. Missing entries are guessed from the mode ids the
     /// agent offers (`ACPModes.guess`).
     public var modeIDs: [PermissionMode: String]
+    /// True when Ensemble decides the tool's prompts in Auto (`SafetyCheckAgents.swift`): `modeIDs[.auto]` is then a
+    /// mode that asks before every edit and command, and Ensemble answers each prompt itself. False leaves Auto to the
+    /// tool's own mode.
+    public var ensembleDecidesAuto: Bool
     public var installHint: String
     public var signInHint: String
     public var signInCheck: SignInCheck
@@ -66,7 +70,7 @@ public struct ACPAgentDefinition: Sendable, Hashable, Identifiable {
 
     public init(id: String, displayName: String, providerName: String, executableNames: [String], searchDirectories: [String] = [],
                 arguments: [String], bypassArguments: [String]? = nil, modeIDs: [PermissionMode: String] = [:],
-                installHint: String, signInHint: String, signInCheck: SignInCheck = .none, status: Status,
+                ensembleDecidesAuto: Bool = false, installHint: String, signInHint: String, signInCheck: SignInCheck = .none, status: Status,
                 verifiedVersion: String? = nil, maxConcurrentTurns: Int? = nil, workspaceSettings: WorkspaceSettings = .alwaysLoaded,
                 environmentPassThrough: [String] = [], billing: ModelBilling = .subscription, notes: String = "") {
         self.id = id
@@ -77,6 +81,7 @@ public struct ACPAgentDefinition: Sendable, Hashable, Identifiable {
         self.arguments = arguments
         self.bypassArguments = bypassArguments
         self.modeIDs = modeIDs
+        self.ensembleDecidesAuto = ensembleDecidesAuto
         self.installHint = installHint
         self.signInHint = signInHint
         self.signInCheck = signInCheck
@@ -118,7 +123,10 @@ public enum ACPAgentRegistry {
         searchDirectories: ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin"],
         arguments: ["acp"],
         bypassArguments: ["--dangerously-skip-permissions"],
-        modeIDs: [.ask: "default", .acceptEdits: "accept-edits", .plan: "plan", .auto: "auto", .bypass: "auto"],
+        // Auto runs in `default`, which asks before every edit and command, and Ensemble answers each prompt: agy's own
+        // `auto` sends no prompts at all (it ran `rm -rf`, a curl to the internet and a `BypassSandbox` retry unasked).
+        modeIDs: [.ask: "default", .acceptEdits: "accept-edits", .plan: "plan", .auto: "default", .bypass: "auto"],
+        ensembleDecidesAuto: true,
         installHint: "Install the Antigravity CLI with `brew install --cask antigravity-cli`.",
         signInHint: "Run `agy` once in Terminal and sign in with your Google account (it shares the Antigravity app's sign-in).",
         signInCheck: .acpSession,
@@ -132,7 +140,8 @@ public enum ACPAgentRegistry {
         (`--settings` is not accepted there), so Ensemble starts it only in trusted folders. Permission prompts offer \
         allow once and deny only; "always" is remembered by Ensemble. The user's own Antigravity permission preset \
         (for example Turbo) does not apply to ACP sessions once Ensemble sets the session mode: in `default` mode shell \
-        commands, file writes and reads outside the project all ask.
+        commands, file writes and reads outside the project all ask. agy's own `auto` mode sends no prompts at all, so \
+        Ensemble's Auto runs in `default` and Ensemble answers each prompt itself.
         """)
 
     /// OpenCode's own ACP server, tested to show the client is generic. Its models are the user's OpenCode providers.

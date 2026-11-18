@@ -47,7 +47,8 @@ struct SafetyCheckSettingsSection: View {
                 Text("OpenCode agents in Auto ask before any command outside a short read-only list. With this on, a model reads each such command with your latest message and may approve it only if it is a build, a test, a linter or a read-only command such as ls or grep. Everything else asks as before, and so does every command when the model is unsure, answers in any other way, fails or takes longer than 5 seconds. Approved tool cards show Checked, and each session lists the decisions in its side panel.")
                 Text(dataLine)
                 Text("Always asks, whatever the model says: git, network access, files outside the project, hidden and protected files, commands such as rm -r, sudo, installs and publishing packages, and shell syntax the check cannot read, such as wildcards or $(...).")
-                Text("Not a sandbox: an approved command runs with your permissions, and project scripts it starts, such as npm test or make, can do anything. Claude and Gemini agents use their own auto modes.")
+                Text("Gemini agents in Auto ask Ensemble before every edit and command. Edits inside the project, except hidden and protected files, and the same read-only commands run on their own, and a request to run outside Antigravity's sandbox always asks. Other commands go to the model chosen above. With Same provider as each session they ask, because Gemini's provider is not one this check can use.")
+                Text("Not a sandbox: an approved command runs with your permissions, and project scripts it starts, such as npm test or make, can do anything. Claude agents use their own auto mode.")
             }
             .font(theme.font(size: 11.5))
             .foregroundStyle(theme.textTertiary)

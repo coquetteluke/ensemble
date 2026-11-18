@@ -60,8 +60,8 @@ public struct ACPAuthState: Equatable, Sendable {
 /// - Permission mode: set on the agent every time a session opens (`session/set_config_option` for the `mode`
 ///   option, or `session/set_mode`), and the agent must report it back, so the tool's own defaults (for Antigravity,
 ///   the user's permission preset such as Turbo) never carry over. Antigravity: Ask is `default`, Accept edits is
-///   `accept-edits`, Auto is `auto` (Antigravity's own check approves edits and safe commands and asks before
-///   irreversible ones), Bypass is a process started with `--dangerously-skip-permissions`.
+///   `accept-edits`, Auto is `default` too, with Ensemble answering every prompt itself (`ACPAutoPrompts`; agy's own
+///   `auto` sends no prompts at all), Bypass is a process started with `--dangerously-skip-permissions`.
 /// - Effort: the agent's `thought_level` config option, offered through `EngineModelOptionsControl`.
 /// - Commands: `available_commands_update`, offered through `EngineCommandsControl`; a command runs as a prompt
 ///   starting with `/name`.
