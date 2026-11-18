@@ -42,7 +42,9 @@ extension SessionStore {
             await delete(sessionID)
             return .restarted(from: sessionID, to: replacement.id)
         } catch {
-            lastError = "Could not start a session with \(modelName(model)): \(error.localizedDescription)"
+            if !askToTrust(after: error, model: model, retry: .changeModel(sessionID: sessionID, model: model)) {
+                lastError = "Could not start a session with \(modelName(model)): \(error.localizedDescription)"
+            }
             return .failed
         }
     }
@@ -58,7 +60,9 @@ extension SessionStore {
             if let extra = extraFolders[sessionID] { extraFolders[replacement.id] = extra }
             return replacement
         } catch {
-            lastError = "Could not start a session with \(modelName(model)): \(error.localizedDescription)"
+            if !askToTrust(after: error, model: model, retry: .startLike(sessionID: sessionID, model: model)) {
+                lastError = "Could not start a session with \(modelName(model)): \(error.localizedDescription)"
+            }
             return nil
         }
     }

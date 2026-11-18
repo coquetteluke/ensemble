@@ -106,7 +106,7 @@ struct TrustedFoldersSection: View {
 
     var body: some View {
         Section {
-            ForEach(trust.folders, id: \.self) { folder in
+            ForEach(trust.folders + trust.onlyThisFolder, id: \.self) { folder in
                 HStack(spacing: 8) {
                     Image(systemName: "folder")
                         .foregroundStyle(.secondary)
@@ -114,6 +114,10 @@ struct TrustedFoldersSection: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .help(folder)
+                    if trust.onlyThisFolder.contains(folder) {
+                        Text("Only this folder")
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer(minLength: 0)
                     Button("Remove") { run { try trust.revoke(folder) } }
                 }
@@ -125,7 +129,7 @@ struct TrustedFoldersSection: View {
         } header: {
             Text("Trusted folders")
         } footer: {
-            Text("Agents load a trusted folder's own settings, hooks and MCP servers. Elsewhere they run with your settings only, and Gemini does not start.")
+            Text("Agents load a trusted folder's own settings, hooks and MCP servers. Elsewhere they run with your settings only, and Gemini does not start. Trusting a folder trusts the folders inside it, except your home folder, which is trusted on its own.")
         }
     }
 
@@ -136,7 +140,9 @@ struct TrustedFoldersSection: View {
         panel.allowsMultipleSelection = false
         panel.prompt = "Trust"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        run { try trust.trust(url.path) }
+        // The home folder is trusted on its own: trusting what is inside it would trust every project.
+        let isHome = WorkspaceTrust.resolvedPath(url.path) == trust.homeFolder
+        run { try trust.trust(url.path, includingSubfolders: !isHome) }
     }
 
     private func run(_ change: () throws -> Void) {

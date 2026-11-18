@@ -28,7 +28,8 @@ public enum WorkspaceTrustError: Error, LocalizedError, Equatable, Sendable {
 ///
 /// - Paths are stored resolved with `realpath`, so a symlink to a folder and the folder are the same entry, and a link
 ///   inside a trusted folder that points elsewhere is not trusted.
-/// - A trusted folder trusts everything inside it.
+/// - A trusted folder trusts everything inside it, except a folder trusted on its own (`trust(_:includingSubfolders:)`
+///   with `false`, used for the home folder), which trusts only itself.
 /// - Saved in `~/Library/Application Support/Ensemble/trusted-folders.json`.
 /// - Observable: SwiftUI views and `withObservationTracking` see `folders` change.
 public final class WorkspaceTrust: Observable, Sendable {
@@ -44,53 +45,78 @@ public final class WorkspaceTrust: Observable, Sendable {
     public let fileURL: URL
     private let homeDirectory: String
     private let registrar = ObservationRegistrar()
-    private let state: Mutex<[String]>
+    private let state: Mutex<Entries>
+
+    private struct Entries {
+        /// Folders trusted with everything inside them.
+        var folders: [String] = []
+        /// Folders trusted on their own, not the folders inside them.
+        var exact: [String] = []
+    }
 
     private struct FileBody: Codable {
         var version: Int
         var folders: [String]
+        /// Version 2: folders trusted on their own. Missing in version 1 files.
+        var onlyThisFolder: [String]?
     }
 
     /// - Parameter homeDirectory: the folder that may not be trusted as a whole (nor anything above it).
     public init(fileURL: URL = WorkspaceTrust.defaultURL, homeDirectory: String = NSHomeDirectory()) {
         self.fileURL = fileURL
         self.homeDirectory = Self.resolvedPath(homeDirectory) ?? homeDirectory
-        var folders: [String] = []
+        var entries = Entries()
         if let data = try? Data(contentsOf: fileURL), let body = try? JSONDecoder().decode(FileBody.self, from: data) {
-            folders = body.folders.filter { Self.components($0) != nil }
+            entries.folders = body.folders.filter { Self.components($0) != nil }.sorted()
+            entries.exact = (body.onlyThisFolder ?? []).filter { Self.components($0) != nil }.sorted()
         }
-        state = Mutex(folders.sorted())
+        state = Mutex(entries)
     }
 
-    /// The trusted folders, resolved, sorted.
+    /// The folders trusted with everything inside them, resolved, sorted.
     public var folders: [String] {
         registrar.access(self, keyPath: \.folders)
-        return state.withLock { $0 }
+        return state.withLock { $0.folders }
     }
+
+    /// The folders trusted on their own (not the folders inside them), resolved, sorted.
+    public var onlyThisFolder: [String] {
+        registrar.access(self, keyPath: \.folders)
+        return state.withLock { $0.exact }
+    }
+
+    /// The home folder, resolved. It can be trusted only on its own.
+    public var homeFolder: String { homeDirectory }
 
     /// True when the folder, or a folder it is in, is trusted. The folder is resolved with `realpath` first.
     public func isTrusted(_ directory: String) -> Bool {
         registrar.access(self, keyPath: \.folders)
         guard let resolved = Self.resolvedPath(directory), let wanted = Self.components(resolved) else { return false }
-        return state.withLock { folders in
-            folders.contains { folder in
+        return state.withLock { entries in
+            entries.exact.contains { Self.components($0) == wanted } || entries.folders.contains { folder in
                 guard let base = Self.components(folder) else { return false }
                 return wanted.count >= base.count && Array(wanted.prefix(base.count)) == base
             }
         }
     }
 
-    /// Trusts a folder (and everything inside it).
-    public func trust(_ directory: String) throws {
+    /// Trusts a folder and everything inside it, or with `includingSubfolders: false` the folder on its own. The home
+    /// folder can only be trusted on its own, and a folder above it not at all.
+    public func trust(_ directory: String, includingSubfolders: Bool = true) throws {
         guard let resolved = Self.resolvedPath(directory), Self.isDirectory(resolved) else {
             throw WorkspaceTrustError.notAFolder(directory)
         }
         if let wanted = Self.components(resolved), let home = Self.components(homeDirectory),
            wanted.count <= home.count, Array(home.prefix(wanted.count)) == wanted {
-            throw WorkspaceTrustError.tooBroad(resolved)
+            // The home folder itself may be trusted on its own; anything above it never.
+            guard !includingSubfolders, wanted == home else { throw WorkspaceTrustError.tooBroad(resolved) }
         }
-        try change { folders in
-            if !folders.contains(resolved) { folders.append(resolved) }
+        try change { entries in
+            if includingSubfolders {
+                if !entries.folders.contains(resolved) { entries.folders.append(resolved) }
+            } else if !entries.exact.contains(resolved) {
+                entries.exact.append(resolved)
+            }
         }
     }
 
@@ -98,24 +124,28 @@ public final class WorkspaceTrust: Observable, Sendable {
     public func revoke(_ directory: String) throws {
         let resolved = Self.resolvedPath(directory) ?? directory
         guard let base = Self.components(resolved) else { return }
-        try change { folders in
-            folders.removeAll { folder in
+        try change { entries in
+            let inside: (String) -> Bool = { folder in
                 guard let parts = Self.components(folder) else { return true }
                 return parts.count >= base.count && Array(parts.prefix(base.count)) == base
             }
+            entries.folders.removeAll(where: inside)
+            entries.exact.removeAll(where: inside)
         }
     }
 
-    private func change(_ edit: (inout [String]) -> Void) throws {
+    private func change(_ edit: (inout Entries) -> Void) throws {
         var failure: Error?
         registrar.withMutation(of: self, keyPath: \.folders) {
-            state.withLock { folders in
-                edit(&folders)
-                folders.sort()
+            state.withLock { entries in
+                edit(&entries)
+                entries.folders.sort()
+                entries.exact.sort()
                 do {
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-                    let data = try encoder.encode(FileBody(version: 1, folders: folders))
+                    let data = try encoder.encode(FileBody(version: 2, folders: entries.folders,
+                                                           onlyThisFolder: entries.exact.isEmpty ? nil : entries.exact))
                     try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
                     try data.write(to: fileURL, options: .atomic)
                 } catch {

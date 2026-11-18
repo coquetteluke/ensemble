@@ -130,6 +130,31 @@ struct MainView: View {
         } message: { message in
             Text(message)
         }
+        .alert(trustTitle, isPresented: trustShown, presenting: store.pendingFolderTrust) { pending in
+            Button("Trust and Start") {
+                Task { await ModelSwitcher.trustAndRetry(pending, store: store, window: window) }
+            }
+            Button("Cancel", role: .cancel) { store.pendingFolderTrust = nil }
+        } message: { pending in
+            Text(Self.trustMessage(pending))
+        }
+    }
+
+    private var trustShown: Binding<Bool> {
+        Binding(get: { store.pendingFolderTrust != nil && !isSnapshot }, set: { if !$0 { store.pendingFolderTrust = nil } })
+    }
+
+    private var trustTitle: String {
+        store.pendingFolderTrust?.onlyThisFolder == true ? "Trust your home folder?" : "Trust this folder?"
+    }
+
+    static func trustMessage(_ pending: PendingFolderTrust) -> String {
+        let folder = Format.abbreviatedPath(pending.folder)
+        let reason = "\(pending.modelName) loads a folder's own settings, hooks and MCP servers, so it only starts in folders you trust."
+        if pending.onlyThisFolder {
+            return reason + " Only \(folder) itself is trusted, not the folders inside it. You can remove it in Settings, General."
+        }
+        return reason + " Trusting \(folder) also trusts the folders inside it. You can remove it in Settings, General."
     }
 
     /// The right-hand pane: always for a session; elsewhere only a file or review pane (a room shows its own panel

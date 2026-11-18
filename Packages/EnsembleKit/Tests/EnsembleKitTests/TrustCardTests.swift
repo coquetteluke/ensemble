@@ -191,13 +191,16 @@ struct TrustCardTests {
         #expect(keeps.message.contains("New sessions here load them"))
         #expect(store.newSessionTrustLine(directory: box.project.path, model: nil)?.tone == .trusted)
 
-        // The home folder cannot be trusted; the reason is kept for the card.
+        // The home folder is trusted on its own, never with the folders inside it.
         let home = EngineSession(id: "home", title: "Home", directory: box.home.path)
         shared.setSessions([home])
         await store.reloadSessions()
         let homeSession = try #require(store.session("home"))
-        #expect(!store.trustFolder(of: homeSession))
-        #expect(store.trustError(for: box.home.path) == WorkspaceTrustError.tooBroad(box.home.path).errorDescription)
+        #expect(store.trustFolder(of: homeSession))
+        #expect(store.trustError(for: box.home.path) == nil)
+        #expect(box.trust.isTrusted(box.home.path))
+        #expect(box.trust.onlyThisFolder == [WorkspaceTrust.resolvedPath(box.home.path)])
+        #expect(!box.trust.isTrusted(box.home.appendingPathComponent("downloaded-repo").path))
         // Old sessions on the shared service in trusted folders, and folders without config, get no card.
         #expect(store.trustPrompt(for: homeSession) == nil)
     }

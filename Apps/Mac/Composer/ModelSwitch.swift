@@ -50,6 +50,25 @@ enum ModelSwitcher {
         ModelChangeOffers.shared.bySession[offer.sessionID] = nil
     }
 
+    /// "Trust and start": trusts the folder the engine refused (the home folder on its own), then does what was asked
+    /// again. A folder that cannot be trusted is reported as an error.
+    static func trustAndRetry(_ pending: PendingFolderTrust, store: SessionStore, window: WindowState) async {
+        store.pendingFolderTrust = nil
+        guard store.trustFolder(pending.folder) else {
+            store.lastError = store.trustError(for: pending.folder) ?? "Could not trust \(pending.folder)."
+            return
+        }
+        switch pending.retry {
+        case .changeModel(let sessionID, let model):
+            guard let session = store.session(sessionID) else { return }
+            await pick(model, session: session, store: store, window: window)
+        case .startLike(let sessionID, let model):
+            guard let fresh = await store.startSession(like: sessionID, model: model) else { return }
+            moveDraft(from: sessionID, to: fresh.id, window: window)
+            window.open(fresh.id, store: store)
+        }
+    }
+
     private static func moveDraft(from: String, to: String, window: WindowState) {
         window.drafts[to] = window.drafts[from]
         window.attachments[to] = window.attachments[from]

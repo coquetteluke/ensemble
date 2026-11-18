@@ -95,6 +95,53 @@ struct WorkspaceTrustTests {
         #expect(trust.folders.isEmpty)
     }
 
+    @Test func theHomeFolderIsTrustedOnItsOwn() throws {
+        let box = try Box()
+        let trust = box.store()
+        #expect(trust.homeFolder == box.real(box.home))
+        try trust.trust(box.home.path, includingSubfolders: false)
+        #expect(trust.onlyThisFolder == [box.real(box.home)])
+        #expect(trust.folders.isEmpty)
+        #expect(trust.isTrusted(box.home.path))
+        // Only the folder itself: what is inside it is not trusted.
+        #expect(!trust.isTrusted(box.app.path))
+        #expect(!trust.isTrusted(box.home.appendingPathComponent("code").path))
+        // Above the home folder is never trusted, on its own or not.
+        #expect(throws: WorkspaceTrustError.self) { try trust.trust(box.folder.path, includingSubfolders: false) }
+        #expect(throws: WorkspaceTrustError.self) { try trust.trust("/", includingSubfolders: false) }
+        // Saved as version 2 and read back.
+        let saved = try JSONSerialization.jsonObject(with: Data(contentsOf: box.storeURL)) as? [String: Any]
+        #expect(saved?["version"] as? Int == 2)
+        #expect(saved?["onlyThisFolder"] as? [String] == [box.real(box.home)])
+        #expect(box.store().isTrusted(box.home.path))
+        #expect(!box.store().isTrusted(box.app.path))
+        // A project inside it can still be trusted with its subfolders.
+        try trust.trust(box.app.path)
+        #expect(trust.isTrusted(box.app.appendingPathComponent("sub").path))
+        // Removing the home folder removes it.
+        try trust.revoke(box.home.path)
+        #expect(trust.onlyThisFolder.isEmpty)
+        #expect(!trust.isTrusted(box.home.path))
+    }
+
+    @Test func versionOneFilesStillLoad() throws {
+        let box = try Box()
+        try FileManager.default.createDirectory(at: box.storeURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let body = ["version": 1, "folders": [box.real(box.app)]] as [String: Any]
+        try JSONSerialization.data(withJSONObject: body).write(to: box.storeURL)
+        let trust = box.store()
+        #expect(trust.folders == [box.real(box.app)])
+        #expect(trust.onlyThisFolder.isEmpty)
+        #expect(trust.isTrusted(box.app.appendingPathComponent("sub").path))
+    }
+
+    @Test func untrustedFolderErrorsAreRecognised() {
+        #expect(SessionStore.untrustedFolder(in: ACPEngineError.folderNotTrusted("/Users/me")) == "/Users/me")
+        #expect(SessionStore.untrustedFolder(in: ClaudeCodeError.folderNotTrusted("/p")) == "/p")
+        #expect(SessionStore.untrustedFolder(in: ACPEngineError.unsupportedPlatform) == nil)
+        #expect(SessionStore.untrustedFolder(in: CocoaError(.fileNoSuchFile)) == nil)
+    }
+
     @Test func changesAreObservable() throws {
         let box = try Box()
         let trust = box.store()

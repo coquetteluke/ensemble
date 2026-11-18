@@ -176,9 +176,52 @@ enum TrustEngineKind: Equatable {
     case other
 }
 
+/// A session that did not start because its engine only runs in trusted folders.
+public struct PendingFolderTrust: Identifiable, Equatable, Sendable {
+    /// What to do again once the folder is trusted.
+    public enum Retry: Equatable, Sendable {
+        /// Pick the model for this session again (`changeModel`).
+        case changeModel(sessionID: String, model: ModelRef)
+        /// Start a new session like this one with the model (`startSession(like:model:)`).
+        case startLike(sessionID: String, model: ModelRef)
+    }
+
+    public var id: String { folder }
+    /// The folder, resolved.
+    public var folder: String
+    public var modelName: String
+    /// True for the home folder: only the folder itself is trusted, not the folders inside it.
+    public var onlyThisFolder: Bool
+    public var retry: Retry
+
+    public init(folder: String, modelName: String, onlyThisFolder: Bool, retry: Retry) {
+        self.folder = folder
+        self.modelName = modelName
+        self.onlyThisFolder = onlyThisFolder
+        self.retry = retry
+    }
+}
+
 // MARK: Store
 
 extension SessionStore {
+    /// The folder an engine refused to start in because it is not trusted, or nil for any other error.
+    nonisolated public static func untrustedFolder(in error: any Error) -> String? {
+        if let acp = error as? ACPEngineError, case .folderNotTrusted(let folder) = acp { return folder }
+        if let claude = error as? ClaudeCodeError, case .folderNotTrusted(let folder) = claude { return folder }
+        return nil
+    }
+
+    /// Records a start that failed because the folder is not trusted, so the app can ask. Returns false for any other
+    /// error, which the caller reports as usual.
+    func askToTrust(after error: any Error, model: ModelRef, retry: PendingFolderTrust.Retry) -> Bool {
+        guard let folder = Self.untrustedFolder(in: error) else { return false }
+        let resolved = WorkspaceTrust.resolvedPath(folder) ?? folder
+        pendingFolderTrust = PendingFolderTrust(folder: resolved, modelName: modelName(model),
+                                                onlyThisFolder: resolved == workspaceTrust.homeFolder, retry: retry)
+        return true
+    }
+
     /// The trust list behind the router (the app-wide one otherwise).
     public var workspaceTrust: WorkspaceTrust { (engine as? EngineRouter)?.trust ?? .shared }
 
@@ -278,12 +321,13 @@ extension SessionStore {
         trustFolder(session.directory)
     }
 
-    /// Trusts a folder (the new-session sheet uses it before a session exists).
+    /// Trusts a folder (the new-session sheet uses it before a session exists). The home folder is trusted on its own,
+    /// not the folders inside it.
     @discardableResult
     public func trustFolder(_ folder: String) -> Bool {
         let key = WorkspaceTrust.resolvedPath(folder) ?? folder
         do {
-            try workspaceTrust.trust(folder)
+            try workspaceTrust.trust(folder, includingSubfolders: key != workspaceTrust.homeFolder)
             trustNotes.errors[key] = nil
             return true
         } catch {

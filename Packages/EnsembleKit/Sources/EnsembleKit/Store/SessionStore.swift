@@ -20,6 +20,9 @@ public final class SessionStore {
     public private(set) var isLoaded = false
     /// Last failed action, in a line. Views may show it and clear it.
     public var lastError: String?
+    /// A session an engine would not start because its folder is not trusted, waiting for the user to trust it
+    /// (`SessionStore+Trust.swift`). Views ask, then call `trustAndRetry` or clear it.
+    public var pendingFolderTrust: PendingFolderTrust?
 
     /// Room agents by id, so agent text can show a name and colour.
     public var agents: [UUID: AgentSpec] = [:]
