@@ -6,8 +6,9 @@ import Foundation
 // answers ALLOW or ASK. ALLOW answers the prompt "once" for the user; ASK, a timeout, an error or an answer that does
 // not parse leaves the prompt for the user. The model never denies anything.
 //
-// Claude and Gemini agents are not checked: their own auto modes already decide, and the prompts they send in Auto are
-// the ones their own checks escalated.
+// Claude agents are not checked: their own auto mode already decides, and the prompts they send in Auto are the ones
+// its own check escalated. Agents whose own auto mode Ensemble does not trust (Antigravity) run in their ask-everything
+// mode in Auto, and Ensemble decides each prompt with the same rules and model (`SafetyCheckAgents.swift`).
 
 /// What the safety check decided for one prompt.
 public enum SafetyCheckVerdict: String, Codable, Hashable, Sendable {
@@ -19,7 +20,8 @@ public enum SafetyCheckVerdict: String, Codable, Hashable, Sendable {
 
 /// What a decision rests on.
 public enum SafetyCheckBasis: String, Codable, Hashable, Sendable {
-    /// A fixed rule asked before any model call.
+    /// A fixed rule decided before any model call: it asked, or, for agents Ensemble decides in Auto, it allowed an edit
+    /// inside the project or a read-only command.
     case rule
     /// The model answered.
     case model

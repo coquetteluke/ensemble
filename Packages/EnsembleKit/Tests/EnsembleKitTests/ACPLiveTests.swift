@@ -130,6 +130,43 @@ struct ACPLiveTests {
         await h.finish()
     }
 
+    /// Auto through Ensemble's store, one short turn: agy runs in `default`, the read-only `ls` is answered by Ensemble
+    /// and `rm -rf build` is shown to the user (agy's own `auto` ran it without asking).
+    @MainActor @Test func antigravityAutoAsksBeforeRiskyCommands() async throws {
+        let h = try ACPLiveHarness()
+        let engine = h.engine(ACPAgentRegistry.antigravity)
+        let store = SessionStore(engine: engine)
+        store.safetyCheck.settings = SafetyCheckSettings()
+        store.safetyCheck.badges = SafetyCheckBadges()
+        let build = h.project.appendingPathComponent("build")
+        try FileManager.default.createDirectory(at: build, withIntermediateDirectories: true)
+        try "x".write(to: build.appendingPathComponent("out.o"), atomically: true, encoding: .utf8)
+        let session = try await engine.createSession(directory: h.project.path,
+                                                     model: ModelRef(providerID: "antigravity", id: "gemini-3.8-flash", variant: "low"),
+                                                     agent: nil, permissionMode: .auto, parentID: nil)
+        store.apply(.sessionCreated(session))
+        store.session(session.id)?.permissionMode = .auto
+        let stream = engine.events()
+        let pump = Task { @MainActor in for await event in stream { store.apply(event) } }
+        let mark = await h.recorder.mark()
+        try await engine.prompt(session.id, text: "Use your run_command tool twice, one call each, in this order, without asking me in text "
+                                + "first: ls, then rm -rf build. Then reply with the word done.", files: [])
+        let model = try #require(store.session(session.id))
+        try await waitUntil("the rm -rf prompt", timeout: .seconds(150)) { !model.pendingPermissions.isEmpty }
+        let request = model.pendingPermissions[0]
+        #expect(request.title.contains("rm -rf build"))
+        let decisions = store.safetyCheckDecisions(for: session.id)
+        print("Auto decisions:", decisions.map { "\($0.verdict) \($0.subject): \($0.reason)" })
+        #expect(decisions.first?.verdict == .ask)
+        #expect(decisions.first?.reason == "Deletes folders")
+        #expect(decisions.filter { $0.subject == "ls" }.allSatisfy { $0.verdict == .allow })
+        await store.reply(to: request, decision: .reject)
+        _ = try await h.recorder.ended(session.id, after: mark, timeout: 150)
+        #expect(FileManager.default.fileExists(atPath: build.path))
+        pump.cancel()
+        await h.finish()
+    }
+
     @Test func openCodePromptAndPermission() async throws {
         let h = try ACPLiveHarness()
         try await h.startMock()

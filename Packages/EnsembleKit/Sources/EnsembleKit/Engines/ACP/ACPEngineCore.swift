@@ -73,6 +73,8 @@ actor ACPEngineCore {
         /// What "always" remembers; nil when it allows this request only.
         let rule: ACPAlwaysRule?
         let request: PermissionRequest
+        /// What the request asks, for Ensemble's Auto (`ACPAutoPrompts`); nil outside Auto or for other tools.
+        var subject: AgentPermissionSubject? = nil
     }
 
     /// An `elicitation/create` request waiting for answers (`ACPElicitation`).
@@ -440,8 +442,10 @@ actor ACPEngineCore {
         }
         let requestID = "acp-perm-" + UUID().uuidString.lowercased()
         let request = ACPPermissionMapping.request(id: requestID, sessionID: sessionID, tool: tool, directory: record.directory)
+        let subject = definition.ensembleDecidesAuto && record.permissionMode == .auto
+            ? ACPAutoPrompts.subject(params: params, directory: record.directory) : nil
         pending[requestID] = PendingPermission(requestID: requestID, rpcID: rpcID, connection: key, generation: gen, sessionID: sessionID,
-                                               ask: ask, rule: rule, request: request)
+                                               ask: ask, rule: rule, request: request, subject: subject)
         emit(.permissionAsked(request))
         emit(.activity(sessionID: sessionID, .waitingForPermission))
     }
@@ -1118,6 +1122,13 @@ actor ACPEngineCore {
         if !pending.values.contains(where: { $0.sessionID == sessionID }), lives[sessionID]?.running != nil {
             emit(.activity(sessionID: sessionID, .working))
         }
+    }
+
+    /// What an open prompt asks, for Ensemble's Auto; nil when it is not open, belongs to another session, or was not
+    /// asked in Auto.
+    func autoPromptSubject(forPermission requestID: String, sessionID: String) -> AgentPermissionSubject? {
+        guard let prompt = pending[requestID], prompt.sessionID == sessionID else { return nil }
+        return prompt.subject
     }
 
     func pendingRequests() -> [PermissionRequest] {

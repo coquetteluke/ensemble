@@ -86,12 +86,16 @@ final class FakeACPHarness: @unchecked Sendable {
                                                     "FAKE_ACP_SIGNED_OUT", "FAKE_ACP_IGNORE_MODE", "FAKE_ACP_NO_MODES"])
     }
 
-    func engine(env extra: [String: String] = [:], maxTurns: Int? = nil, executable: String = "/usr/bin/python3") -> ACPEngine {
+    /// `customize` changes the fake agent's definition (for example to let Ensemble decide its Auto prompts).
+    func engine(env extra: [String: String] = [:], maxTurns: Int? = nil, executable: String = "/usr/bin/python3",
+                customize: (inout ACPAgentDefinition) -> Void = { _ in }) -> ACPEngine {
         var env = ["HOME": NSHomeDirectory(), "PATH": "/usr/bin:/bin", "FAKE_ACP_LOG": log.path, "FAKE_ACP_STATE": state.path,
                    "GEMINI_API_KEY": "must-not-pass"]
         env.merge(extra) { _, new in new }
         let script = Fixtures.url("acp/fake_acp_agent.py").path
-        let engine = ACPEngine(configuration: .init(agent: Self.definition(script: script), executablePath: executable, storeURL: store,
+        var agent = Self.definition(script: script)
+        customize(&agent)
+        let engine = ACPEngine(configuration: .init(agent: agent, executablePath: executable, storeURL: store,
                                                     workDirectory: folder.appendingPathComponent("work"), maxConcurrentTurns: maxTurns,
                                                     baseEnvironment: env, trust: trust, requestTimeout: TestWait.ceiling,
                                                     interruptGrace: .seconds(5)))

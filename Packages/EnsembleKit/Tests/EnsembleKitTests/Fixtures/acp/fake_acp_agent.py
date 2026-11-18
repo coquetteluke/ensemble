@@ -6,6 +6,8 @@ It speaks JSON-RPC 2.0 over stdio, one message per line, and behaves like the re
 diffs, cancellation, session/load replay, usage and title updates.
 
 Prompt words pick the behaviour (case-insensitive, first match):
+  tool: <JSON> -> a tool call with exactly these fields (kind, name, rawInput, locations, args, ...), always asks
+             permission (unless --bypass); "{project}" in the JSON is replaced by the session folder
   fail    -> the prompt request fails with a JSON-RPC error
   slow    -> streams "tick " every 0.1 s until cancelled (stopReason cancelled), at most 100 ticks
   mystery -> execute tool call whose arguments name no command (only a title), asks permission
@@ -170,10 +172,20 @@ def run_prompt(rid, sid, text):
     stop = "end_turn"
     reply = ""
     try:
-        if "fail" in lower:
+        if lower.startswith("tool:"):
+            spec = json.loads(text[5:].replace("{project}", s["cwd"].rstrip("/")))
+            tid = "call_%d" % s["prompts"]
+            call = dict(spec, toolCallId=tid, status="pending")
+            update(sid, dict(call, sessionUpdate="tool_call"))
+            answer = "allow" if BYPASS else ask_permission(sid, call, s["cancel"])
+            log({"event": "tool", "session": sid, "answer": answer})
+            update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": tid, "status": "completed" if answer == "allow" else "failed"})
+            stop = "cancelled" if answer == "cancelled" else "end_turn"
+            reply = "Allowed." if answer == "allow" else ("" if answer == "cancelled" else "Rejected.")
+        elif "fail" in lower:
             send({"id": rid, "error": {"code": -32603, "message": "fake failure"}})
             return
-        if "slow" in lower:
+        elif "slow" in lower:
             for _ in range(100):
                 if s["cancel"].is_set():
                     stop = "cancelled"

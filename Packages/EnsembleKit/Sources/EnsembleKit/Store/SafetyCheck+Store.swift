@@ -72,6 +72,8 @@ extension SessionStore {
     /// now, and is shown later only if the check leaves it for the user. Fixed-rule decisions are made here, so those
     /// prompts show at once.
     func safetyCheckHolds(_ request: PermissionRequest) -> Bool {
+        // Agents whose Auto Ensemble decides itself (`SafetyCheck+Agents.swift`) never take the OpenCode path.
+        if let held = agentSafetyCheckHolds(request) { return held }
         let check = safetyCheck
         if check.checking.contains(request.id) { return true }
         if check.released.contains(request.id) { return false }
@@ -240,7 +242,7 @@ extension SessionStore {
 
     func decision(_ request: PermissionRequest, query: SafetyCheckQuery, toolCallID: String?, verdict: SafetyCheckVerdict,
                   basis: SafetyCheckBasis, reason: String, model: ModelRef? = nil) -> SafetyCheckDecision {
-        SafetyCheckDecision(requestID: request.id, sessionID: request.sessionID, toolCallID: toolCallID, action: request.kind,
+        SafetyCheckDecision(requestID: request.id, sessionID: request.sessionID, toolCallID: toolCallID, action: query.action,
                             subject: PermissionDisplay.visible(query.subject), verdict: verdict, basis: basis, reason: reason,
                             model: model)
     }
