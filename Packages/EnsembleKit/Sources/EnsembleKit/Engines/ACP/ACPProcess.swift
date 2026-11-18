@@ -195,14 +195,16 @@ final class ACPProcess: @unchecked Sendable {
     }
 }
 
-/// Runs a short command (`agy --version`) with a timeout and returns stdout.
+/// Runs a short command (`agy --version`) with a timeout and returns stdout. `directory` is the working folder (the
+/// temporary folder when nil).
 enum ACPCommandRunner {
-    static func run(_ executable: URL, _ arguments: [String], environment: [String: String], timeout: Duration = .seconds(15)) async -> String? {
+    static func run(_ executable: URL, _ arguments: [String], environment: [String: String], timeout: Duration = .seconds(15),
+                    directory: URL? = nil) async -> String? {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
         process.environment = environment
-        process.currentDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        process.currentDirectoryURL = directory ?? URL(fileURLWithPath: NSTemporaryDirectory())
         let out = Pipe()
         process.standardOutput = out
         process.standardError = FileHandle.nullDevice

@@ -67,12 +67,16 @@ public struct ACPAgentDefinition: Sendable, Hashable, Identifiable {
     public var billing: ModelBilling
     /// What the tool does differently, for the docs and the Accounts screen.
     public var notes: String
+    /// Arguments that make the tool print its plan use without starting a turn (agy: `-p /usage --output-format json`),
+    /// read by `ACPEngine.planStatus()`. nil: the tool reports none.
+    public var planUsageArguments: [String]?
 
     public init(id: String, displayName: String, providerName: String, executableNames: [String], searchDirectories: [String] = [],
                 arguments: [String], bypassArguments: [String]? = nil, modeIDs: [PermissionMode: String] = [:],
                 ensembleDecidesAuto: Bool = false, installHint: String, signInHint: String, signInCheck: SignInCheck = .none, status: Status,
                 verifiedVersion: String? = nil, maxConcurrentTurns: Int? = nil, workspaceSettings: WorkspaceSettings = .alwaysLoaded,
-                environmentPassThrough: [String] = [], billing: ModelBilling = .subscription, notes: String = "") {
+                environmentPassThrough: [String] = [], billing: ModelBilling = .subscription, notes: String = "",
+                planUsageArguments: [String]? = nil) {
         self.id = id
         self.displayName = displayName
         self.providerName = providerName
@@ -92,6 +96,7 @@ public struct ACPAgentDefinition: Sendable, Hashable, Identifiable {
         self.environmentPassThrough = environmentPassThrough
         self.billing = billing
         self.notes = notes
+        self.planUsageArguments = planUsageArguments
     }
 
     /// True when the tool needs the project folder to be trusted before it may start there.
@@ -142,7 +147,10 @@ public enum ACPAgentRegistry {
         (for example Turbo) does not apply to ACP sessions once Ensemble sets the session mode: in `default` mode shell \
         commands, file writes and reads outside the project all ask. agy's own `auto` mode sends no prompts at all, so \
         Ensemble's Auto runs in `default` and Ensemble answers each prompt itself.
-        """)
+        """,
+        // agy answers its own `/usage` command in print mode without a turn (ACP has no such command: a "/usage" prompt
+        // goes to the model).
+        planUsageArguments: ["-p", "/usage", "--output-format", "json"])
 
     /// OpenCode's own ACP server, tested to show the client is generic. Its models are the user's OpenCode providers.
     public static let openCode = ACPAgentDefinition(

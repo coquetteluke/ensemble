@@ -10,6 +10,8 @@ struct UsageScreen: View {
     var tracker: UsageTracker?
     /// Snapshots pass Claude plan limits; the app reads the Claude engine.
     var planLimits: ClaudePlanLimits?
+    /// Snapshots pass the Google AI plan; the app reads agy's `/usage`.
+    var googlePlan: AntigravityPlanStatus?
     var initialRange: UsageRange = .today
     /// Snapshots open the full session list.
     var showAllSessions = false
@@ -49,7 +51,12 @@ struct UsageScreen: View {
                                   selection: Binding(get: { currentRange }, set: { range = $0 }))
                     .frame(maxWidth: theme.z(380))
                 tiles(report)
-                if hasClaude || planLimits != nil { planCard }
+                ForEach(plans) { plan in
+                    switch plan {
+                    case .claude: planCard
+                    case .googleAI: googlePlanCard
+                    }
+                }
                 if report.total.usage == .zero {
                     Text("No usage \(currentRange == .today ? "today" : "in the \(currentRange.label.lowercased())").")
                         .font(theme.font(size: 13))
@@ -93,8 +100,12 @@ struct UsageScreen: View {
 
     // MARK: Plan limits
 
-    private var hasClaude: Bool {
-        (store.engine as? EngineRouter)?.engine(ClaudeCodeEngine.self) != nil || store.engine is ClaudeCodeEngine
+    /// Every plan the app has (or the snapshot passes), the selected session's first.
+    private var plans: [SubscriptionPlan] {
+        var available = PlanEngines.available(store)
+        if planLimits != nil, !available.contains(.claude) { available.append(.claude) }
+        if googlePlan != nil, !available.contains(.googleAI) { available.append(.googleAI) }
+        return SubscriptionPlan.ordered(available, current: PlanEngines.plan(of: store.selected, store: store))
     }
 
     private var planCard: some View {
@@ -108,10 +119,32 @@ struct UsageScreen: View {
                 ClaudePlanLimitsSection(store: store)
             }
         }
-        .padding(theme.z(14))
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).fill(theme.elevated))
-        .overlay(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).strokeBorder(theme.border))
+        .modifier(PlanCardStyle())
+    }
+
+    private var googlePlanCard: some View {
+        VStack(alignment: .leading, spacing: theme.z(10)) {
+            if let googlePlan {
+                GooglePlanLimitsSection(store: store, snapshot: PlanUsageSnapshot(plans: [.googleAI], google: googlePlan,
+                                                                                    googleTokensToday: PlanEngines.googleTokensToday(store)))
+            } else {
+                GooglePlanLimitsSection(store: store)
+            }
+        }
+        .modifier(PlanCardStyle())
+    }
+}
+
+/// The card around a plan on the Usage screen.
+private struct PlanCardStyle: ViewModifier {
+    @Environment(\.theme) private var theme
+
+    func body(content: Content) -> some View {
+        content
+            .padding(theme.z(14))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).fill(theme.elevated))
+            .overlay(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).strokeBorder(theme.border))
     }
 }
 
