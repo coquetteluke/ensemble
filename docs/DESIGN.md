@@ -46,12 +46,16 @@ OpenCode (github.com/anomalyco/opencode, MIT) is a mature open-source coding age
 
 An agent's model decides which engine runs it. Every engine implements the same `OpenCodeAPI` protocol (to be renamed `AgentEngine`), and an `EngineRouter` sends each session to the right one, so rooms can mix them: a Claude agent on your Claude subscription can debate a Gemini agent on your Google subscription.
 
+Ensemble is public, so it supports every subscription that can be linked legitimately, not only the ones Luke uses.
+
 | Engine | Runs | Pays with | How |
 |---|---|---|---|
-| OpenCode | any API-key model, local models, ChatGPT, Grok | API keys; ChatGPT Plus/Pro sign-in; SuperGrok sign-in | OpenCode service (OpenAI and xAI allow their subscriptions in other tools) |
+| OpenCode | 330+ providers | Official sign-ins (browser login): ChatGPT Plus/Pro, SuperGrok, GitHub Copilot, GitLab Duo, Poe, OpenCode Console/Zen and OpenCode Go. Coding-plan keys: Kimi For Coding, Z.AI and Zhipu GLM Coding Plan, MiniMax, Alibaba, Tencent, Volcengine, StepFun, Xiaomi, Umans, KUAE, Ollama Cloud, Synthetic and others. Cloud logins: AWS Bedrock (SSO profile), Google Vertex (gcloud). API keys for everything else, including OpenRouter. Local: LM Studio, Ollama. | OpenCode service; Settings reads `GET /api/integration` and shows a Sign in button for `oauth` methods, setup steps for `external` methods, and a key field otherwise. |
+| ACP agents | any coding tool that speaks the Agent Client Protocol over stdio | that tool's own subscription and login | One generic ACP client in Ensemble: Google's `agy acp` (Google AI Pro/Ultra) first; then each other ACP tool that works when tested (candidates: Gemini CLI for Workspace/Code Assist accounts, Qwen Code, Codex via its ACP adapter, Cursor CLI, Kiro CLI, Goose, OpenCode itself). Only tools verified to work are listed in the app. |
 | Claude Code | Claude Opus, Sonnet, Haiku | your Claude Pro/Max subscription | Ensemble runs the official, unmodified `claude` CLI headless (`-p`, stream-json in and out), one process per agent session, logged in as you; Anthropic's docs allow this and it draws from your plan limits. Ensemble never touches the login. Rules and flags: `docs/reference/claude-code-engine-notes.md`. |
-| Antigravity | Gemini models (and Claude models Google includes) | your Google AI Pro/Ultra subscription | Ensemble runs Google's official `agy` CLI (ACP or stream-json), logged in as you. Notes: `docs/reference/antigravity-engine-notes.md`. |
-| Codex, Grok CLI (later, optional) | GPT, Grok | ChatGPT or SuperGrok subscription | official CLIs or OpenCode's sign-ins. Not planned for now: Luke uses Claude and Gemini; API keys already cover GPT and Grok. |
+| (Antigravity, via ACP) | Gemini models (and Claude models Google includes) | Google AI Pro/Ultra subscription | Ensemble runs Google's official `agy acp`, logged in as you. Notes: `docs/reference/antigravity-engine-notes.md`. |
+
+OpenCode also lists a "Claude Agent" integration that uses the official Claude Code login. Ensemble's own Claude Code engine is preferred (full Claude Code tools and subagents), with OpenCode's as a fallback to compare.
 
 The model picker groups models under "Your subscriptions" and "API keys". The usage popover shows each subscription's remaining limits where the engine reports them, so a long debate does not quietly use up a weekly allowance.
 
