@@ -48,19 +48,75 @@ enum ClaudeInteractionTools {
     }
 }
 
-/// Keeps Claude's plan mode read-only. The CLI's plan mode lets the auto-mode classifier approve shell commands
-/// (a file write ran without a prompt in testing), so while a session is in plan the engine adds `Bash` to the
-/// `permissions.ask` list through `apply_flag_settings` (checked live: the command then came as a prompt, and setting
-/// the list back made it run without one again), and denies file edits itself. Any `permissions` the session's
-/// `--settings` file already had are sent back unchanged, so whether the CLI merges or replaces the object, nothing
-/// else changes.
+/// Keeps Claude's plan mode read-only, in two layers.
+///
+/// 1. The CLI asks. Its plan mode only holds a call the permission system would not allow anyway: the auto-mode
+///    classifier approved `echo hi > shell.txt` without a prompt (tested 2026-11-18), and the user's own allow rules
+///    would approve edits or MCP tools the same way. So while a session is in plan the engine adds every tool that can
+///    run commands, change files or reach outside the conversation to `permissions.ask` through `apply_flag_settings`;
+///    ask rules outrank allow rules and the classifier (checked live: `Bash` and `mcp__*` then came as prompts, and
+///    removing them made the calls run without one again). Any `permissions` the session's `--settings` file already
+///    had are sent back unchanged, so whether the CLI merges or replaces the object, nothing else changes. The engine
+///    waits for the CLI to accept this before it sends a turn, and fails closed when it does not (`ClaudeEngineCore`).
+/// 2. Ensemble decides. Every prompt that reaches the engine in plan is checked by `decision(for:)`: tools that change
+///    files are refused, everything else waits for the user, and remembered "Always" rules approve nothing.
 enum ClaudePlanGuard {
-    static let askedTools = ["Bash"]
+    /// Tools that run commands: `ClaudeFormatting.shellToolNames`, plus `Monitor` (runs a command and watches it).
+    static let commandTools: Set<String> = ClaudeFormatting.shellToolNames.union(["Monitor"])
+
+    /// Tools that change files: `ClaudeFormatting.editToolNames`, plus the worktree tools (they create or remove a git
+    /// worktree).
+    static let fileTools: Set<String> = ClaudeFormatting.editToolNames.union(["EnterWorktree", "ExitWorktree"])
+
+    /// Other tools in claude 2.1.319's list that act outside the conversation: schedules and triggers, messages to
+    /// other sessions and projects, notifications, design sync, workflows (which script subagents).
+    static let sideEffectTools: Set<String> = [
+        "CronCreate", "CronDelete", "RemoteTrigger", "ScheduleWakeup", "SendMessage", "SendToProject",
+        "SendToProjectContext", "PushNotification", "DesignSync", "Workflow",
+    ]
+
+    /// Every MCP tool (the CLI matches `mcp__*` against all servers' tools).
+    static let mcpPattern = "mcp__*"
+
+    /// What plan adds to `permissions.ask`, in a stable order.
+    static let askedTools: [String] = commandTools.union(fileTools).union(sideEffectTools).sorted() + [mcpPattern]
+
+    enum Decision: Equatable {
+        /// Answer no at once: the tool would change files.
+        case refuse
+        /// Show the prompt to the user, never approve it on Ensemble's own.
+        case ask
+        /// The CLI's own plan file (`~/.claude/plans/<name>.md`), which plan mode writes as part of planning.
+        case allowPlanFile
+    }
+
+    /// Ensemble's own decision for a prompt in plan mode (layer 2), whatever the CLI suggests with it.
+    static func decision(toolName: String, input: JSONValue, plansFolder: String?) -> Decision {
+        guard fileTools.contains(toolName) else { return .ask }
+        if ["Write", "Edit"].contains(toolName), let plansFolder, isPlanFile(input["file_path"]?.stringValue, plansFolder: plansFolder) {
+            return .allowPlanFile
+        }
+        return .refuse
+    }
+
+    /// True for a Markdown file directly inside the CLI's plans folder, after resolving links on both sides.
+    static func isPlanFile(_ path: String?, plansFolder: String) -> Bool {
+        guard let path, path.hasPrefix("/"), path.hasSuffix(".md"), !path.split(separator: "/").contains(".."),
+              let resolved = WorkspaceTrust.resolvedPath(path), let folder = WorkspaceTrust.resolvedPath(plansFolder) else { return false }
+        return (resolved as NSString).deletingLastPathComponent == folder
+    }
+
+    /// The CLI's plans folder for a child environment: `$CLAUDE_CONFIG_DIR/plans`, else `~/.claude/plans`.
+    static func plansFolder(environment: [String: String]) -> String? {
+        if let config = environment["CLAUDE_CONFIG_DIR"], !config.isEmpty { return (config as NSString).appendingPathComponent("plans") }
+        guard let home = environment["HOME"], !home.isEmpty else { return nil }
+        return (home as NSString).appendingPathComponent(".claude/plans")
+    }
 
     /// The `apply_flag_settings` payload for plan on or off.
     static func settings(planOn: Bool, base: JSONValue?) -> JSONValue {
         var permissions = base?.objectValue ?? [:]
-        // Off restores exactly what the settings file had (which may list Bash itself).
+        // Off restores exactly what the settings file had (which may list some of these tools itself).
         var ask = base?["ask"]?.arrayValue ?? []
         if planOn {
             for tool in askedTools where !ask.contains(.string(tool)) { ask.append(.string(tool)) }

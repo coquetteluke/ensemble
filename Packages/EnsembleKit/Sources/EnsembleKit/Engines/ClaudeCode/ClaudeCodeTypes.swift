@@ -27,6 +27,8 @@ public enum ClaudeCodeError: Error, LocalizedError, Equatable, Sendable {
     /// `NODE_OPTIONS`, `apiKeyHelper`, ...). The UI shows the keys (never values) and, if the user agrees, calls
     /// `ClaudeCodeEngine.confirmProjectAPISettings(directory:)`.
     case projectOverridesAPISettings(directory: String, keys: [String])
+    /// Plan mode's read-only rules could not be put in place (`ClaudePlanGuard`), so nothing was sent to the agent.
+    case planGuardFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -50,6 +52,8 @@ public enum ClaudeCodeError: Error, LocalizedError, Equatable, Sendable {
             "Keychain error: \(message)"
         case .folderNotTrusted(let directory):
             "\(directory) is not a trusted folder. Its Claude settings change where requests and your API key go, so Ensemble only starts an API-key agent here after you trust the folder and confirm those settings."
+        case .planGuardFailed(let reason):
+            "Plan mode could not be made read-only, so nothing was sent to the agent (\(reason)). Try again, or choose another mode."
         case .projectOverridesAPISettings(let directory, let keys):
             "The Claude settings in \(directory) set \(keys.joined(separator: ", ")). These can change where requests, your API key or your Claude login go, or run programs while the agent works. Confirm them to start the agent."
         }

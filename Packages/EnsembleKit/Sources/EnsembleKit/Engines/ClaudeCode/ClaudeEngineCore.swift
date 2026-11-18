@@ -20,6 +20,8 @@ actor ClaudeEngineCore {
         var readsProjectFiles = false
         /// The `permissions` of the process's `--settings` file, sent back unchanged around the plan guard.
         var basePermissions: JSONValue?
+        /// The CLI confirmed the plan guard's ask rules (`ClaudePlanGuard`). No turn is sent in plan until it has.
+        var planGuardOn = false
     }
 
     struct TranscriptSource: Sendable {
@@ -256,6 +258,7 @@ actor ClaudeEngineCore {
 
     func setPermissionMode(_ id: String, mode: PermissionMode) async throws {
         var record = try rootRecord(id, action: "have its own permission mode")
+        let previous = record.permissionMode
         record.permissionMode = mode
         store[id] = record
         save()
@@ -266,19 +269,74 @@ actor ClaudeEngineCore {
             restartWhenIdle(id)
             return
         }
+        if mode == .plan {
+            try await enterPlan(id, previous: previous)
+            return
+        }
         do {
             _ = try await control(id, ["subtype": "set_permission_mode", "mode": .string(ClaudePermissionModes.cliMode(mode))])
-            try await applyPlanGuard(id, planOn: mode == .plan)
         } catch {
             restartWhenIdle(id)
+            return
+        }
+        // Leaving plan: lift the guard. If that fails the extra ask rules stay, which only asks more, until the process
+        // restarts.
+        if live[id]?.planGuardOn == true {
+            do { try await applyPlanGuard(id, planOn: false) } catch { restartWhenIdle(id) }
         }
     }
 
-    /// Adds or removes the plan guard's ask rule on the running process (`ClaudePlanGuard`).
+    /// Switches a running process to plan with the guard confirmed, or not at all: when either step fails, the CLI and
+    /// the saved session go back to `previous`, a turn in progress is stopped, and the call throws.
+    private func enterPlan(_ id: String, previous: PermissionMode) async throws {
+        var reason: String?
+        do {
+            _ = try await control(id, ["subtype": "set_permission_mode", "mode": .string(ClaudePermissionModes.cliMode(.plan))])
+            try await applyPlanGuard(id, planOn: true)
+            return
+        } catch {
+            reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+        if var record = store[id], record.permissionMode == .plan {
+            record.permissionMode = previous
+            store[id] = record
+            save()
+            emit(.sessionUpdated(record.engineSession))
+        }
+        if let session = live[id] {
+            if session.turnsInFlight > 0 { try? await interrupt(id) }
+            do {
+                _ = try await control(id, ["subtype": "set_permission_mode", "mode": .string(ClaudePermissionModes.cliMode(previous))],
+                                      timeout: .seconds(10))
+            } catch {
+                // The CLI may still be in plan without the guard: end the process; the next prompt starts a new one.
+                stopProcess(id)
+            }
+        }
+        throw ClaudeCodeError.planGuardFailed(reason ?? "no answer")
+    }
+
+    /// Adds or removes the plan guard's ask rules on the running process and waits for the CLI to accept them
+    /// (`ClaudePlanGuard`). Throws when the CLI refuses or does not answer.
     private func applyPlanGuard(_ root: String, planOn: Bool) async throws {
-        guard let session = live[root] else { return }
+        guard let session = live[root] else { throw ClaudeCodeError.processFailed("the agent is not running") }
+        let generation = session.process.generation
         _ = try await control(root, ["subtype": "apply_flag_settings",
                                      "settings": ClaudePlanGuard.settings(planOn: planOn, base: session.basePermissions)])
+        guard live[root]?.process.generation == generation else { throw ClaudeCodeError.processFailed("the agent restarted") }
+        live[root]?.planGuardOn = planOn
+    }
+
+    /// Before a turn of a plan session: the guard must be confirmed on this process, or the turn is not sent. A process
+    /// that cannot take it is stopped, so the next try starts clean.
+    private func ensurePlanGuard(_ root: String) async throws {
+        guard store[root]?.permissionMode == .plan, let session = live[root], !session.planGuardOn else { return }
+        do {
+            try await applyPlanGuard(root, planOn: true)
+        } catch {
+            if live[root]?.process.generation == session.process.generation { stopProcess(root) }
+            throw ClaudeCodeError.planGuardFailed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
     }
 
     func switchModel(_ id: String, model: ModelRef) async throws {
@@ -460,13 +518,7 @@ actor ClaudeEngineCore {
         live[id] = Live(process: process, decoder: decoder, bypassAllowed: record.permissionMode == .bypass,
                         launchedWithResumeAt: options.resumeAt != nil, trusted: trusted, readsProjectFiles: plan == .project,
                         basePermissions: basePermissions)
-        if record.permissionMode == .plan {
-            // Written before any prompt, so the plan guard is in place for the first turn (the answer is not awaited:
-            // the CLI handles stdin in order).
-            try? write(id, ["type": "control_request", "request_id": .string("ensemble-plan-" + UUID().uuidString.lowercased()),
-                            "request": ["subtype": "apply_flag_settings",
-                                        "settings": ClaudePlanGuard.settings(planOn: true, base: basePermissions)]])
-        }
+        // A plan session gets the plan guard before its first turn (`ensurePlanGuard`, called by `send`).
         let gen = generation
         let lines = process.lines
         Task {
@@ -634,10 +686,18 @@ actor ClaudeEngineCore {
 
         case .permission(let prompt):
             let inPlan = store[root]?.permissionMode == .plan
-            if inPlan, !prompt.isInteraction, ClaudeFormatting.editToolNames.contains(prompt.toolName) {
-                // Plan mode is read-only: edits are refused, not asked (the CLI's own plan file never comes here).
-                try? write(root, prompt.planEditRefusal())
-                return
+            if inPlan, !prompt.isInteraction {
+                // Layer 2 of the plan guard: Ensemble's own decision, whatever the CLI suggests.
+                switch ClaudePlanGuard.decision(toolName: prompt.toolName, input: prompt.input, plansFolder: plansFolder) {
+                case .refuse:
+                    try? write(root, prompt.planEditRefusal())
+                    return
+                case .allowPlanFile:
+                    try? write(root, prompt.response(decision: .once, message: nil))
+                    return
+                case .ask:
+                    break
+                }
             }
             // Plans and questions always wait for the user; in plan mode remembered rules approve nothing.
             if !prompt.isInteraction, !inPlan, rules[root]?.allows(prompt) == true {
@@ -708,7 +768,10 @@ actor ClaudeEngineCore {
 
     // MARK: Talking
 
-    func send(_ id: String, text: String, files attachments: [URL], synthetic: Bool) throws {
+    /// Where the CLI keeps plan files for this engine's processes.
+    private var plansFolder: String? { ClaudePlanGuard.plansFolder(environment: configuration.baseEnvironment) }
+
+    func send(_ id: String, text: String, files attachments: [URL], synthetic: Bool) async throws {
         var record = try rootRecord(id, action: "be messaged directly")
         let queued = record.queuedSynthetic
         let blocks = try ClaudeCLI.contentBlocks(synthetic: queued, text: text, files: attachments)
@@ -724,6 +787,8 @@ actor ClaudeEngineCore {
         store[id] = record
         do {
             try ensureProcess(id)
+            // Plan mode fails closed: no turn is sent until the CLI has confirmed the guard.
+            try await ensurePlanGuard(id)
             try write(id, ClaudeCLI.userMessage(blocks: blocks))
         } catch {
             if var restored = store[id] {
@@ -743,12 +808,15 @@ actor ClaudeEngineCore {
     /// calls in flight). With no turn running it is an ordinary `send`. A folded message gets no `result` of its own,
     /// and one the CLI runs as its own turn afterwards is counted in the running turn's `queued_turn_count`, which
     /// `.turnEnded` already uses, so `turnsInFlight` is not raised here.
-    func steer(_ id: String, text: String, files attachments: [URL]) throws {
+    func steer(_ id: String, text: String, files attachments: [URL]) async throws {
         guard let session = live[id], session.turnsInFlight > 0, !session.interrupting else {
-            try send(id, text: text, files: attachments, synthetic: false)
+            try await send(id, text: text, files: attachments, synthetic: false)
             return
         }
         var record = try rootRecord(id, action: "be messaged directly")
+        if record.permissionMode == .plan, !session.planGuardOn {
+            throw ClaudeCodeError.planGuardFailed("the read-only rules are not in place")
+        }
         let blocks = try ClaudeCLI.contentBlocks(synthetic: [], text: text, files: attachments)
         try write(id, ClaudeCLI.userMessage(blocks: blocks, priority: "next"))
         record.updated = Date()
@@ -866,11 +934,12 @@ actor ClaudeEngineCore {
             pending[requestID] = nil
             do {
                 _ = try await control(root, ["subtype": "set_permission_mode", "mode": .string(ClaudePermissionModes.cliMode(mode))])
-                try await applyPlanGuard(root, planOn: false)
             } catch {
                 if live[root] != nil { pending[requestID] = prompt }
                 throw error
             }
+            // Lifting the guard can fail safely: its ask rules stay (the agent asks more) until the process restarts.
+            do { try await applyPlanGuard(root, planOn: false) } catch { restartWhenIdle(root) }
             if var record = store[root] {
                 record.permissionMode = mode
                 store[root] = record

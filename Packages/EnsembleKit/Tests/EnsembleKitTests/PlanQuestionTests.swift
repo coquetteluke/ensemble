@@ -163,10 +163,13 @@ import Testing
 
     @Test func planGuardAddsBashToAskAndRestoresTheSettingsFile() {
         let on = ClaudePlanGuard.settings(planOn: true, base: nil)
-        #expect(on == ["permissions": ["ask": ["Bash"]]])
+        #expect(on == ["permissions": ["ask": .array(ClaudePlanGuard.askedTools.map(JSONValue.string))]])
         #expect(ClaudePlanGuard.settings(planOn: false, base: nil) == ["permissions": ["ask": []]])
         let base: JSONValue = ["deny": ["WebFetch"], "ask": ["Bash(git push:*)"]]
-        #expect(ClaudePlanGuard.settings(planOn: true, base: base) == ["permissions": ["deny": ["WebFetch"], "ask": ["Bash(git push:*)", "Bash"]]])
+        let withBase = ClaudePlanGuard.settings(planOn: true, base: base)
+        #expect(withBase["permissions"]?["deny"] == ["WebFetch"])
+        #expect(withBase["permissions"]?["ask"]?.arrayValue?.first == "Bash(git push:*)")
+        #expect(withBase["permissions"]?["ask"]?.arrayValue?.count == ClaudePlanGuard.askedTools.count + 1)
         #expect(ClaudePlanGuard.settings(planOn: false, base: base) == ["permissions": base])
         #expect(ClaudePermissionModes.cliMode(.plan) == "plan" && ClaudePermissionModes.ensembleMode("plan") == .plan)
     }
