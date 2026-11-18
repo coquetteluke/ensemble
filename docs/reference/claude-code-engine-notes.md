@@ -33,3 +33,10 @@ What this means for Ensemble:
 - Keep running only the unmodified `claude` binary as itself (no changed user agent, no proxying, no token handling).
 - A Claude subscription in Ensemble serves only its owner. The iPhone remote pairs only the owner's own devices; Ensemble must never let other people send work through someone else's Claude plan (no shared rooms, no hosted mode on a subscription).
 - Offer Claude through an API key as well, and say in the README that subscription mode is for your own personal use under Anthropic's terms.
+
+## How the engine answers permission prompts (2026-11-18)
+- Uses the CLI's stream-json control channel (`--permission-prompts host --permission-prompt-tool stdio`): prompts arrive as `can_use_tool` requests on the process's stdout and are answered on stdin. No port or helper process, so nothing else on the Mac can answer a prompt. These flags are accepted by 2.1.319 but are not in `claude --help`; re-check on CLI updates.
+- "Always" rules are kept in Ensemble (the CLI is not sent `updatedPermissions`), matched with a shell-word parser.
+- Ensemble's Auto maps to Claude Code's own auto mode, where Anthropic's classifier approves most actions. Kept on purpose: it is the behaviour Luke uses daily in Claude Code. OpenCode agents use Ensemble's stricter allowlist until Ensemble has its own AI safety check.
+- Subscription agents report costUSD 0 and show plan limits (`planLimits()`: five-hour and weekly use, reset time); spending caps do not apply to them.
+- Rewind restores only files changed by Claude's edit tools.
