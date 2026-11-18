@@ -49,6 +49,13 @@ Done when: one room runs a Claude agent on the Claude subscription and a Gemini 
   - Hooks and SSH/cloud environments are listed as not imported, with the reason.
 - Done when: Luke's 100+ sessions show under their folders in Ensemble, one old session resumes on the Claude subscription, and his MCP servers appear under Connectors.
 
+## M1.7: MacBook power, zoom, defaults (requested 2026-11-18)
+
+- Ensemble targets MacBooks first (Apple silicon laptops). Windows and Linux are out of scope for now.
+- Auto is the default permission mode (done).
+- **Zoom:** Cmd + / Cmd - / Cmd 0 scale the whole window through the theme, saved between launches (WP-B).
+- **WP-N Power** (owns `Apps/Mac/Power/`): per session and room, "Keep Mac awake" (IOPMAssertion that stops idle sleep and display sleep, like `caffeinate -d`) and "Keep running with the lid closed" (`pmset disablesleep 1` through a narrow sudoers rule, the same method as Luke's `lidlock`). Lid lock always turns on Keep awake; Keep awake can be on alone. Released when the session finishes (after a grace period) or when switched off, on quit, and at launch after a crash. Never turns off a lid lock the user set outside Ensemble. One-time setup asks for the admin password in the macOS dialog to install the sudoers rule; Ensemble never sees the password. Hidden on Macs without a lid.
+
 ## M2: Rooms (multi-agent)
 
 - **WP-C RoomEngine** (owns `Rooms/`, its tests): room model and persistence, Team / Debate / Round table / Solo, board, relay via `session/synthetic`, lead plan and assignments, worktrees per agent in git projects, review step, pause/resume, `@agent` routing, spending caps.
