@@ -57,6 +57,11 @@ One agent, one session. Like a normal chat.
 3. A `TAKEOVER` the user accepts (automatic in Auto/Bypass) passes the builder role to that agent with a handoff of the plan and progress.
 4. It ends when the builder says `DONE` and every reviewer approves.
 
+## Busy agents, subagents and worktrees (from live tests)
+- Messages only for an agent's information (`wake: false`) wait while that agent is in a turn (`RoomState.held`) and go out when the turn ends: OpenCode reads such a message at the end of a running turn and takes another step, which added replies like "OK." to the turn the room parses.
+- OpenCode runs subagents in the background, so an agent's turn can end as soon as it starts one, and the subagent's result wakes it later. While any of an agent's child sessions work, the room does not nudge it, fall back for it, send it a new turn, or treat the room as idle. If nothing wakes the agent within a few seconds of its last subagent finishing, the room checks on it as usual.
+- Worktrees live in `<room folder>/.ensemble/worktrees/<branch>`. In Accept edits and Auto, Ensemble's rules ask before any edit under a dot folder, so before each work message the room adds an allow scoped to the agent's own worktree to its OpenCode session (`PermissionRules.worktreeEditRules`); dot paths, OpenCode's config shape and build files inside the worktree still ask, and so do other agents' worktrees. Claude and Gemini agents follow their own CLI's mode for the worktree path.
+
 ## User controls
 
 - Talk to the room (everyone) or `@name` one agent.

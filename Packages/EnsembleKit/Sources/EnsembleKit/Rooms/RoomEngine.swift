@@ -30,8 +30,14 @@ public enum ReviewDecision: String, Hashable, Sendable {
 /// and take the agent text items after the last non-agent item (the message that started the turn).
 ///
 /// The engine never sends a turn to a busy agent: messages wait in the agent's outbox until its current
-/// turn ends, so every `executionEnded` belongs to exactly one request. Everything that changes is saved
-/// through the `RoomStore` right away.
+/// turn ends, so every `executionEnded` belongs to exactly one request. Messages only for an agent's
+/// information wait too (`RoomState.held`), because the engine would read them inside the running turn.
+/// Everything that changes is saved through the `RoomStore` right away.
+///
+/// Subagents: OpenCode runs them in the background, so an agent's turn can end while its subagents still
+/// work, and the engine wakes the agent with their result when they finish. While any of an agent's child
+/// sessions work, the room does not nudge that agent, fall back for it, send it a new turn, or treat the
+/// room as idle.
 @MainActor
 @Observable
 public final class RoomEngine {
@@ -43,6 +49,8 @@ public final class RoomEngine {
     public internal(set) var liveText: [UUID: String] = [:]
     /// The last thing that went wrong (engine call failed, save failed, bad plan text).
     public internal(set) var lastError: String?
+    /// Subagent (child) sessions of the room's agents that are working right now.
+    public internal(set) var workingSubagents: Set<String> = []
 
     /// Fix rounds before a review stalemate goes to the user.
     public static let maxFixRounds = 2
@@ -62,6 +70,14 @@ public final class RoomEngine {
     @ObservationIgnored var lastText: [UUID: String] = [:]
     @ObservationIgnored var relayBudget = RoomEngine.relayWakeLimit
     @ObservationIgnored var relayBudgetNoticePosted = false
+    /// Subagent session id -> the agent it works for (also for subagents of subagents).
+    @ObservationIgnored var subagentOwners: [String: UUID] = [:]
+    /// A duty an agent's turn ended without while its subagents worked; checked when they are done.
+    @ObservationIgnored var deferredDuty: [UUID: TurnPurpose] = [:]
+    @ObservationIgnored var settleTasks: [UUID: Task<Void, Never>] = [:]
+    /// How long after an agent's last subagent finishes the room waits for the engine to wake the agent with the
+    /// result (OpenCode does at once) before it checks on the agent itself.
+    @ObservationIgnored var subagentSettleDelay: Duration = .seconds(3)
 
     public init(state: RoomState, api: any OpenCodeAPI, store: any RoomStore, git: (any GitOps)? = nil) {
         self.state = state
@@ -138,6 +154,8 @@ public final class RoomEngine {
     public func close() {
         listener?.cancel()
         listener = nil
+        for task in settleTasks.values { task.cancel() }
+        settleTasks = [:]
     }
 
     // MARK: - Roster
@@ -286,11 +304,17 @@ public final class RoomEngine {
         }
         notice("Resumed.")
         resetRelayBudget()
+        for id in agents.map(\.id) where !busy.contains(id) { await flushHeld(id) }
         for id in toNudge where !busy.contains(id) {
             let duty = state.duties[id]?.first?.purpose
+            if hasWorkingSubagents(id) {
+                // Its subagents still work; the engine wakes it with their result.
+                if let duty { deferredDuty[id] = duty }
+                continue
+            }
             await deliver(id, OutgoingMessage(channel: .synthetic, text: resumeText(), nudge: duty))
         }
-        for id in agents.map(\.id) where !busy.contains(id) && !state.isPaused {
+        for id in agents.map(\.id) where !busy.contains(id) && !hasWorkingSubagents(id) && !state.isPaused {
             if let next = dequeue(id) { await deliver(id, next) }
         }
         await checkQuiescence()
@@ -309,6 +333,9 @@ public final class RoomEngine {
             $0.pendingDecision = nil
             $0.interruptedAgents = []
         }
+        deferredDuty = [:]
+        for task in settleTasks.values { task.cancel() }
+        settleTasks = [:]
         notice("Stopped. The sessions and the board stay.")
         for id in running {
             if let sid = state.sessions[id] { try? await api.interrupt(sid) }
@@ -403,8 +430,17 @@ public final class RoomEngine {
 
     func handle(_ event: EngineEvent) async {
         switch event {
+        case .sessionCreated(let session):
+            learnSubagent(session.id, parent: session.parentID)
+        case .toolUpdated(let sid, let tool):
+            if let child = tool.childSessionID { learnSubagent(child, parent: sid) }
         case .activity(let sid, let act):
-            guard let id = agentID(forSession: sid) else { return }
+            guard let id = agentID(forSession: sid) else {
+                if let owner = subagentOwners[sid] {
+                    subagentActivity(sid, owner: owner, working: act == .working || act == .waitingForPermission)
+                }
+                return
+            }
             switch act {
             case .working:
                 busy.insert(id)
@@ -426,7 +462,10 @@ public final class RoomEngine {
             guard let id = agentID(forSession: sid) else { return }
             await usageChanged(id, usage)
         case .executionEnded(let sid, let outcome, let error):
-            guard let id = agentID(forSession: sid) else { return }
+            guard let id = agentID(forSession: sid) else {
+                if let owner = subagentOwners[sid] { subagentActivity(sid, owner: owner, working: false) }
+                return
+            }
             await turnEnded(id, outcome: outcome, error: error)
         case .permissionAsked(let request):
             guard let id = agentID(forSession: request.sessionID), activity[id] != .capped else { return }
@@ -434,6 +473,12 @@ public final class RoomEngine {
         case .permissionReplied(let sid, _):
             guard let id = agentID(forSession: sid), activity[id] == .waitingForPermission else { return }
             activity[id] = busy.contains(id) ? .working : .idle
+        case .other(let type) where type == "server.connected":
+            // Events may have been missed while the connection was down, so a subagent that finished meanwhile would
+            // keep its agent waiting for good. Forget which subagents work; the next events report them again.
+            let owners = Set(workingSubagents.compactMap { subagentOwners[$0] })
+            workingSubagents = []
+            for owner in owners { scheduleSettle(owner) }
         default:
             break
         }
@@ -441,7 +486,9 @@ public final class RoomEngine {
 
     func turnEnded(_ id: UUID, outcome: String, error: String?) async {
         busy.remove(id)
-        let duty = turnDuty.removeValue(forKey: id)
+        await flushHeld(id)
+        // A duty deferred while its subagents worked counts for the turn their result started.
+        let duty = turnDuty.removeValue(forKey: id) ?? deferredDuty.removeValue(forKey: id)
         let text = await collectText(id)
         liveText[id] = nil
         if state.cappedAgents.contains(id) {
@@ -563,12 +610,14 @@ public final class RoomEngine {
     /// Sends a message that asks the agent to act (`prompt` or `injectSynthetic` with `wake: true`).
     /// If the agent is busy or the room is paused, the message waits in the agent's outbox.
     func deliver(_ id: UUID, _ message: OutgoingMessage) async {
+        await flushHeld(id)
         guard let sid = reserve(id, message) else { return }
         await transmit(id, sid, message)
     }
 
     /// Delivers several messages so that every duty is on record before the first one is sent.
     func deliverAll(_ items: [(UUID, OutgoingMessage)]) async {
+        for id in Set(items.map(\.0)) { await flushHeld(id) }
         var ready: [(UUID, String, OutgoingMessage)] = []
         for (id, message) in items {
             if let sid = reserve(id, message) { ready.append((id, sid, message)) }
@@ -582,7 +631,7 @@ public final class RoomEngine {
     /// `nil` when the message was queued or dropped.
     private func reserve(_ id: UUID, _ message: OutgoingMessage) -> String? {
         guard isActive(id), let sid = state.sessions[id] else { return nil }
-        if state.isPaused || busy.contains(id) {
+        if state.isPaused || busy.contains(id) || hasWorkingSubagents(id) {
             update { $0.outbox[id, default: []].append(message) }
             return nil
         }
@@ -597,6 +646,7 @@ public final class RoomEngine {
     }
 
     private func transmit(_ id: UUID, _ sid: String, _ message: OutgoingMessage) async {
+        if message.duty == .work || message.nudge == .work { await allowWorktreeEdits(id) }
         do {
             switch message.channel {
             case .prompt: try await api.prompt(sid, text: message.text, files: [])
@@ -620,13 +670,33 @@ public final class RoomEngine {
         }
     }
 
-    /// Text the agent reads on its next turn (`injectSynthetic` with `wake: false`).
+    /// Text the agent reads on its next turn (`injectSynthetic` with `wake: false`). During the agent's turn it
+    /// waits in `state.held` until the turn ends: the engine would read it inside the running turn and take another
+    /// step, so the reply the room parses would gain an answer to it.
     func inform(_ id: UUID, _ text: String) async {
         guard isActive(id), let sid = state.sessions[id] else { return }
+        if busy.contains(id) {
+            update { $0.held[id, default: []].append(text) }
+            return
+        }
         do {
             try await api.injectSynthetic(sid, text: text, wake: false)
         } catch {
             lastError = "Could not reach \(name(id)): \(error.localizedDescription)"
+        }
+    }
+
+    /// Sends the messages held during the agent's turn, oldest first. Does nothing while it is busy.
+    func flushHeld(_ id: UUID) async {
+        guard !busy.contains(id), let notes = state.held[id], !notes.isEmpty else { return }
+        update { $0.held[id] = nil }
+        guard isActive(id), let sid = state.sessions[id] else { return }
+        for note in notes {
+            do {
+                try await api.injectSynthetic(sid, text: note, wake: false)
+            } catch {
+                lastError = "Could not reach \(name(id)): \(error.localizedDescription)"
+            }
         }
     }
 
@@ -717,9 +787,14 @@ public final class RoomEngine {
     func afterTurn(_ id: UUID, turnDuty duty: TurnPurpose?, addressed: Bool) async {
         guard !state.isPaused, state.phase != .stopped, isActive(id) else { return }
         if !busy.contains(id), let duty, hasDuty(id, duty), !addressed {
-            await nudgeOrFallback(id, duty)
+            if hasWorkingSubagents(id) {
+                // Its turn ended because it started background subagents; their result wakes it.
+                deferredDuty[id] = duty
+            } else {
+                await nudgeOrFallback(id, duty)
+            }
         }
-        if !busy.contains(id), !state.isPaused, let next = dequeue(id) {
+        if !busy.contains(id), !hasWorkingSubagents(id), !state.isPaused, let next = dequeue(id) {
             await deliver(id, next)
         }
         await checkQuiescence()
@@ -757,7 +832,7 @@ public final class RoomEngine {
     /// Called when nobody is busy and nothing is queued. Agents that still owe something get a nudge or
     /// a fallback, so a run never stalls silently.
     func checkQuiescence() async {
-        guard !state.isPaused, state.pendingDecision == nil, state.phase.isRunning, busy.isEmpty,
+        guard !state.isPaused, state.pendingDecision == nil, state.phase.isRunning, busy.isEmpty, workingSubagents.isEmpty,
               state.outbox.values.allSatisfy(\.isEmpty) else { return }
         let waiting = agents.map(\.id).filter { isActive($0) && !(state.duties[$0] ?? []).isEmpty }
         if waiting.isEmpty {
@@ -794,6 +869,51 @@ public final class RoomEngine {
         }
     }
 
+    // MARK: - Subagents
+
+    /// True while any subagent session of the agent works.
+    public func hasWorkingSubagents(_ agentID: UUID) -> Bool {
+        workingSubagents.contains { subagentOwners[$0] == agentID }
+    }
+
+    /// Records a child session of an agent's session (or of one of its subagents).
+    func learnSubagent(_ sessionID: String, parent: String?) {
+        guard let parent, subagentOwners[sessionID] == nil, agentID(forSession: sessionID) == nil,
+              let owner = agentID(forSession: parent) ?? subagentOwners[parent] else { return }
+        subagentOwners[sessionID] = owner
+    }
+
+    func subagentActivity(_ sessionID: String, owner: UUID, working: Bool) {
+        if working {
+            guard workingSubagents.insert(sessionID).inserted else { return }
+            settleTasks.removeValue(forKey: owner)?.cancel()
+        } else {
+            guard workingSubagents.remove(sessionID) != nil, !hasWorkingSubagents(owner) else { return }
+            scheduleSettle(owner)
+        }
+    }
+
+    /// After an agent's last subagent finishes, gives the engine a moment to wake the agent with the result, then
+    /// checks on the agent if it did not.
+    func scheduleSettle(_ owner: UUID) {
+        settleTasks.removeValue(forKey: owner)?.cancel()
+        let delay = subagentSettleDelay
+        settleTasks[owner] = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            self.settleTasks[owner] = nil
+            await self.subagentsSettled(owner)
+        }
+    }
+
+    /// The agent's subagents are done and nothing woke it: nudge it for what it still owes, send what waits in its
+    /// outbox, and check whether the room is idle.
+    func subagentsSettled(_ owner: UUID) async {
+        guard !busy.contains(owner), !hasWorkingSubagents(owner) else { return }
+        let duty = deferredDuty.removeValue(forKey: owner)
+        await afterTurn(owner, turnDuty: duty, addressed: false)
+    }
+
     // MARK: - Spending caps
 
     func usageChanged(_ id: UUID, _ usage: Usage) async {
@@ -809,10 +929,12 @@ public final class RoomEngine {
             $0.cappedAgents.append(id)
             $0.duties[id] = nil
             $0.outbox[id] = nil
+            $0.held[id] = nil
             $0.interruptedAgents.removeAll { $0 == id }
         }
         activity[id] = .capped
         turnDuty[id] = nil
+        deferredDuty[id] = nil
         notice("\(name(id)) reached its spending cap (\(Self.dollars(spent)) of \(Self.dollars(cap))) and was stopped. It gets no more turns.")
         if wasBusy, let sid = state.sessions[id] { try? await api.interrupt(sid) }
         await continueWithout(id, openDuties: open)

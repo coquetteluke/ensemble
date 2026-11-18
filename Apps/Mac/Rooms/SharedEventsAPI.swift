@@ -8,7 +8,9 @@ import EnsembleKit
 /// connections per host (checked against OpenCode 2.3: of 9 streams on one client, only 6 connected). The
 /// session store, the remote host, the rooms controller and every open `RoomEngine` each call `events()`, so the
 /// fourth or fifth open room would silently get no events. Here one upstream stream fans out to any number of
-/// subscribers. Every other call goes straight to the wrapped engine.
+/// subscribers. Every other call goes straight to the wrapped engine, including the optional abilities (history,
+/// effort, commands, billing, steering, session rules, folder models, worktree access): a call the wrapped engine
+/// cannot serve fails as it would on an engine router without that ability.
 final class SharedEventsAPI: OpenCodeAPI, Sendable {
     let base: any OpenCodeAPI
 
@@ -117,4 +119,97 @@ final class SharedEventsAPI: OpenCodeAPI, Sendable {
     }
     func setSchedulePaused(_ scheduleID: String, paused: Bool) async throws { try await base.setSchedulePaused(scheduleID, paused: paused) }
     func deleteSchedule(_ scheduleID: String) async throws { try await base.deleteSchedule(scheduleID) }
+}
+
+// MARK: Optional abilities
+
+extension SharedEventsAPI {
+    /// The wrapped engine as `C`, or the error an engine router gives for an engine without that ability.
+    private func ability<C>(_ type: C.Type, _ feature: String) throws -> C {
+        guard let control = base as? C else {
+            throw EngineRouterError.notSupported(engine: String(describing: Swift.type(of: base)), feature: feature)
+        }
+        return control
+    }
+}
+
+extension SharedEventsAPI: EngineHistoryControl, EngineForkAvailability {
+    func fork(_ sessionID: String, atMessageID messageID: String?) async throws -> EngineSession {
+        try await ability((any EngineHistoryControl).self, "be forked").fork(sessionID, atMessageID: messageID)
+    }
+
+    func rewind(_ sessionID: String, toBeforeMessageID messageID: String) async throws {
+        try await ability((any EngineHistoryControl).self, "be rewound").rewind(sessionID, toBeforeMessageID: messageID)
+    }
+
+    var rewindRestoresFiles: Bool { (base as? any EngineHistoryControl)?.rewindRestoresFiles ?? false }
+
+    func canFork(_ sessionID: String) -> Bool {
+        if let availability = base as? any EngineForkAvailability { return availability.canFork(sessionID) }
+        return base is any EngineHistoryControl
+    }
+}
+
+extension SharedEventsAPI: EngineModelOptionsControl {
+    func modelOptions(for model: ModelRef) async throws -> ModelOptions {
+        try await ability((any EngineModelOptionsControl).self, "change effort or fast mode").modelOptions(for: model)
+    }
+
+    func setEffort(_ sessionID: String, effort: EffortLevel?) async throws {
+        try await ability((any EngineModelOptionsControl).self, "change effort").setEffort(sessionID, effort: effort)
+    }
+
+    func setFastMode(_ sessionID: String, enabled: Bool) async throws {
+        try await ability((any EngineModelOptionsControl).self, "use fast mode").setFastMode(sessionID, enabled: enabled)
+    }
+}
+
+extension SharedEventsAPI: EngineCommandsControl {
+    func commands(directory: String?) async throws -> [EngineCommand] {
+        guard let control = base as? any EngineCommandsControl else { return [] }
+        return try await control.commands(directory: directory)
+    }
+
+    func runCommand(_ sessionID: String, name: String, arguments: String) async throws {
+        try await ability((any EngineCommandsControl).self, "run slash commands").runCommand(sessionID, name: name, arguments: arguments)
+    }
+}
+
+extension SharedEventsAPI: EngineModelBilling {
+    func modelBilling() async throws -> [String: ModelBilling] {
+        guard let billing = base as? any EngineModelBilling else { return [:] }
+        return try await billing.modelBilling()
+    }
+}
+
+extension SharedEventsAPI: EngineSteeringControl {
+    func steer(_ sessionID: String, text: String, files: [URL]) async throws {
+        try await ability((any EngineSteeringControl).self, "take messages during a turn").steer(sessionID, text: text, files: files)
+    }
+
+    func canSteer(_ sessionID: String) -> Bool { (base as? any EngineSteeringControl)?.canSteer(sessionID) ?? false }
+
+    func queuedDelivery(for sessionID: String) -> QueuedDelivery {
+        (base as? any EngineSteeringControl)?.queuedDelivery(for: sessionID) ?? .inOrder
+    }
+}
+
+extension SharedEventsAPI: EngineSessionRulesReading {
+    func permissionRules(_ sessionID: String) async throws -> [PermissionRule] {
+        try await ability((any EngineSessionRulesReading).self, "report their permission rules").permissionRules(sessionID)
+    }
+}
+
+extension SharedEventsAPI: EngineFolderModels {
+    func models(directory: String?) async throws -> [ModelInfo] {
+        guard let folders = base as? any EngineFolderModels else { return try await base.models() }
+        return try await folders.models(directory: directory)
+    }
+}
+
+extension SharedEventsAPI: EngineWorktreeAccess {
+    func allowWorktreeEdits(_ sessionID: String, worktreePath: String) async throws -> Bool {
+        guard let access = base as? any EngineWorktreeAccess else { return false }
+        return try await access.allowWorktreeEdits(sessionID, worktreePath: worktreePath)
+    }
 }

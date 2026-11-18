@@ -27,6 +27,13 @@
     {"match": ["Post a short summary"],
      "text": "Summary: Ada wrote ada.txt and Byron wrote byron.txt. Both pieces were reviewed and merged."},
     {"match": ["Reply DONE on its own line", "The room resumed"],
-     "text": "DONE"}
+     "text": "DONE"},
+
+    {"match": ["git config marker"],
+     "tool": {"name": "write", "arguments": {"path": ".git/config", "content": "[core]\n\tfsmonitor = /tmp/ensemble-not-allowed\n"}},
+     "then": "I changed the git config."},
+    {"match": ["other worktree marker"],
+     "tool": {"name": "write", "arguments": {"path": ".ensemble/worktrees/ensemble-mock-team-ada/byron.txt", "content": "Byron was here\n"}},
+     "then": "I wrote in Ada's worktree."}
   ]
 }

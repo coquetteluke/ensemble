@@ -50,8 +50,10 @@ public protocol GitOps: Sendable {
 #if os(macOS)
 /// `GitOps` with the `git` command line tool.
 ///
-/// Worktrees go in `<repo>/.ensemble/worktrees/<branch>` so agents whose sessions run in the project folder
-/// can reach them without extra folder permissions; `.ensemble/` is added to `.git/info/exclude`.
+/// Worktrees go in `<room folder>/.ensemble/worktrees/<branch>`, inside the folder the agents' sessions run in (also
+/// when the room's folder is below the repository's top), so they need no extra folder permission and
+/// `PermissionRules.worktreeEditRules` can scope each agent's edits to its own worktree. A dot folder keeps build
+/// tools, test runners and file watchers away from the copies. `.ensemble/` is added to `.git/info/exclude`.
 public struct ProcessGitOps: GitOps {
     public var gitPath: String
 
@@ -76,7 +78,10 @@ public struct ProcessGitOps: GitOps {
         let top = try await checked(["-C", repo, "rev-parse", "--show-toplevel"]).trimmingCharacters(in: .whitespacesAndNewlines)
         try await excludeEnsembleFolder(top: top)
         let folder = branch.replacingOccurrences(of: "/", with: "-")
-        let path = (top as NSString).appendingPathComponent(".ensemble/worktrees/\(folder)")
+        // The room's folder as git spells it (the top's real path plus the folder's place in the repository).
+        let prefix = try await checked(["-C", repo, "rev-parse", "--show-prefix"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let roomFolder = prefix.isEmpty ? top : (top as NSString).appendingPathComponent(prefix)
+        let path = (roomFolder as NSString).appendingPathComponent(PermissionRules.worktreeFolder + "/" + folder)
         if FileManager.default.fileExists(atPath: (path as NSString).appendingPathComponent(".git")) {
             return path
         }

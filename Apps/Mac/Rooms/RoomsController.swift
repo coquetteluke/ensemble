@@ -13,6 +13,8 @@ final class RoomsController {
 
     /// Every saved room, newest first. Open rooms show their engine's live state instead.
     private(set) var saved: [RoomState] = []
+    /// True once the saved rooms have been read.
+    private(set) var isLoaded = false
     /// Open engines by room id.
     private(set) var engines: [UUID: RoomEngine] = [:]
     /// The room the window shows.
@@ -23,8 +25,6 @@ final class RoomsController {
     private(set) var permissions: [String: [PermissionRequest]] = [:]
     /// Subagent (child) session id -> the room session it belongs to, so subagent prompts show in the room.
     private(set) var childSessions: [String: String] = [:]
-    /// Subagent sessions working right now. Their agent shows as working while its own turn has ended.
-    private(set) var workingChildren: Set<String> = []
     /// Live transcripts of agent sessions the room view opened, by session id.
     private(set) var transcripts: [String: AgentTranscript] = [:]
     var showNewRoom = false
@@ -79,6 +79,7 @@ final class RoomsController {
         for engine in list { engines[engine.state.id] = engine }
         saved = list.map(\.state).reversed()
         modelsByDirectory[""] = models
+        isLoaded = true
         for request in requests {
             permissions[roomSession(for: request.sessionID) ?? request.sessionID, default: []].append(request)
         }
@@ -88,6 +89,7 @@ final class RoomsController {
     func reload() {
         do {
             saved = try store.list().reversed()
+            isLoaded = true
         } catch {
             lastError = "Could not read saved rooms: \(error.localizedDescription)"
         }
@@ -97,12 +99,13 @@ final class RoomsController {
         modelsByDirectory[directory ?? ""] ?? modelsByDirectory[""] ?? []
     }
 
-    /// Models can differ per project folder (a project `opencode.json` can add providers).
+    /// Models can differ per project folder (a project `opencode.json` can add providers). Through the engine router
+    /// the list has every engine's models (Claude, Gemini and OpenCode), so a room can mix them.
     func loadModels(directory: String?) async {
         do {
             let list: [ModelInfo]
-            if let client = baseAPI as? OpenCodeClient, let directory, !directory.isEmpty {
-                list = try await client.models(directory: directory)
+            if let folders = api as? any EngineFolderModels, let directory, !directory.isEmpty {
+                list = try await folders.models(directory: directory)
             } else {
                 list = try await api.models()
             }
@@ -253,6 +256,13 @@ final class RoomsController {
         rooms.reduce(0) { $0 + needsYouCount($1.id) }
     }
 
+    /// Rooms waiting on a decision from the user (plan approval, a review stalemate, a verdict, a merge, a pause the
+    /// room made). Permission prompts are left out: room agents' sessions are in the session list, which counts
+    /// their prompts already.
+    var decisionsWaiting: Int {
+        rooms.filter(\.needsUser).count
+    }
+
     /// Session ids that belong to rooms (the session list may want to hide or tag them).
     var roomSessionIDs: Set<String> {
         Set(rooms.flatMap { $0.sessions.values })
@@ -291,13 +301,9 @@ final class RoomsController {
             return .waitingForPermission
         }
         let own = engine.activity[agentID] ?? .idle
-        if own == .idle, let sid = engine.sessionID(for: agentID), hasWorkingSubagents(sid) { return .working }
+        // OpenCode runs subagents in the background: the agent's own turn can end while they work.
+        if own == .idle, engine.hasWorkingSubagents(agentID) { return .working }
         return own
-    }
-
-    /// True while a subagent of this room session is working (OpenCode runs subagents in the background).
-    func hasWorkingSubagents(_ sessionID: String) -> Bool {
-        workingChildren.contains { childSessions[$0] == sessionID }
     }
 
     func liveText(of agentID: UUID, in engine: RoomEngine) -> String? {
@@ -398,11 +404,7 @@ final class RoomsController {
         case .toolUpdated(let sid, let tool):
             guard let model = transcripts[sid] else { return }
             TranscriptReducer.upsertTool(&model.items, tool)
-        case .activity(let sid, let act):
-            guard childSessions[sid] != nil else { return }
-            if act == .working || act == .waitingForPermission { workingChildren.insert(sid) } else { workingChildren.remove(sid) }
         case .executionEnded(let sid, _, _):
-            if workingChildren.contains(sid) { workingChildren.remove(sid) }
             guard let model = transcripts[sid] else { return }
             TranscriptReducer.finishStreaming(&model.items)
             // Room messages (synthetic) reach the session without stream events: reload once the turn ends.

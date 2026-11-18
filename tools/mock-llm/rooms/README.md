@@ -14,6 +14,8 @@ start `mock_llm.py` with it.
 | Work for Ada / Byron | `Your assignment: create ada.txt` / `byron.txt` | `write` into the agent's worktree, then `DONE` |
 | Summary | `Post a short summary` | a one-line summary |
 | Format retries, resume | `Reply DONE on its own line`, `The room resumed` | `DONE` |
+| A real dot path | `git config marker` | `write` to `.git/config` (the test rejects the prompt) |
+| Another agent's worktree | `other worktree marker` | `write` into Ada's worktree (the test rejects the prompt) |
 
 The work rules write to `.ensemble/worktrees/ensemble-mock-team-<agent>/`, the worktree `ProcessGitOps` makes for a
 room titled `Mock Team` with agents named `Ada` and `Byron` (branch `ensemble/mock-team/<agent>`). Keep the test's
@@ -21,9 +23,12 @@ room title and agent names in step with this file.
 
 `pause-script.json` streams the opening argument slowly so the pause test can interrupt it mid-turn.
 
+`subagent-script.json` is the team script with one change: Byron's work starts a background subagent (`subagent` tool)
+that writes `byron.txt` slowly, and Byron says `DONE` only when the subagent's result (`<subagent ...>`) wakes him.
+
 The team tests answer every permission prompt from the room's sessions with Allow once, as the room view does. In
-Auto mode they record a known issue when prompts appear: worktrees live under `.ensemble/worktrees/`, and the
-permission rules ask before any edit under a dot folder.
+Auto mode there should be none: each agent's session allows edits in its own worktree
+(`PermissionRules.worktreeEditRules`), while `.git/config` and other agents' worktrees still ask.
 
 Run the live room tests:
 

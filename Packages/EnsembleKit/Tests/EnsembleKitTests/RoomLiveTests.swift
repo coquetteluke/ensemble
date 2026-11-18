@@ -294,12 +294,9 @@ struct RoomLiveTests {
             let prompts = try await runAnsweringPrompts("the team to finish", timeout: 180, engine: engine, harness: h) {
                 engine.state.phase == .finished
             }
-            // Conflict between the room engine and the permission rules: worktrees live under `.ensemble/worktrees/`
-            // in the project, and `PermissionRules.dotPathEditPatterns` makes every edit under a dot folder ask, so in
-            // Auto (and Accept edits) every Team agent's own work asks first.
-            withKnownIssue("Auto mode asks before edits in .ensemble/worktrees", isIntermittent: true) {
-                #expect(prompts.isEmpty, "\(prompts.map(\.title))")
-            }
+            // Each agent's session allows edits in its own worktree (`PermissionRules.worktreeEditRules`), so in Auto
+            // nobody's own work asks.
+            #expect(prompts.isEmpty, "\(prompts.map(\.title))")
 
             // Plan and assignments.
             let state = engine.state
@@ -321,14 +318,12 @@ struct RoomLiveTests {
             #expect(board.contains { $0.from == .room && $0.text == "Merged ensemble/mock-team/ada into main." })
             #expect(board.contains { $0.from == .room && $0.text == "Merged ensemble/mock-team/byron into main." })
             #expect(board.last { $0.from == .agent(ada.id) }?.text.hasPrefix("Summary:") == true)
-            // Engine issue against the real service: `inform` (synthetic, wake false) to an agent that is still in a
-            // turn is drained by OpenCode at the end of that turn, so the agent takes an extra model step inside the
-            // same execution and its reply is appended to the turn the room parses. Here Byron is often still
-            // reviewing when Ada's APPROVE is relayed to him, and his review gains the mock's "OK." reply.
-            withKnownIssue("inform to a busy agent extends its current turn", isIntermittent: true) {
-                let expected = "I read the change and it does what the assignment asks.\nAPPROVE"
-                #expect(board.filter { $0.kind == .review }.allSatisfy { $0.text == expected })
-            }
+            // Messages for a busy agent's information wait until its turn ends (`RoomState.held`). Before, OpenCode read
+            // them inside the running turn and the agent answered there, so a review gained the mock's "OK." reply.
+            let expected = "I read the change and it does what the assignment asks.\nAPPROVE"
+            #expect(board.filter { $0.kind == .review }.allSatisfy { $0.text == expected },
+                    "\(board.filter { $0.kind == .review }.map(\.text))")
+            #expect(state.held.isEmpty)
 
             // Branches, worktrees and the merged files on main.
             let branches = try h.git(["branch", "--list", "ensemble/*"])
@@ -416,6 +411,88 @@ struct RoomLiveTests {
             #expect(engine.state.board.contains { $0.from == .room && $0.text == "Paused." })
             #expect(engine.state.board.contains { $0.from == .room && $0.text == "Resumed." })
             #expect(fallbackNotices(engine).isEmpty, "\(fallbackNotices(engine))")
+            dumpRoom(engine, h)
+        }
+    }
+
+    /// Auto lets each Team agent edit its own worktree without asking, but a real `.git/config` edit and an edit in
+    /// another agent's worktree still ask.
+    @Test func teamAgentInAutoEditsOnlyItsOwnWorktreeWithoutAsking() async throws {
+        try await withRoomHarness { h in
+            let (ada, byron) = agents()
+            let spec = RoomSpec(title: "Mock Team", directory: h.path, agents: [ada, byron], mode: .team,
+                                leadAgentID: ada.id, permissionMode: .auto)
+            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: InMemoryRoomStore(), git: ProcessGitOps())
+            defer { engine.close() }
+            h.track(engine.state.sessions.values)
+
+            await engine.start(task: "Each agent writes one greeting file.")
+            let prompts = try await runAnsweringPrompts("the team to finish", timeout: 180, engine: engine, harness: h) {
+                engine.state.phase == .finished
+            }
+            #expect(prompts.isEmpty, "\(prompts.map(\.title))")
+            #expect(try String(contentsOfFile: h.path + "/byron.txt", encoding: .utf8) == "Hello from Byron\n")
+            let byronSession = try #require(engine.sessionID(for: byron.id))
+            let rules = try await h.client.permissionRules(byronSession)
+            #expect(PermissionRules.mode(for: rules) == .auto)
+            #expect(PermissionRules.worktree(in: rules) == ".ensemble/worktrees/ensemble-mock-team-byron")
+
+            // The same agent, same session: a real dot path asks, and so does another agent's worktree.
+            let config = h.path + "/.git/config"
+            let configBefore = try String(contentsOfFile: config, encoding: .utf8)
+            for (marker, path) in [("git config marker", ".git/config"),
+                                   ("other worktree marker", ".ensemble/worktrees/ensemble-mock-team-ada/byron.txt")] {
+                await engine.send("@Byron \(marker): please do it")
+                var asked: PermissionRequest?
+                let deadline = Date().addingTimeInterval(60)
+                while asked == nil && Date() < deadline {
+                    asked = try await h.client.pendingPermissions().first { $0.sessionID == byronSession }
+                    if asked == nil { try await Task.sleep(for: .milliseconds(200)) }
+                }
+                let request = try #require(asked, "no prompt for \(path)")
+                #expect(request.kind == "edit")
+                #expect(request.title.contains(path), "\(request.title)")
+                try await h.client.replyPermission(sessionID: byronSession, requestID: request.id, decision: .reject, message: nil)
+                try await waitForRoom("Byron's turn to end", timeout: 60, engine: engine, harness: h) {
+                    engine.activity[byron.id] == .idle
+                }
+            }
+            #expect(try String(contentsOfFile: config, encoding: .utf8) == configBefore)
+            #expect(!FileManager.default.fileExists(atPath: h.path + "/.ensemble/worktrees/ensemble-mock-team-ada/byron.txt"))
+            dumpRoom(engine, h)
+        }
+    }
+
+    /// Byron's work starts a background subagent, so his turn ends at once without DONE. The room waits for the
+    /// subagent (which writes byron.txt in Byron's worktree without asking, under his rules), holds Ada's review
+    /// request for Byron, and takes DONE from the turn the subagent's result starts. No format nudge goes out.
+    @Test func teamWaitsForABackgroundSubagent() async throws {
+        try await withRoomHarness(script: "tools/mock-llm/rooms/subagent-script.json") { h in
+            let (ada, byron) = agents()
+            let spec = RoomSpec(title: "Mock Team", directory: h.path, agents: [ada, byron], mode: .team,
+                                leadAgentID: ada.id, permissionMode: .auto)
+            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: InMemoryRoomStore(), git: ProcessGitOps())
+            defer { engine.close() }
+            h.track(engine.state.sessions.values)
+
+            await engine.start(task: "Each agent writes one greeting file.")
+            try await waitForRoom("Byron's subagent to start", timeout: 60, engine: engine, harness: h) {
+                engine.hasWorkingSubagents(byron.id)
+            }
+            let prompts = try await runAnsweringPrompts("the team to finish", timeout: 180, engine: engine, harness: h) {
+                engine.state.phase == .finished
+            }
+            h.track(try await h.client.children(try #require(engine.sessionID(for: byron.id))).map(\.id))
+            #expect(prompts.isEmpty, "\(prompts.map(\.title))")
+            let mockPrompts = h.mockPrompts()
+            #expect(!mockPrompts.contains { $0.contains("Reply DONE on its own line") }, "\(mockPrompts)")
+            #expect(fallbackNotices(engine).isEmpty, "\(fallbackNotices(engine))")
+            let state = engine.state
+            #expect(state.assignments.allSatisfy { $0.status == .merged })
+            #expect(state.assignments.first { $0.agentID == byron.id }?.changedFiles == ["byron.txt"])
+            #expect(engine.messages(from: "Byron").contains { $0.text.hasPrefix("My helper wrote byron.txt") })
+            #expect(try String(contentsOfFile: h.path + "/byron.txt", encoding: .utf8) == "Hello from Byron's helper\n")
+            #expect(engine.workingSubagents.isEmpty)
             dumpRoom(engine, h)
         }
     }

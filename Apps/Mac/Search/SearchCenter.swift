@@ -31,8 +31,27 @@ final class SearchCenter {
     var paletteQuery = "" { didSet { paletteSelection = 0 } }
     var paletteSelection = 0
 
-    /// The file shown in the viewer pane.
-    var filePreview: FileLink?
+    /// The window whose right-hand pane shows files. Its `WindowState.sidePane` is the one record of what that pane
+    /// shows (context panel, file or review), so the file viewer never fights the other panes.
+    @ObservationIgnored weak var window: WindowState?
+    /// The app's rooms, for the palette's New room.
+    @ObservationIgnored weak var rooms: RoomsController?
+    /// The file shown without a window (snapshots), and the last file opened (keeps its column).
+    private var detachedPreview: FileLink?
+    @ObservationIgnored private var lastOpened: FileLink?
+
+    /// The file shown in the viewer pane: the window's side pane while it shows a file.
+    var filePreview: FileLink? {
+        get {
+            guard let window else { return detachedPreview }
+            guard window.showContextPanel, case .file(let path, let line) = window.sidePane else { return nil }
+            if let last = lastOpened, last.path == path, last.line == line { return last }
+            return FileLink(path: path, line: line)
+        }
+        set {
+            if let newValue { openFile(newValue) } else { closeFile() }
+        }
+    }
 
     /// The message the transcript scrolls to and flashes (cleared a few seconds later).
     private(set) var transcriptFocus: TranscriptFocus?
@@ -160,11 +179,20 @@ final class SearchCenter {
     // MARK: Files
 
     func openFile(_ link: FileLink) {
-        withAnimation(.easeOut(duration: 0.18)) { filePreview = link }
+        lastOpened = link
+        guard let window else {
+            withAnimation(.easeOut(duration: 0.18)) { detachedPreview = link }
+            return
+        }
+        window.openSidePane(.file(path: link.path, line: link.line))
     }
 
     func closeFile() {
-        withAnimation(.easeOut(duration: 0.18)) { filePreview = nil }
+        guard let window else {
+            withAnimation(.easeOut(duration: 0.18)) { detachedPreview = nil }
+            return
+        }
+        if case .file = window.sidePane { window.closeSidePane() }
     }
 
     /// What file links in agent text do: open the viewer, with the right-click menu from `FileActions`.

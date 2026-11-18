@@ -10,8 +10,9 @@ import Testing
 /// rule for that agent whose `contains` text is in the input picks the reply, and the fake emits
 /// `activity(.working)`, two `textDelta`s, `textEnded`, `usageUpdated` and `executionEnded` through
 /// `events()`. Inputs to a busy session queue, like the real service. `hold` rules stop after
-/// `activity(.working)` (and their usage) until `release` or `interrupt`. Every call is recorded.
-final class FakeEngine: OpenCodeAPI {
+/// `activity(.working)` (and their usage) until `release` or `interrupt`. Every call is recorded, with whether the
+/// session was in an execution at the time. It also records `allowWorktreeEdits` calls (`EngineWorktreeAccess`).
+final class FakeEngine: OpenCodeAPI, EngineWorktreeAccess, EngineFolderModels {
     struct Rule: Sendable {
         var agent: String
         var contains: String
@@ -29,8 +30,10 @@ final class FakeEngine: OpenCodeAPI {
         var channel: Channel
         var text: String
         var wake: Bool
+        /// The session was in an execution when this arrived.
+        var busy = false
 
-        var description: String { "\(agent ?? sessionID) \(channel.rawValue)\(wake ? " wake" : ""): \(text.prefix(80))" }
+        var description: String { "\(agent ?? sessionID) \(channel.rawValue)\(wake ? " wake" : "")\(busy ? " (busy)" : ""): \(text.prefix(80))" }
     }
 
     struct Created: Sendable, Equatable {
@@ -57,6 +60,10 @@ final class FakeEngine: OpenCodeAPI {
         var transcripts: [String: [TranscriptItem]] = [:]
         var continuations: [UUID: AsyncStream<EngineEvent>.Continuation] = [:]
         var changedFiles: [String: [String]] = [:]
+        var worktreeGrants: [(sessionID: String, path: String, sentCount: Int)] = []
+        var models: [ModelInfo] = []
+        var modelDirectories: [String?] = []
+        var sessionPrefix = "ses_"
         var defaultReply = "OK."
 
         func session(of agent: String) -> String? {
@@ -80,6 +87,17 @@ final class FakeEngine: OpenCodeAPI {
     }
 
     private let state = Mutex(State())
+
+    /// `sessionPrefix` keeps session ids apart when two fakes sit behind one engine router.
+    init(sessionPrefix: String = "ses_", models: [ModelInfo] = []) {
+        state.withLock {
+            $0.sessionPrefix = sessionPrefix
+            $0.models = models
+        }
+    }
+
+    /// Folders `models(directory:)` was asked for.
+    var modelDirectories: [String?] { state.withLock { $0.modelDirectories } }
 
     // MARK: Scripting
 
@@ -118,6 +136,10 @@ final class FakeEngine: OpenCodeAPI {
     var created: [Created] { state.withLock { $0.created } }
     var interrupts: [String] { state.withLock { $0.interrupts } }
     var unmatched: [String] { state.withLock { $0.unmatched } }
+    /// `allowWorktreeEdits` calls: agent, worktree path, and how many inputs had been sent before it.
+    var worktreeGrants: [(agent: String?, path: String, sentCount: Int)] {
+        state.withLock { s in s.worktreeGrants.map { (s.agentBySession[$0.sessionID], $0.path, $0.sentCount) } }
+    }
 
     func sessionID(of agent: String) -> String? {
         state.withLock { $0.session(of: agent) }
@@ -151,7 +173,7 @@ final class FakeEngine: OpenCodeAPI {
     func createSession(directory: String, model: ModelRef?, agent: String?, permissionMode: PermissionMode,
                        parentID: String?) async throws -> EngineSession {
         let id: String = state.withLock { s in
-            let id = "ses_\(s.nextSession)"
+            let id = "\(s.sessionPrefix)\(s.nextSession)"
             s.nextSession += 1
             s.created.append(Created(sessionID: id, directory: directory, model: model, permissionMode: permissionMode))
             return id
@@ -206,6 +228,11 @@ final class FakeEngine: OpenCodeAPI {
     func replyPermission(sessionID: String, requestID: String, decision: PermissionDecision, message: String?) async throws {}
     func pendingPermissions() async throws -> [PermissionRequest] { [] }
 
+    func allowWorktreeEdits(_ sessionID: String, worktreePath: String) async throws -> Bool {
+        state.withLock { $0.worktreeGrants.append((sessionID, worktreePath, $0.sent.count)) }
+        return true
+    }
+
     func context(_ sessionID: String) async throws -> ContextBreakdown {
         ContextBreakdown(usedTokens: 0, limitTokens: 1, categories: [])
     }
@@ -218,7 +245,14 @@ final class FakeEngine: OpenCodeAPI {
     }
 
     func connectors() async throws -> [ConnectorInfo] { [] }
-    func models() async throws -> [ModelInfo] { [] }
+    func models() async throws -> [ModelInfo] { state.withLock { $0.models } }
+
+    func models(directory: String?) async throws -> [ModelInfo] {
+        state.withLock { s in
+            s.modelDirectories.append(directory)
+            return s.models
+        }
+    }
     func providers() async throws -> [ProviderInfo] { [] }
     func setAPIKey(providerID: String, key: String) async throws {}
     func removeAPIKey(providerID: String) async throws {}
@@ -249,7 +283,8 @@ final class FakeEngine: OpenCodeAPI {
                 let rest = text.dropFirst("[Room] You are ".count)
                 if let comma = rest.firstIndex(of: ",") { s.agentBySession[sessionID] = String(rest[..<comma]) }
             }
-            s.sent.append(Sent(sessionID: sessionID, agent: s.agentBySession[sessionID], channel: channel, text: text, wake: wake))
+            s.sent.append(Sent(sessionID: sessionID, agent: s.agentBySession[sessionID], channel: channel, text: text, wake: wake,
+                               busy: s.busy.contains(sessionID)))
         }
     }
 

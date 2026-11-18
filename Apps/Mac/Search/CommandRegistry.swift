@@ -80,7 +80,7 @@ struct AppShortcut: Hashable {
 
 /// Every command the app has. The order is the palette's order when nothing is typed.
 enum AppCommandID: String, CaseIterable, Identifiable {
-    case newSession, searchTranscripts, keyboardShortcuts, commandPalette, settings, pairIPhone
+    case newSession, newRoom, searchTranscripts, keyboardShortcuts, commandPalette, settings, pairIPhone
     case sendMessage, stopAgent, openHub, openScheduled, archiveSession, forkSession, compactConversation, revealFolder
     case switchModel, switchMode, modeAsk, modeAcceptEdits, modeAuto, modeBypass, changeEffort, toggleFastMode, sideQuestion, focusComposer
     case allowOnce, alwaysAllow, reject
@@ -94,6 +94,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .newSession: "New session"
+        case .newRoom: "New room"
         case .searchTranscripts: "Search sessions"
         case .keyboardShortcuts: "Show keyboard shortcuts"
         case .commandPalette: "Command palette"
@@ -138,7 +139,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
 
     var area: CommandArea {
         switch self {
-        case .newSession, .settings, .pairIPhone: .general
+        case .newSession, .newRoom, .settings, .pairIPhone: .general
         case .searchTranscripts, .keyboardShortcuts, .commandPalette: .search
         case .sendMessage, .stopAgent, .openHub, .openScheduled, .archiveSession, .forkSession, .compactConversation, .revealFolder: .sessions
         case .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modeBypass, .changeEffort, .toggleFastMode, .sideQuestion,
@@ -153,6 +154,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .newSession: "square.and.pencil"
+        case .newRoom: "person.3"
         case .searchTranscripts: "magnifyingglass"
         case .keyboardShortcuts: "keyboard"
         case .commandPalette: "command"
@@ -199,6 +201,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
     var shortcut: AppShortcut? {
         switch self {
         case .newSession: AppShortcut("n")
+        case .newRoom: AppShortcut("n", [.command, .shift])
         case .searchTranscripts: AppShortcut("k")
         case .keyboardShortcuts: AppShortcut("/")
         case .commandPalette: AppShortcut("p", [.command, .shift])
@@ -224,6 +227,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
     var keywords: [String] {
         switch self {
         case .newSession: ["chat", "start", "create"]
+        case .newRoom: ["team", "debate", "round table", "agents", "together"]
         case .searchTranscripts: ["find", "transcripts", "messages", "history"]
         case .keyboardShortcuts: ["keys", "help", "hotkeys"]
         case .settings: ["preferences", "options", "api keys", "accounts"]
@@ -328,7 +332,7 @@ enum CommandRegistry {
     static func title(_ id: AppCommandID, _ context: CommandContext) -> String {
         switch id {
         case .toggleSidebar: context.window.showSidebar ? "Hide sidebar" : "Show sidebar"
-        case .toggleContextPanel: context.window.showContextPanel ? "Hide context panel" : "Show context panel"
+        case .toggleContextPanel: context.window.contextPanelVisible ? "Hide context panel" : "Show context panel"
         case .toggleFastMode: (context.store?.selected?.fastMode ?? false) ? "Turn fast mode off" : "Turn fast mode on"
         default: id.title
         }
@@ -339,6 +343,7 @@ enum CommandRegistry {
         let session = context.window.route == .session ? store?.selected : nil
         switch id {
         case .newSession, .searchTranscripts: return store != nil
+        case .newRoom: return context.search.rooms != nil
         case .sendMessage, .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modeBypass, .focusComposer,
              .archiveSession, .revealFolder, .compactConversation, .sideQuestion:
             return session != nil
@@ -365,6 +370,7 @@ enum CommandRegistry {
         let session = window.route == .session ? store?.selected : nil
         switch id {
         case .newSession: window.beginNewSession()
+        case .newRoom: search.rooms?.beginNewRoom()
         case .searchTranscripts: search.show(.search)
         case .keyboardShortcuts: search.show(.shortcuts)
         case .commandPalette: search.show(.palette)

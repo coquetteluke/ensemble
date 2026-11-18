@@ -1,12 +1,14 @@
 import SwiftUI
 import EnsembleKit
 
-/// Left sidebar: New session, Session Hub, Scheduled, search, pinned sessions, the session list (grouped by
+/// Left sidebar: New session, Session Hub, Scheduled, search, pinned sessions, rooms, the session list (grouped by
 /// project, state or date), Settings. Rows show a needs-you badge, a working spinner, or a failed, unread or
 /// completed mark.
 struct SidebarView: View {
     let store: SessionStore
     @Bindable var window: WindowState
+    /// Rooms; nil before the app has made the controller.
+    var rooms: RoomsController?
     /// Snapshots pass a fixed grouping; the app uses the saved choice.
     var groupingOverride: SidebarGrouping?
     @Environment(\.theme) private var theme
@@ -41,8 +43,10 @@ struct SidebarView: View {
                 SidebarNavRow(symbol: "plus", title: "New session", accentIcon: true, shortcut: "\u{2318}N") {
                     window.beginNewSession()
                 }
+                // Prompts from room agents are in `store.needsYouTotal` (their sessions are in the list); rooms add the
+                // decisions they wait on.
                 SidebarNavRow(symbol: "square.grid.2x2", title: "Session Hub", selected: window.route == .hub,
-                              badge: store.needsYouTotal) {
+                              badge: store.needsYouTotal + (rooms?.decisionsWaiting ?? 0)) {
                     window.route = .hub
                 }
                 SidebarNavRow(symbol: "clock", title: "Scheduled", selected: window.route == .scheduled,
@@ -61,6 +65,12 @@ struct SidebarView: View {
                 VStack(alignment: .leading, spacing: theme.z(14)) {
                     if !arrangement.pinned.isEmpty {
                         pinnedSection(arrangement.pinned, prompts: prompts)
+                    }
+                    if let rooms, showsRooms(rooms) {
+                        RoomsSidebarSection(controller: rooms, search: window.searchText, isShowingRoom: window.route == .room,
+                                            onSelect: { window.openRoom($0, rooms: rooms) },
+                                            onNewRoom: { rooms.beginNewRoom() },
+                                            collapsed: isCollapsed("rooms"), onToggle: { toggle("rooms") })
                     }
                     if !arrangement.groups.isEmpty || (store.isLoaded && !store.projects.isEmpty) {
                         sessionsSection(arrangement.groups, prompts: prompts)
@@ -163,6 +173,11 @@ struct SidebarView: View {
                 }
             }
         }
+    }
+
+    /// The Rooms section shows once rooms have loaded; while searching, only when a room matches.
+    private func showsRooms(_ rooms: RoomsController) -> Bool {
+        rooms.isLoaded && (window.searchText.isEmpty || !RoomsSidebarSection.matching(rooms.rooms, window.searchText).isEmpty)
     }
 
     private func stateIcon(_ state: SidebarStateGroup) -> SidebarGroupHeader.Icon {

@@ -234,10 +234,74 @@ public enum PermissionRules {
         return rules
     }
 
+    // MARK: Room worktrees
+
+    /// Where Team rooms put each agent's git worktree, relative to the room's folder (see `ProcessGitOps`).
+    public static let worktreeFolder = ".ensemble/worktrees"
+
+    /// The ruleset for a permission mode, for a Team agent that works in its own git worktree: in Accept edits and
+    /// Auto, `ruleset(for:)` plus `worktreeEditRules(worktree)`. Ask and Bypass, and a path that is not a worktree
+    /// folder, get `ruleset(for:)` unchanged.
+    public static func ruleset(for mode: PermissionMode, worktree: String?) -> [PermissionRule] {
+        let rules = ruleset(for: mode)
+        guard let worktree, mode == .acceptEdits || mode == .auto, let extra = worktreeEditRules(worktree) else { return rules }
+        return rules + extra
+    }
+
+    /// `edit` rules that let a Team agent edit its own worktree the way its mode edits the project. Appended after a
+    /// mode's ruleset (the last match wins).
+    ///
+    /// Worktrees live in `.ensemble/worktrees/<branch>` inside the room's folder, so `dotPathEditPatterns` makes every
+    /// edit in them ask. These rules allow `<worktree>/*`, then ask again for everything the mode protects, spelt
+    /// inside the worktree, because the branch is merged into the project afterwards: OpenCode's config shape at the
+    /// worktree's top (except the lookalikes), every path with a dot segment inside it (its `.git` file, `.github`,
+    /// `.claude`, `.opencode`, ...), and the ignorable-character and protected-file patterns that can match paths in it
+    /// (those starting with `*`; the others match only names at the top of the project). Paths outside this worktree,
+    /// other agents' worktrees included, keep the mode's rules. `nil` unless `worktree` is
+    /// `.ensemble/worktrees/<name>` with a plain name, so the allow can never cover a real dot folder.
+    public static func worktreeEditRules(_ worktree: String) -> [PermissionRule]? {
+        guard isWorktreeFolder(worktree) else { return nil }
+        var rules = [PermissionRule("edit", worktree + "/*", "allow")]
+        rules += opencodeConfigEditPatterns.map { PermissionRule("edit", worktree + "/" + $0, "ask") }
+        rules += configLookalikesAllowed.map { PermissionRule("edit", worktree + "/" + $0, "allow") }
+        rules += dotPathEditPatterns.map { PermissionRule("edit", worktree + "/" + $0, "ask") }
+        rules += (ignorableCharacterEditPatterns + protectedEditPatterns.filter { $0.hasPrefix("*") })
+            .map { PermissionRule("edit", $0, "ask") }
+        return rules
+    }
+
+    /// True for `.ensemble/worktrees/<name>` where the name is ASCII letters, digits, `-`, `_` and `.`, and does not
+    /// start with a dot.
+    public static func isWorktreeFolder(_ path: String) -> Bool {
+        let prefix = worktreeFolder + "/"
+        guard path.hasPrefix(prefix) else { return false }
+        let name = path.dropFirst(prefix.count)
+        guard !name.isEmpty, !name.hasPrefix(".") else { return false }
+        return name.unicodeScalars.allSatisfy { scalar in
+            scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || "-_.".unicodeScalars.contains(scalar))
+        }
+    }
+
+    /// The worktree a Team agent's ruleset allows (`ruleset(for:worktree:)`), or nil.
+    public static func worktree(in rules: [PermissionRule]) -> String? {
+        for mode in [PermissionMode.acceptEdits, .auto] {
+            let base = ruleset(for: mode)
+            guard rules.count > base.count, Array(rules.prefix(base.count)) == base else { continue }
+            let first = rules[base.count]
+            guard first.action == "edit", first.effect == "allow", first.resource.hasSuffix("/*") else { continue }
+            let worktree = String(first.resource.dropLast(2))
+            if let extra = worktreeEditRules(worktree), Array(rules.dropFirst(base.count)) == extra { return worktree }
+        }
+        return nil
+    }
+
     /// Best guess of the mode a ruleset came from (for sessions created elsewhere). `nil` when it does not match.
+    /// A Team agent's ruleset with its worktree rules counts as its mode.
     public static func mode(for rules: [PermissionRule]) -> PermissionMode? {
         if rules.isEmpty { return nil }
-        return PermissionMode.allCases.first { ruleset(for: $0) == rules }
+        if let mode = PermissionMode.allCases.first(where: { ruleset(for: $0) == rules }) { return mode }
+        guard let worktree = worktree(in: rules) else { return nil }
+        return [PermissionMode.acceptEdits, .auto].first { ruleset(for: $0, worktree: worktree) == rules }
     }
 
     /// The mode of a ruleset that an earlier Ensemble version wrote for Ask, Accept edits or Auto (it starts with a

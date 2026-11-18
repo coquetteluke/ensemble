@@ -183,9 +183,90 @@ enum SnapshotRenderer {
         store.select(PreviewData.mainSessionID)
 
         // The live view hierarchy (real scroll views and text view) in windows that are never shown.
+        // Rooms in the window: the Rooms section in the sidebar, then a room open, dark and light.
+        let roomSeed = RoomSeed()
+        let roomWindow = WindowState()
+        roomWindow.showSidebar = true
+        roomWindow.showContextPanel = true
+        for scheme in [ColorScheme.dark, .light] {
+            let tone = scheme == .dark ? "dark" : "light"
+            roomWindow.route = .session
+            save("main-window-rooms-\(tone)", width: 1440, height: 900, scheme: scheme) {
+                MainView(store: store, window: roomWindow, rooms: roomSeed.controller, remoteControlOverride: true, zoomOverride: zoom)
+            }
+            roomWindow.openRoom(roomSeed.team.state.id, rooms: roomSeed.controller)
+            save("main-window-room-\(tone)", width: 1440, height: 900, scheme: scheme) {
+                MainView(store: store, window: roomWindow, rooms: roomSeed.controller, remoteControlOverride: true, zoomOverride: zoom)
+            }
+        }
+        // A room without the sidebar and its panel (the header leaves room for the window's buttons).
+        roomWindow.showSidebar = false
+        roomWindow.showContextPanel = false
+        save("main-window-room-bare", width: 1440, height: 900) {
+            MainView(store: store, window: roomWindow, rooms: roomSeed.controller, remoteControlOverride: true, zoomOverride: zoom)
+        }
+
+        // The file viewer in the window's right-hand pane, for a session and in a room.
+        let fileWindow = WindowState()
+        fileWindow.showSidebar = true
+        fileWindow.showContextPanel = true
+        fileWindow.openSidePane(.file(path: main.directory + "/Apps/Mac/ContextPanel/ContextBar.swift", line: 14))
+        for scheme in [ColorScheme.dark, .light] {
+            let tone = scheme == .dark ? "dark" : "light"
+            var fileTheme = scheme == .dark ? Theme.dark : Theme.light
+            fileTheme.scale = zoom
+            let content = FileViewerContent.make(SearchSnapshots.sampleFile, language: "swift", theme: fileTheme)
+            fileWindow.route = .session
+            save("main-window-file-pane-\(tone)", width: 1440, height: 900, scheme: scheme) {
+                MainView(store: store, window: fileWindow, rooms: roomSeed.controller, remoteControlOverride: true,
+                         zoomOverride: zoom, snapshotFileContent: content)
+            }
+            if scheme == .dark {
+                fileWindow.openRoom(roomSeed.team.state.id, rooms: roomSeed.controller)
+                save("main-window-room-file-pane-dark", width: 1440, height: 900, scheme: scheme) {
+                    MainView(store: store, window: fileWindow, rooms: roomSeed.controller, remoteControlOverride: true,
+                             zoomOverride: zoom, snapshotFileContent: content)
+                }
+            }
+        }
+
+        // The command palette opened through the window's own search center (`searchLayer` in MainView).
+        let paletteSearch = SearchCenter()
+        paletteSearch.rooms = roomSeed.controller
+        paletteSearch.show(.palette)
+        save("main-window-palette-dark", width: 1440, height: 900) {
+            MainView(store: store, window: WindowState(), rooms: roomSeed.controller, search: paletteSearch,
+                     remoteControlOverride: true, zoomOverride: zoom)
+        }
+        checkSidePane()
+
+        // The review pane in the window's right-hand pane, for a session and for a room.
+        let reviewWindow = WindowState()
+        reviewWindow.showSidebar = true
+        reviewWindow.showContextPanel = true
+        reviewWindow.openSidePane(.review)
+        let sessionReview = ReviewSnapshots.sessionModel()
+        let roomReview = ReviewSnapshots.roomModel()
+        for scheme in [ColorScheme.dark, .light] {
+            let tone = scheme == .dark ? "dark" : "light"
+            reviewWindow.route = .session
+            save("main-window-review-\(tone)", width: 1440, height: 900, scheme: scheme) {
+                MainView(store: store, window: reviewWindow, rooms: roomSeed.controller, remoteControlOverride: true,
+                         zoomOverride: zoom, snapshotReview: sessionReview)
+            }
+            reviewWindow.openRoom(roomSeed.team.state.id, rooms: roomSeed.controller)
+            save("main-window-room-review-\(tone)", width: 1440, height: 900, scheme: scheme) {
+                MainView(store: store, window: reviewWindow, rooms: roomSeed.controller, remoteControlOverride: true,
+                         zoomOverride: zoom, snapshotReview: roomReview)
+            }
+        }
+
         written += renderLiveWindows(outputDirectory: outputDirectory, seededStore: store)
         written += AttentionSnapshots.render(to: outputDirectory, zoom: zoom)
         ComposerQueueSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += SearchSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += RoomSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += ReviewSnapshots.render(to: outputDirectory, zoom: zoom)
 
         print("Rendered \(written.count) snapshots:")
         for path in written { print(path) }
@@ -234,6 +315,36 @@ enum SnapshotRenderer {
         store.stopListening()
         return paths
     }
+}
+
+/// The context panel, the file viewer and the review pane share the window's one side pane: opening one replaces the
+/// other, and closing a file or the review brings the context panel back only if it was open.
+@MainActor
+private func checkSidePane() {
+    // Option-Command-I saves the panel's state; keep the user's saved choice as it was.
+    let saved = UserDefaults.standard.object(forKey: "showContextPanel")
+    defer { UserDefaults.standard.set(saved, forKey: "showContextPanel") }
+    let window = WindowState()
+    window.showContextPanel = true
+    let search = SearchCenter()
+    search.window = window
+    let link = FileLink(path: "/tmp/a.swift", line: 3, column: 2)
+    search.openFile(link)
+    let fileOpens = window.sidePane == .file(path: "/tmp/a.swift", line: 3) && window.showContextPanel && search.filePreview == link
+    window.toggleReview()
+    let reviewReplacesFile = window.reviewOpen && search.filePreview == nil
+    window.toggleReview()
+    let contextBack = window.contextPanelVisible
+    window.toggleContextPanel()
+    search.openFile(link)
+    search.closeFile()
+    let staysClosed = !window.showContextPanel && window.sidePane == .context
+    window.openSidePane(.review)
+    window.toggleContextPanel()
+    let shortcutShowsContext = window.contextPanelVisible
+    window.toggleContextPanel()
+    print("Side pane check: file opens \(fileOpens), review replaces it \(reviewReplacesFile), context panel returns \(contextBack), "
+          + "closed pane stays closed \(staysClosed), Option-Command-I shows the context panel \(shortcutShowsContext)")
 }
 
 /// Types into the real composer text view and presses Return, then checks the message reached the session.

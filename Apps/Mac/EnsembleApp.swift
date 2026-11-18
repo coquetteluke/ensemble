@@ -15,6 +15,9 @@ final class AppEngine {
     private(set) var store: SessionStore?
     /// The iPhone remote, available once the store exists.
     private(set) var remote: RemoteControlController?
+    /// Rooms (agents working together), available once the store exists. They use the store's engine, so a room can
+    /// mix Claude, Gemini and OpenCode agents.
+    private(set) var rooms: RoomsController?
     @ObservationIgnored private var watchTask: Task<Void, Never>?
     @ObservationIgnored private var quitObserver: (any NSObjectProtocol)?
     /// Sends each session to OpenCode or to the Claude engine (Claude models on the user's own subscription).
@@ -69,8 +72,17 @@ final class AppEngine {
         store = newStore
         let remoteControl = RemoteControlController(host: MacRemoteHost(store: newStore))
         remote = remoteControl
+        // Sample data keeps its rooms in memory and never runs git, so it never touches saved rooms or real folders.
+        let roomsController = RoomsController(api: newStore.engine,
+                                              store: Self.usePreview ? InMemoryRoomStore() : FileRoomStore.standard,
+                                              git: Self.usePreview ? nil : ProcessGitOps())
+        rooms = roomsController
+        // The Dock badge and the menu bar count rooms waiting on a decision (room agents' prompts count as sessions).
+        AttentionCenter.shared.extraNeedsYou = { [weak roomsController] in roomsController?.decisionsWaiting ?? 0 }
         Task {
             await newStore.start()
+            await roomsController.start()
+            roomsController.syncAgents(into: newStore)
             // Preview builds (often ad-hoc signed) never touch the real pairing in the keychain.
             if !Self.usePreview { await remoteControl.restore() }
         }
@@ -100,6 +112,7 @@ final class AppEngine {
 struct EnsembleApp: App {
     @State private var app = AppEngine()
     @State private var window = WindowState()
+    @State private var search = SearchCenter()
     @State private var power = PowerController.makeForMac()
     @AppStorage("appearance") private var appearance = AppearanceSetting.dark.rawValue
 
@@ -121,7 +134,7 @@ struct EnsembleApp: App {
         Window("Ensemble", id: "main") {
             Group {
                 if let store = app.store {
-                    MainView(store: store, window: window)
+                    MainView(store: store, window: window, rooms: app.rooms, search: search)
                 } else {
                     EngineStatusView(status: app.status, retry: app.retry)
                 }
@@ -132,10 +145,14 @@ struct EnsembleApp: App {
             .environment(power)
             .task { app.start() }
             .task { await power.start() }
+            .task { MenuShortcuts.install() }
         }
         .defaultSize(width: 1440, height: 900)
         .windowToolbarStyle(.unified(showsTitle: false))
-        .commands { EnsembleCommands(app: app, window: window) }
+        .commands {
+            EnsembleCommands(app: app, window: window)
+            FindingCommands(search: search, hasStore: app.store != nil)
+        }
 
         Window("Pair iPhone", id: "pair-iphone") {
             Group {
@@ -204,11 +221,22 @@ struct EnsembleCommands: Commands {
     let app: AppEngine
     let window: WindowState
 
+    /// A session or a room is on screen, so there are changes to review.
+    private var reviewAvailable: Bool {
+        window.route == .room ? app.rooms?.selectedEngine != nil : app.store?.selected != nil
+    }
+
     var body: some Commands {
+        // Nothing to print; this also frees Shift-Command-P (Page Setup) for the command palette.
+        CommandGroup(replacing: .printItem) {}
+
         CommandGroup(replacing: .newItem) {
             Button("New Session") { window.beginNewSession() }
                 .keyboardShortcut("n", modifiers: .command)
                 .disabled(app.store == nil)
+            Button("New Room") { app.rooms?.beginNewRoom() }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(app.rooms == nil)
         }
 
         CommandMenu("Session") {
@@ -217,7 +245,7 @@ struct EnsembleCommands: Commands {
                 .disabled(app.store == nil)
             Button("Stop") { if let store = app.store { Task { await store.stop() } } }
                 .keyboardShortcut(.escape, modifiers: [])
-                .disabled(!(app.store?.selected?.isWorking ?? false))
+                .disabled(window.route != .session || !(app.store?.selected?.isWorking ?? false))
             Divider()
 
             let order = app.store.map { AttentionCenter.shared.sidebarOrder(store: $0) } ?? []
@@ -237,8 +265,9 @@ struct EnsembleCommands: Commands {
         CommandGroup(after: .sidebar) {
             Button(window.showSidebar ? "Hide Sidebar" : "Show Sidebar") { window.toggleSidebar() }
                 .keyboardShortcut("s", modifiers: [.command, .control])
-            Button(window.showContextPanel ? "Hide Context Panel" : "Show Context Panel") { window.toggleContextPanel() }
+            Button(window.contextPanelVisible ? "Hide Context Panel" : "Show Context Panel") { window.toggleContextPanel() }
                 .keyboardShortcut("i", modifiers: [.command, .option])
+            ReviewMenuCommand(isOpen: window.reviewOpen, isAvailable: reviewAvailable) { window.toggleReview() }
             Divider()
             // Command-= also zooms in (handled by WindowState.installZoomShortcut).
             Button("Zoom In") { window.zoomIn() }
@@ -248,6 +277,39 @@ struct EnsembleCommands: Commands {
             Button("Actual Size") { window.resetZoom() }
                 .keyboardShortcut("0", modifiers: .command)
             Divider()
+        }
+    }
+}
+
+/// Menu bar key equivalents SwiftUI does not let the app change.
+@MainActor
+enum MenuShortcuts {
+    private static var observer: (any NSObjectProtocol)?
+
+    /// Command-semicolon asks a side question (the composer), but AppKit's Edit > Spelling and Grammar > Check
+    /// Document Now has the same key equivalent, and the menu bar would take it while the composer's text view has
+    /// focus. That item loses its key equivalent (it stays in the menu); done again whenever a menu gains items,
+    /// because SwiftUI rebuilds menus.
+    static func install() {
+        freeSideQuestionKey()
+        guard observer == nil else { return }
+        observer = NotificationCenter.default.addObserver(forName: NSMenu.didAddItemNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { freeSideQuestionKey() }
+        }
+    }
+
+    static func freeSideQuestionKey() {
+        guard let menu = NSApp.mainMenu else { return }
+        clear(in: menu)
+    }
+
+    private static func clear(in menu: NSMenu) {
+        for item in menu.items {
+            if item.action == #selector(NSText.checkSpelling(_:)), item.keyEquivalent == ";",
+               item.keyEquivalentModifierMask.intersection(.deviceIndependentFlagsMask) == .command {
+                item.keyEquivalent = ""
+            }
+            if let submenu = item.submenu { clear(in: submenu) }
         }
     }
 }

@@ -162,6 +162,19 @@ extension RoomEngine {
         }
     }
 
+    /// Lets the agent edit its own worktree without asking when the room's mode allows edits in the project (see
+    /// `EngineWorktreeAccess`). Runs before every work message, so a mode set from the session view in between does
+    /// not leave the worktree asking.
+    func allowWorktreeEdits(_ agentID: UUID) async {
+        guard let i = assignmentIndex(agentID), let path = state.assignments[i].worktreePath,
+              let sid = state.sessions[agentID], let access = api as? any EngineWorktreeAccess else { return }
+        do {
+            try await access.allowWorktreeEdits(sid, worktreePath: path)
+        } catch {
+            lastError = "Could not let \(name(agentID)) edit its worktree without asking: \(error.localizedDescription)"
+        }
+    }
+
     /// `ensemble/<room>/<agent>`; later runs in the same room add `-<run>` to the room part.
     func branchName(for agentID: UUID) -> String {
         var room = Self.slug(state.spec.title)

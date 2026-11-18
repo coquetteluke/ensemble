@@ -333,4 +333,77 @@ import Testing
         #expect(PermissionRules.effect(action: "shell", resource: "ls", rules: [PermissionRule("shell", "ls *", "allow")]) == "allow")
         #expect(PermissionRules.effect(action: "shell", resource: "lsof", rules: [PermissionRule("shell", "ls *", "allow")]) == "agent")
     }
+
+    // MARK: Room worktrees
+
+    /// A Team agent in Accept edits or Auto edits its own worktree without asking, while every path the mode
+    /// protects still asks, inside its worktree and out, and other agents' worktrees keep asking.
+    @Test func teamAgentEditsItsOwnWorktree() {
+        let own = ".ensemble/worktrees/ensemble-room-ada"
+        for mode in [PermissionMode.acceptEdits, .auto] {
+            let rules = PermissionRules.ruleset(for: mode, worktree: own)
+            func edit(_ path: String) -> String { PermissionRules.effect(action: "edit", resource: path, rules: rules) }
+            for path in ["\(own)/ada.txt", "\(own)/Sources/App/Main.swift", "\(own)/docs/notes.md", "\(own)/tsconfig.json",
+                         "\(own)/sub/package-lock.json", "\(own)/README"] {
+                #expect(edit(path) == "allow", "\(mode) \(path)")
+            }
+            let protected = [
+                // Real dot folders and files, at the top of the project and inside the worktree.
+                ".git/config", ".git/hooks/pre-commit", ".GiT/config", ".github/workflows/ci.yml", ".claude/settings.json",
+                ".opencode/plugin/x.ts", ".agents/hooks.json", ".mcp.json", ".envrc", "sub/.husky/pre-push",
+                "\(own)/.git", "\(own)/.github/workflows/ci.yml", "\(own)/.claude/settings.json", "\(own)/.opencode/agent.md",
+                "\(own)/.agents/hooks.json", "\(own)/.envrc", "\(own)/sub/.husky/pre-push", "\(own)/.ensemble/worktrees/x/a",
+                // OpenCode's config shape at the worktree's top, any spelling, and nested configs.
+                "\(own)/opencode.json", "\(own)/OpenCode.JSONC", "\(own)/oPeNcOdE.json", "\(own)/sub/opencode.json",
+                // Build and hook files.
+                "\(own)/Makefile", "\(own)/package.json", "\(own)/sub/Package.swift", "\(own)/project.yml", "\(own)/x.mk",
+                "\(own)/App.xcodeproj/project.pbxproj", "\(own)/lefthook.yml",
+                // Invisible characters.
+                "\(own)/\u{200C}.git/config",
+                // Other agents' worktrees, lookalike names, the folder itself and the rest of `.ensemble`.
+                ".ensemble/worktrees/ensemble-room-byron/b.txt", ".ensemble/worktrees/ensemble-room-ada-2/a.txt",
+                ".ensemble/worktrees/ensemble-room-adb/a.txt", ".ensemble/worktrees/ensemble-room-ada", ".ensemble/config",
+            ]
+            for path in protected {
+                #expect(edit(path) == "ask", "\(mode) \(path)")
+            }
+            // Everything else is the mode's own ruleset.
+            #expect(edit("Sources/a.swift") == "allow")
+            #expect(Array(rules.prefix(PermissionRules.ruleset(for: mode).count)) == PermissionRules.ruleset(for: mode))
+            #expect(PermissionRules.effect(action: "shell", resource: "rm -rf \(own)", rules: rules) == "ask")
+            #expect(PermissionRules.effect(action: "external_directory", resource: "/tmp/*", rules: rules) == "ask")
+        }
+    }
+
+    @Test func worktreeRulesOnlyForWorktreeFoldersAndEditModes() {
+        let own = ".ensemble/worktrees/ensemble-room-ada"
+        #expect(PermissionRules.ruleset(for: .ask, worktree: own) == PermissionRules.ruleset(for: .ask))
+        #expect(PermissionRules.ruleset(for: .bypass, worktree: own) == PermissionRules.ruleset(for: .bypass))
+        #expect(PermissionRules.ruleset(for: .auto, worktree: nil) == PermissionRules.ruleset(for: .auto))
+        for bad in [".git", ".ensemble/worktrees", ".ensemble/worktrees/", ".ensemble/worktrees/.git", ".ensemble/worktrees/a/b",
+                    ".ensemble/worktrees/*", ".ensemble/worktrees/a?", "/abs/.ensemble/worktrees/a", "sub/.ensemble/worktrees/a",
+                    ".ensemble/worktrees/..", ".ensemble/worktrees/a b", ".ensemble/worktrees/\u{200C}a", ".ensemble/worktrees/é"] {
+            #expect(PermissionRules.worktreeEditRules(bad) == nil, "\(bad)")
+            #expect(PermissionRules.ruleset(for: .auto, worktree: bad) == PermissionRules.ruleset(for: .auto), "\(bad)")
+        }
+    }
+
+    /// The store and the client read a Team agent's rules as its mode, and do not rewrite them as outdated.
+    @Test func worktreeRulesetsKeepTheirMode() {
+        let own = ".ensemble/worktrees/ensemble-room-ada"
+        for mode in [PermissionMode.acceptEdits, .auto] {
+            let rules = PermissionRules.ruleset(for: mode, worktree: own)
+            #expect(PermissionRules.mode(for: rules) == mode)
+            #expect(PermissionRules.outdatedMode(for: rules) == nil)
+            #expect(PermissionRules.worktree(in: rules) == own)
+        }
+        #expect(PermissionRules.worktree(in: PermissionRules.ruleset(for: .auto)) == nil)
+        // A tampered tail is not recognised.
+        var tampered = PermissionRules.ruleset(for: .auto, worktree: own)
+        tampered.removeLast()
+        #expect(PermissionRules.mode(for: tampered) == nil)
+        #expect(PermissionRules.worktree(in: tampered) == nil)
+        let wider = PermissionRules.ruleset(for: .auto) + [PermissionRule("edit", ".git/*", "allow")]
+        #expect(PermissionRules.mode(for: wider) == nil)
+    }
 }

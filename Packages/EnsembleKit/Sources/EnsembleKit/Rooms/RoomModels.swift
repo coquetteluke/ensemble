@@ -372,6 +372,10 @@ public struct RoomState: Codable, Hashable, Sendable, Identifiable {
     public var outbox: [UUID: [OutgoingMessage]]
     /// Agents interrupted by the last pause; they get a nudge on resume.
     public var interruptedAgents: [UUID]
+    /// Room messages for an agent's information (`injectSynthetic` without waking it) that arrived during its turn.
+    /// They wait until the turn ends: OpenCode reads such a message at the end of a running turn and takes another
+    /// step, which would add a reply to the turn the room is parsing.
+    public var held: [UUID: [String]]
 
     public var id: UUID { spec.id }
 
@@ -398,6 +402,7 @@ public struct RoomState: Codable, Hashable, Sendable, Identifiable {
         self.duties = [:]
         self.outbox = [:]
         self.interruptedAgents = []
+        self.held = [:]
     }
 
     /// Total spend across the room's agents.
@@ -412,7 +417,7 @@ public struct RoomState: Codable, Hashable, Sendable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case spec, runMode, briefedMode, run, sessions, board, phase, isPaused, pauseReason, task, plan, assignments
-        case debate, roundTable, pendingDecision, usage, cappedAgents, userIsLead, git, duties, outbox, interruptedAgents
+        case debate, roundTable, pendingDecision, usage, cappedAgents, userIsLead, git, duties, outbox, interruptedAgents, held
     }
 
     /// Lenient decoding so rooms saved by older builds still load.
@@ -440,5 +445,6 @@ public struct RoomState: Codable, Hashable, Sendable, Identifiable {
         duties = try c.decodeIfPresent([UUID: [Duty]].self, forKey: .duties) ?? [:]
         outbox = try c.decodeIfPresent([UUID: [OutgoingMessage]].self, forKey: .outbox) ?? [:]
         interruptedAgents = try c.decodeIfPresent([UUID].self, forKey: .interruptedAgents) ?? []
+        held = try c.decodeIfPresent([UUID: [String]].self, forKey: .held) ?? [:]
     }
 }

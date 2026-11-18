@@ -68,6 +68,26 @@ import Testing
         #expect(try String(contentsOf: repo.appendingPathComponent("shared.txt"), encoding: .utf8) == "changed\n")
     }
 
+    /// A room in a folder below the repository's top keeps its worktrees inside that folder, so they are inside the
+    /// folder the agents' sessions run in, and the worktree folder is a room worktree folder relative to it.
+    @Test func worktreesLiveInTheRoomFolder() async throws {
+        let repo = try makeRepo()
+        defer { try? FileManager.default.removeItem(at: repo) }
+        let sub = repo.appendingPathComponent("app")
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        try "app\n".write(to: sub.appendingPathComponent("main.txt"), atomically: true, encoding: .utf8)
+        try git(["add", "-A"], in: repo)
+        try git(["commit", "-q", "-m", "app"], in: repo)
+        let ops = ProcessGitOps()
+
+        let top = try await ops.createWorktree(repo: repo.path, branch: "ensemble/room/top")
+        #expect(RoomWorktreePaths.relative(top, inside: repo.path) == ".ensemble/worktrees/ensemble-room-top")
+        let path = try await ops.createWorktree(repo: sub.path, branch: "ensemble/room/alpha")
+        #expect(RoomWorktreePaths.relative(path, inside: sub.path) == ".ensemble/worktrees/ensemble-room-alpha")
+        #expect(FileManager.default.fileExists(atPath: path + "/app/main.txt"))
+        #expect(try git(["status", "--porcelain"], in: repo).isEmpty)
+    }
+
     @Test func conflictingMergeReportsFiles() async throws {
         let repo = try makeRepo()
         defer { try? FileManager.default.removeItem(at: repo) }

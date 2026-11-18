@@ -6,6 +6,27 @@ enum Route: Hashable {
     case session
     case hub
     case scheduled
+    /// The room `RoomsController.selectedRoomID` names.
+    case room
+}
+
+/// What the right-hand pane shows while it is open.
+enum SidePane: Hashable {
+    /// The context panel for a session; a room shows its own panel (agents, pieces, rounds).
+    case context
+    /// A file, scrolled to a line when given.
+    case file(path: String, line: Int?)
+    /// The review pane (changes of the session or room).
+    case review
+
+    /// Width before zoom.
+    var width: CGFloat {
+        switch self {
+        case .context: 303
+        case .file: FileViewerPane.width
+        case .review: 560
+        }
+    }
 }
 
 /// Window-level UI state that is not engine data: panels, drafts, sheets, search.
@@ -13,7 +34,12 @@ enum Route: Hashable {
 final class WindowState {
     var route: Route = .session
     var showSidebar = true
+    /// Whether the right-hand pane is open. Option-Command-I opens and closes it with the context panel in it.
     var showContextPanel: Bool = UserDefaults.standard.object(forKey: "showContextPanel") as? Bool ?? true
+    /// What the right-hand pane shows (`showContextPanel` says whether it is open).
+    var sidePane: SidePane = .context
+    /// Whether the context panel was open before a file or review pane replaced it.
+    @ObservationIgnored private var contextWasOpen = true
     var showNewSession = false
     /// Folder to preselect in the new session sheet.
     var newSessionDirectory: String?
@@ -51,9 +77,46 @@ final class WindowState {
         }
     }
 
+    /// True while the pane shows the context panel (or a room's own panel).
+    var contextPanelVisible: Bool { showContextPanel && sidePane == .context }
+
+    /// Shows or hides the context panel. With a file or review pane open, switches the pane to the context panel.
     func toggleContextPanel() {
-        withAnimation(.easeOut(duration: 0.18)) { showContextPanel.toggle() }
+        withAnimation(.easeOut(duration: 0.18)) {
+            if showContextPanel && sidePane != .context {
+                sidePane = .context
+            } else {
+                showContextPanel.toggle()
+                sidePane = .context
+            }
+        }
         UserDefaults.standard.set(showContextPanel, forKey: "showContextPanel")
+    }
+
+    /// Opens a file or review pane on the right, in place of the context panel.
+    func openSidePane(_ pane: SidePane) {
+        if sidePane == .context { contextWasOpen = showContextPanel }
+        withAnimation(.easeOut(duration: 0.18)) {
+            sidePane = pane
+            showContextPanel = true
+        }
+    }
+
+    /// True while the pane shows the review (changes of the session or room on screen).
+    var reviewOpen: Bool { showContextPanel && sidePane == .review }
+
+    /// Opens or closes the review pane (Option-Command-R).
+    func toggleReview() {
+        if reviewOpen { closeSidePane() } else { openSidePane(.review) }
+    }
+
+    /// Closes a file or review pane: the context panel comes back if it was open before.
+    func closeSidePane() {
+        guard sidePane != .context else { return }
+        withAnimation(.easeOut(duration: 0.18)) {
+            sidePane = .context
+            showContextPanel = contextWasOpen
+        }
     }
 
     func toggleSidebar() {
@@ -69,6 +132,12 @@ final class WindowState {
         route = .session
         store.select(sessionID)
         composerFocusToken &+= 1
+    }
+
+    /// Shows a room in the centre of the window.
+    func openRoom(_ roomID: UUID, rooms: RoomsController) {
+        rooms.select(roomID)
+        route = .room
     }
 
     /// Opens the Nth session in sidebar order (Cmd-1 to Cmd-9).

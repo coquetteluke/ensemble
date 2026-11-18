@@ -33,7 +33,8 @@ struct FindingCommands: Commands {
             Divider()
         }
 
-        CommandGroup(replacing: .help) {
+        // After the Help menu's own items (its search field stays).
+        CommandGroup(after: .help) {
             Button("Keyboard Shortcuts") { search.toggle(.shortcuts) }
                 .appShortcut(.keyboardShortcuts)
         }

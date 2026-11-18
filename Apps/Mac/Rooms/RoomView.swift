@@ -15,6 +15,8 @@ struct RoomView: View {
     let engine: RoomEngine
     /// Room for the window's traffic lights when the app sidebar is hidden.
     var leadingInset: CGFloat = 0
+    /// Room for the window's toolbar button when nothing is to the right of the room.
+    var trailingInset: CGFloat = 0
     var showsSidePanel = true
     /// Opens an agent's session in the app's normal session view.
     var openSession: (@MainActor @Sendable (String) -> Void)?
@@ -37,7 +39,8 @@ struct RoomView: View {
     var body: some View {
         HStack(spacing: theme.z(0)) {
             VStack(spacing: theme.z(0)) {
-                RoomHeader(controller: controller, engine: engine, leadingInset: leadingInset)
+                RoomHeader(controller: controller, engine: engine, leadingInset: leadingInset,
+                           trailingInset: showsSidePanel ? 0 : trailingInset)
                 AgentChipRow(controller: controller, engine: engine, selectedAgentID: agentSelection,
                              tab: tabBinding, showsTabs: engine.state.runMode == .debate || engine.state.debate != nil)
                 content
@@ -317,6 +320,7 @@ struct RoomHeader: View {
     let controller: RoomsController
     let engine: RoomEngine
     var leadingInset: CGFloat = 0
+    var trailingInset: CGFloat = 0
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -330,7 +334,7 @@ struct RoomHeader: View {
             }
         }
         .padding(.leading, theme.z(20))
-        .padding(.trailing, theme.z(16))
+        .padding(.trailing, theme.z(16) + trailingInset)
         .frame(height: 52)
         .background(theme.background)
     }
