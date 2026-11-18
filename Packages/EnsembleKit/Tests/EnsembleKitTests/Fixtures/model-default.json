@@ -1,0 +1,64 @@
+{
+ "location": {
+  "directory": "/tmp/ensemble-probe"
+ },
+ "data": {
+  "id": "hy4-flash-free",
+  "modelID": "hy4-flash-free",
+  "providerID": "opencode",
+  "type": "chat",
+  "family": "Hy",
+  "name": "Hy4 flash Free",
+  "package": "@opencode/ai/providers/openai-compatible",
+  "settings": {
+   "apiKey": "public",
+   "baseURL": "https://opencode.ai/inference/openai/v1",
+   "provider": "opencode"
+  },
+  "capabilities": {
+   "tools": true,
+   "input": [
+    "text",
+    "image"
+   ],
+   "output": [
+    "text"
+   ],
+   "temperature": true
+  },
+  "variants": [
+   {
+    "id": "none",
+    "settings": {
+     "reasoningEffort": "none"
+    }
+   },
+   {
+    "id": "high",
+    "settings": {
+     "reasoningEffort": "high"
+    }
+   }
+  ],
+  "time": {
+   "released": 1794787200000
+  },
+  "cost": [
+   {
+    "input": 0,
+    "output": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  ],
+  "status": "active",
+  "enabled": true,
+  "limit": {
+   "context": 1048576,
+   "input": 983040,
+   "output": 65536
+  }
+ }
+}

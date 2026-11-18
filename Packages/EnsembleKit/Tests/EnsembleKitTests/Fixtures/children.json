@@ -1,0 +1,40 @@
+{
+ "data": [
+  {
+   "id": "ses_e13556affffeFEMwurgCjXZ3b3",
+   "parentID": "ses_e13556bb5ffeY1uEs1EG2lGeBf",
+   "projectID": "global",
+   "agent": "general",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "cost": 0,
+   "tokens": {
+    "input": 9314,
+    "output": 6,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "outcome": "succeeded",
+   "time": {
+    "created": 1794971964673,
+    "updated": 1794971964791,
+    "busy": 1794971964676,
+    "idle": 1794971964794
+   },
+   "title": "Mock helper task",
+   "location": {
+    "directory": "/tmp/ensemble-probe"
+   }
+  }
+ ],
+ "cursor": {
+  "previous": "eyJwYXJlbnRJRCI6InNlc19lMTM1NTZiYjVmZmVZMXVFczFFRzJsR2VCZiIsImFuY2hvciI6eyJpZCI6InNlc19lMTM1NTZhZmZmZmVGRU13dXJnQ2pYWjNiMyIsInRpbWUiOjE3OTQ5NzE5NjQ3OTEsImRpcmVjdGlvbiI6InByZXZpb3VzIn19",
+  "next": "eyJwYXJlbnRJRCI6InNlc19lMTM1NTZiYjVmZmVZMXVFczFFRzJsR2VCZiIsImFuY2hvciI6eyJpZCI6InNlc19lMTM1NTZhZmZmZmVGRU13dXJnQ2pYWjNiMyIsInRpbWUiOjE3OTQ5NzE5NjQ3OTEsImRpcmVjdGlvbiI6Im5leHQifX0"
+ }
+}

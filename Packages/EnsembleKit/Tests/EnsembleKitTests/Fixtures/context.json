@@ -1,0 +1,783 @@
+{
+ "data": [
+  {
+   "id": "msg_1ecaa94a2001pls8Yt1ZDseMvL",
+   "time": {
+    "created": 1794971964583
+   },
+   "text": "please start a helper",
+   "type": "user"
+  },
+  {
+   "id": "msg_1ecaa94ad001C4NIOi7mlrpuBz",
+   "time": {
+    "created": 1794971964591,
+    "firstToken": 1794971964601,
+    "streamed": 1794971964670,
+    "completed": 1794971964691
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "tool",
+     "id": "call_bb14e936d687",
+     "name": "subagent",
+     "executed": false,
+     "state": {
+      "status": "completed",
+      "input": {
+       "agent": "general",
+       "description": "Mock helper task",
+       "prompt": "child task marker: say done"
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "The subagent is working in the background (sessionID: ses_e13556affffeFEMwurgCjXZ3b3). You will receive a <subagent> message when it goes idle, and again after each later round of work.\nDO NOT sleep, poll, proactively check on its progress, or duplicate this subagent's work.\nWork on non-overlapping tasks, or briefly tell the user what you launched and end your response.\nTo send it follow-ups or change its instructions while it runs, call subagent again with this sessionID."
+       }
+      ],
+      "metadata": {
+       "sessionID": "ses_e13556affffeFEMwurgCjXZ3b3",
+       "status": "running",
+       "truncated": false
+      }
+     },
+     "time": {
+      "created": 1794971964602,
+      "ran": 1794971964669,
+      "completed": 1794971964675
+     }
+    }
+   ],
+   "snapshot": {
+    "start": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "end": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "files": []
+   },
+   "finish": "tool-calls",
+   "rawFinish": "tool_calls",
+   "cost": 0,
+   "tokens": {
+    "input": 9300,
+    "output": 1,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecaa9517001YyeHzAZuJJrSPY",
+   "time": {
+    "created": 1794971964697,
+    "firstToken": 1794971964725,
+    "streamed": 1794971964797,
+    "completed": 1794971964804
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "I started a helper."
+    }
+   ],
+   "snapshot": {
+    "start": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "end": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "files": []
+   },
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 9502,
+    "output": 4,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecaa9502002k4XlbUG1OF405N",
+   "metadata": {
+    "source": "subagent",
+    "childID": "ses_e13556affffeFEMwurgCjXZ3b3",
+    "agent": "General",
+    "state": "completed"
+   },
+   "time": {
+    "created": 1794971964807
+   },
+   "text": "<subagent sessionID=\"ses_e13556affffeFEMwurgCjXZ3b3\" state=\"completed\" description=\"Mock helper task\">\nChild finished the task.\n</subagent>",
+   "description": "Mock helper task",
+   "type": "synthetic"
+  },
+  {
+   "id": "msg_1ecaa9589001svq4XC40qAA0O5",
+   "time": {
+    "created": 1794971964810,
+    "firstToken": 1794971964837,
+    "streamed": 1794971964910,
+    "completed": 1794971964919
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "The helper reported back."
+    }
+   ],
+   "snapshot": {
+    "start": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "end": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "files": []
+   },
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 9562,
+    "output": 6,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecaa95f9001JJR3rKuM4l3Hu1",
+   "time": {
+    "created": 1794971964921
+   },
+   "type": "idle",
+   "outcome": "succeeded"
+  },
+  {
+   "id": "msg_1ecab08d20010ZddDk4LLBp5PE",
+   "time": {
+    "created": 1794971994325
+   },
+   "text": "[Board] Alice says: hello team, think first please",
+   "type": "synthetic"
+  },
+  {
+   "id": "msg_1ecab08d7001i3BfF1j5zKyscM",
+   "time": {
+    "created": 1794971994329,
+    "firstToken": 1794971994359,
+    "streamed": 1794971994439,
+    "completed": 1794971994446
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "Hello from the mock model. Nice to meet you."
+    }
+   ],
+   "snapshot": {
+    "start": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "end": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "files": []
+   },
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 9598,
+    "output": 11,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecab0950001gSvEj3C3ofykl2",
+   "time": {
+    "created": 1794971994448
+   },
+   "type": "idle",
+   "outcome": "succeeded"
+  },
+  {
+   "id": "msg_1ecab14d6001An4gv1q2KLWh2H",
+   "time": {
+    "created": 1794971997401
+   },
+   "text": "now write a file",
+   "type": "user"
+  },
+  {
+   "id": "msg_1ecab14dc0015UGv7poEHhsSLO",
+   "time": {
+    "created": 1794971997405,
+    "firstToken": 1794971997415,
+    "streamed": 1794971997486,
+    "completed": 1794971997522
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "tool",
+     "id": "call_923d362dad8c",
+     "name": "write",
+     "executed": false,
+     "state": {
+      "status": "completed",
+      "input": {
+       "path": "hello.txt",
+       "content": "hi from mock\n"
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "Created file successfully: hello.txt"
+       }
+      ],
+      "metadata": {
+       "truncated": false
+      }
+     },
+     "time": {
+      "created": 1794971997415,
+      "ran": 1794971997485,
+      "completed": 1794971997490
+     }
+    }
+   ],
+   "snapshot": {
+    "start": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "end": "260ec99b3fc661c89fea827da26b946d44a66245",
+    "files": [
+     "hello.txt"
+    ]
+   },
+   "finish": "tool-calls",
+   "rawFinish": "tool_calls",
+   "cost": 0,
+   "tokens": {
+    "input": 9631,
+    "output": 1,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecab1557001G0DL6EQUh7L4yO",
+   "time": {
+    "created": 1794971997528,
+    "firstToken": 1794971997559,
+    "streamed": 1794971997639,
+    "completed": 1794971997647
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "Wrote hello.txt."
+    }
+   ],
+   "snapshot": {
+    "start": "260ec99b3fc661c89fea827da26b946d44a66245",
+    "end": "260ec99b3fc661c89fea827da26b946d44a66245",
+    "files": []
+   },
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 9710,
+    "output": 4,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecab15d1002CM4ta3Fb4IK5Jj",
+   "time": {
+    "created": 1794971997649
+   },
+   "type": "idle",
+   "outcome": "succeeded"
+  },
+  {
+   "id": "msg_1ecab81510019Qct6JF6mNv68T",
+   "time": {
+    "created": 1794972025172
+   },
+   "text": "edit the file please",
+   "type": "user"
+  },
+  {
+   "id": "msg_1ecab8156001rTm3pBs8zbnIJC",
+   "time": {
+    "created": 1794972025176,
+    "firstToken": 1794972025204,
+    "streamed": 1794972025328,
+    "completed": 1794972025412
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "reasoning",
+     "text": "I should change the greeting.",
+     "native": {
+      "reasoningField": "reasoning_content"
+     },
+     "time": {
+      "created": 1794972025204,
+      "completed": 1794972025325
+     }
+    },
+    {
+     "type": "tool",
+     "id": "call_481d186a4c96",
+     "name": "edit",
+     "executed": false,
+     "state": {
+      "status": "completed",
+      "input": {
+       "path": "hello.txt",
+       "oldString": "hi from mock",
+       "newString": "hello from mock"
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "Edited hello.txt (1 replacement)"
+       }
+      ],
+      "metadata": {
+       "files": [
+        {
+         "file": "hello.txt",
+         "patch": "Index: hello.txt\n===================================================================\n--- hello.txt\n+++ hello.txt\n@@ -1,1 +1,1 @@\n-hi from mock\n+hello from mock\n",
+         "status": "modified",
+         "additions": 1,
+         "deletions": 1
+        }
+       ],
+       "truncated": false
+      }
+     },
+     "time": {
+      "created": 1794972025253,
+      "ran": 1794972025327,
+      "completed": 1794972025332
+     }
+    }
+   ],
+   "snapshot": {
+    "start": "260ec99b3fc661c89fea827da26b946d44a66245",
+    "end": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "files": [
+     "hello.txt"
+    ]
+   },
+   "finish": "tool-calls",
+   "rawFinish": "tool_calls",
+   "cost": 0,
+   "tokens": {
+    "input": 9736,
+    "output": 1,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecab824d001HwNdHfQfg2rDcl",
+   "time": {
+    "created": 1794972025423,
+    "firstToken": 1794972025450,
+    "streamed": 1794972025522,
+    "completed": 1794972025537
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "Edited hello.txt."
+    }
+   ],
+   "snapshot": {
+    "start": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "end": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "files": []
+   },
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 9836,
+    "output": 4,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecab82c3001JogUu0HSzpOPl7",
+   "time": {
+    "created": 1794972025539
+   },
+   "type": "idle",
+   "outcome": "succeeded"
+  },
+  {
+   "id": "msg_1ecab9155001vzBQKbSmlUb5DD",
+   "time": {
+    "created": 1794972029273
+   },
+   "text": "now fail a tool",
+   "type": "user"
+  },
+  {
+   "id": "msg_1ecab915b00163dNmKUFA51297",
+   "time": {
+    "created": 1794972029277,
+    "firstToken": 1794972029286,
+    "streamed": 1794972029354,
+    "completed": 1794972029366
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "tool",
+     "id": "call_c7317112553b",
+     "name": "read",
+     "executed": false,
+     "state": {
+      "status": "error",
+      "input": {
+       "path": "does-not-exist.txt"
+      },
+      "error": {
+       "type": "tool.execution",
+       "message": "File not found: does-not-exist.txt"
+      }
+     },
+     "time": {
+      "created": 1794972029287,
+      "ran": 1794972029353,
+      "completed": 1794972029358
+     }
+    }
+   ],
+   "snapshot": {
+    "start": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "end": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "files": []
+   },
+   "finish": "tool-calls",
+   "rawFinish": "tool_calls",
+   "cost": 0,
+   "tokens": {
+    "input": 9861,
+    "output": 1,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecab91bb001hCHUAYfxFfqkmw",
+   "time": {
+    "created": 1794972029373,
+    "firstToken": 1794972029401,
+    "streamed": 1794972029470,
+    "completed": 1794972029479
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "The read failed."
+    }
+   ],
+   "snapshot": {
+    "start": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "end": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "files": []
+   },
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 9952,
+    "output": 4,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecab9229002S1Gdf7VP1Z1bUs",
+   "time": {
+    "created": 1794972029481
+   },
+   "type": "idle",
+   "outcome": "succeeded"
+  },
+  {
+   "id": "msg_1ecabc2ab001dHw78fZfGKKSS1",
+   "time": {
+    "created": 1794972041903
+   },
+   "text": "go slow now",
+   "type": "user"
+  },
+  {
+   "id": "msg_1ecabc2b2001pMcHYXhKK7Exye",
+   "time": {
+    "created": 1794972041908,
+    "firstToken": 1794972042420,
+    "streamed": 1794972044978,
+    "completed": 1794972044986
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "This reply streams"
+    }
+   ],
+   "snapshot": {
+    "start": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "end": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "files": []
+   },
+   "finish": "error",
+   "error": {
+    "type": "aborted",
+    "message": "Step interrupted"
+   }
+  },
+  {
+   "id": "msg_1ecabcebc001xC52NP4syXtvAz",
+   "time": {
+    "created": 1794972044988
+   },
+   "type": "idle",
+   "outcome": "interrupted"
+  },
+  {
+   "id": "msg_1ecac63c1001TERVC2NTGjB9H8",
+   "time": {
+    "created": 1794972083147
+   },
+   "text": "look at this attachment",
+   "files": [
+    {
+     "data": "aGVsbG8gZnJvbSBtb2NrCg==",
+     "mime": "text/plain",
+     "source": {
+      "type": "uri",
+      "uri": "file:///tmp/ensemble-probe/hello.txt"
+     },
+     "name": "hello.txt"
+    }
+   ],
+   "type": "user"
+  },
+  {
+   "id": "msg_1ecac63d7001xkbYc89zD0wcEo",
+   "time": {
+    "created": 1794972083167,
+    "firstToken": 1794972083199,
+    "streamed": 1794972083268,
+    "completed": 1794972083275
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "Hello from the mock model. Nice to meet you."
+    }
+   ],
+   "snapshot": {
+    "start": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "end": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "files": []
+   },
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 10017,
+    "output": 11,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecac644c001j8vNKuvcDsk3dp",
+   "time": {
+    "created": 1794972083276
+   },
+   "type": "idle",
+   "outcome": "succeeded"
+  },
+  {
+   "id": "msg_1ecadf729001xSlXZfEMwb6Sfb",
+   "time": {
+    "created": 1794972186412
+   },
+   "text": "please think first",
+   "type": "user"
+  },
+  {
+   "id": "msg_1ecadf72f001X1Y5N2W68fnkc2",
+   "time": {
+    "created": 1794972186417,
+    "firstToken": 1794972186447,
+    "streamed": 1794972186592,
+    "completed": 1794972186601
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "reasoning",
+     "text": "Let me think about this carefully.",
+     "native": {
+      "reasoningField": "reasoning_content"
+     },
+     "time": {
+      "created": 1794972186447,
+      "completed": 1794972186590
+     }
+    },
+    {
+     "type": "text",
+     "text": "Thought about it."
+    }
+   ],
+   "snapshot": {
+    "start": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "end": "a8f6873e64cd472a40e45d578343fe0a89f79ca2",
+    "files": []
+   },
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 10050,
+    "output": 4,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecadf7ec0011UKxOWGfH51afD",
+   "time": {
+    "created": 1794972186604
+   },
+   "type": "idle",
+   "outcome": "succeeded"
+  }
+ ]
+}

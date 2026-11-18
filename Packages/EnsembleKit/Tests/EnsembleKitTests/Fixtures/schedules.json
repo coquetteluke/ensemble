@@ -1,0 +1,25 @@
+{
+ "data": [
+  {
+   "id": "sch_1ecabff7f00153ZKPr2lI3lUr4",
+   "sessionID": "ses_e13556bb5ffeY1uEs1EG2lGeBf",
+   "name": "nightly check",
+   "when": {
+    "type": "cron",
+    "cron": "0 3 * * *"
+   },
+   "tz": "America/New_York",
+   "action": {
+    "type": "prompt",
+    "prompt": "run the nightly check"
+   },
+   "status": "paused",
+   "nextDueAt": 1794988800000,
+   "runCount": 0,
+   "time": {
+    "created": 1794972057470,
+    "updated": 1794972066403
+   }
+  }
+ ]
+}

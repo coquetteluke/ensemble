@@ -1,0 +1,143 @@
+{
+ "data": [
+  {
+   "id": "ses_e1357c472ffeumJchdQAP47PBT",
+   "projectID": "global",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "cost": 0,
+   "tokens": {
+    "input": 9298,
+    "output": 11,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "outcome": "succeeded",
+   "time": {
+    "created": 1794971810707,
+    "updated": 1794972400368,
+    "busy": 1794971816850,
+    "idle": 1794971816995,
+    "archived": 1794972400038
+   },
+   "title": "renamed probe",
+   "location": {
+    "directory": "/tmp/ensemble-probe"
+   }
+  },
+  {
+   "id": "ses_e13556bb5ffeY1uEs1EG2lGeBf",
+   "projectID": "global",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "cost": 0,
+   "tokens": {
+    "input": 117266,
+    "output": 55,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "outcome": "succeeded",
+   "time": {
+    "created": 1794971964492,
+    "updated": 1794972186601,
+    "busy": 1794972186410,
+    "idle": 1794972186604
+   },
+   "title": "Mock session",
+   "location": {
+    "directory": "/tmp/ensemble-probe"
+   }
+  },
+  {
+   "id": "ses_e13556affffeFEMwurgCjXZ3b3",
+   "parentID": "ses_e13556bb5ffeY1uEs1EG2lGeBf",
+   "projectID": "global",
+   "agent": "general",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "cost": 0,
+   "tokens": {
+    "input": 9314,
+    "output": 6,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "outcome": "succeeded",
+   "time": {
+    "created": 1794971964673,
+    "updated": 1794971964791,
+    "busy": 1794971964676,
+    "idle": 1794971964794
+   },
+   "title": "Mock helper task",
+   "location": {
+    "directory": "/tmp/ensemble-probe"
+   }
+  },
+  {
+   "id": "ses_e13562c9effe6gN6CSgISlmn7x",
+   "projectID": "global",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "cost": 0,
+   "tokens": {
+    "input": 18680,
+    "output": 9,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "outcome": "succeeded",
+   "time": {
+    "created": 1794971915106,
+    "updated": 1794971943070,
+    "busy": 1794971915190,
+    "idle": 1794971943072
+   },
+   "title": "probe ask",
+   "permissions": [
+    {
+     "action": "edit",
+     "resource": "*",
+     "effect": "ask"
+    },
+    {
+     "action": "shell",
+     "resource": "*",
+     "effect": "ask"
+    }
+   ],
+   "location": {
+    "directory": "/tmp/ensemble-probe"
+   }
+  }
+ ],
+ "cursor": {
+  "previous": "eyJkaXJlY3RvcnkiOiIvcHJpdmF0ZS90bXAvY2xhdWRlLTUwMS8tVXNlcnMtbHVrZWdhcml0by1MaWJyYXJ5LUFwcGxpY2F0aW9uLVN1cHBvcnQtQ2xhdWRlLXNjcmF0Y2gtd29ya3NwYWNlcy00NzA0ZGRhNy00YzdmLTQzMTItOWQ0My0yMWFlMmMyNzJjYzUtMjg4OGFmNDctZGM2NS00YjAxLTgwNjMtMGVlMTk4YzA4M2Y1LXNjcmF0Y2gtMjAyNi0xMS0xOC03M2RmMDgvOGQ2ZDdjYjAtMjc1NC00ZTY5LTk3NmQtYTg1NzlkOTczMzVmL3NjcmF0Y2hwYWQvcHJvYmUxIiwiYW5jaG9yIjp7ImlkIjoic2VzX2UxMzU3YzQ3MmZmZXVtSmNoZFFBUDQ3UEJUIiwidGltZSI6MTc5NDk3MjQwMDM2OCwiZGlyZWN0aW9uIjoicHJldmlvdXMifX0",
+  "next": "eyJkaXJlY3RvcnkiOiIvcHJpdmF0ZS90bXAvY2xhdWRlLTUwMS8tVXNlcnMtbHVrZWdhcml0by1MaWJyYXJ5LUFwcGxpY2F0aW9uLVN1cHBvcnQtQ2xhdWRlLXNjcmF0Y2gtd29ya3NwYWNlcy00NzA0ZGRhNy00YzdmLTQzMTItOWQ0My0yMWFlMmMyNzJjYzUtMjg4OGFmNDctZGM2NS00YjAxLTgwNjMtMGVlMTk4YzA4M2Y1LXNjcmF0Y2gtMjAyNi0xMS0xOC03M2RmMDgvOGQ2ZDdjYjAtMjc1NC00ZTY5LTk3NmQtYTg1NzlkOTczMzVmL3NjcmF0Y2hwYWQvcHJvYmUxIiwiYW5jaG9yIjp7ImlkIjoic2VzX2UxMzU2MmM5ZWZmZTZnTjZDU2dJU2xtbjd4IiwidGltZSI6MTc5NDk3MTk0MzA3MCwiZGlyZWN0aW9uIjoibmV4dCJ9fQ"
+ }
+}

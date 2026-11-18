@@ -1,0 +1,164 @@
+{
+ "location": {
+  "directory": "/Users/me"
+ },
+ "data": [
+  {
+   "id": "fiftyx",
+   "name": "50X",
+   "methods": [
+    {
+     "type": "key"
+    },
+    {
+     "type": "env",
+     "names": [
+      "FIFTYX_API_KEY"
+     ]
+    }
+   ],
+   "connections": [
+    {
+     "type": "credential",
+     "id": "cred_1ecae5215001ug36H8EJTnxTmC",
+     "label": "Ensemble test",
+     "method": "key"
+    }
+   ]
+  },
+  {
+   "id": "anthropic",
+   "name": "Anthropic",
+   "methods": [
+    {
+     "type": "key"
+    },
+    {
+     "type": "env",
+     "names": [
+      "ANTHROPIC_API_KEY"
+     ]
+    }
+   ],
+   "connections": []
+  },
+  {
+   "id": "google",
+   "name": "Google",
+   "methods": [
+    {
+     "type": "key"
+    },
+    {
+     "type": "env",
+     "names": [
+      "GOOGLE_API_KEY",
+      "GOOGLE_GENERATIVE_AI_API_KEY",
+      "GEMINI_API_KEY"
+     ]
+    }
+   ],
+   "connections": []
+  },
+  {
+   "id": "openai",
+   "name": "OpenAI",
+   "methods": [
+    {
+     "type": "key"
+    },
+    {
+     "type": "env",
+     "names": [
+      "OPENAI_API_KEY"
+     ]
+    },
+    {
+     "id": "chatgpt-token-sharing",
+     "type": "oauth",
+     "label": "Sign in with ChatGPT"
+    },
+    {
+     "id": "chatgpt-browser",
+     "type": "oauth",
+     "label": "Codex browser (legacy)"
+    },
+    {
+     "id": "chatgpt-headless",
+     "type": "oauth",
+     "label": "Codex device code (legacy)"
+    }
+   ],
+   "connections": []
+  },
+  {
+   "id": "opencode",
+   "name": "OpenCode Console",
+   "methods": [
+    {
+     "type": "key",
+     "label": "API key (service account)"
+    },
+    {
+     "type": "env",
+     "names": [
+      "OPENCODE_API_KEY"
+     ]
+    },
+    {
+     "id": "device",
+     "type": "oauth",
+     "label": "OpenCode Console account",
+     "form": [
+      {
+       "key": "server",
+       "hidden": true,
+       "type": "string",
+       "format": "uri",
+       "default": "https://opencode.ai/console"
+      }
+     ]
+    }
+   ],
+   "connections": []
+  },
+  {
+   "id": "openrouter",
+   "name": "OpenRouter",
+   "methods": [
+    {
+     "type": "key"
+    },
+    {
+     "type": "env",
+     "names": [
+      "OPENROUTER_API_KEY"
+     ]
+    }
+   ],
+   "connections": []
+  },
+  {
+   "id": "xai",
+   "name": "xAI",
+   "methods": [
+    {
+     "type": "key",
+     "label": "Manually enter API Key"
+    },
+    {
+     "type": "env",
+     "names": [
+      "XAI_API_KEY"
+     ]
+    },
+    {
+     "id": "device",
+     "type": "oauth",
+     "label": "SuperGrok Subscription"
+    }
+   ],
+   "connections": []
+  }
+ ]
+}

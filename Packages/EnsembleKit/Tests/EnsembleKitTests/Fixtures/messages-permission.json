@@ -1,0 +1,127 @@
+{
+ "data": [
+  {
+   "id": "msg_1eca9d3b5001ramzLBT5To7Txs",
+   "time": {
+    "created": 1794971915193
+   },
+   "text": "please run the echo command",
+   "type": "user"
+  },
+  {
+   "id": "msg_1eca9d3bb001VIqLWvfVn1g4bP",
+   "time": {
+    "created": 1794971915197,
+    "firstToken": 1794971915207,
+    "streamed": 1794971915276,
+    "completed": 1794971942960
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "tool",
+     "id": "call_eb18edb9ee0f",
+     "name": "shell",
+     "executed": false,
+     "state": {
+      "status": "completed",
+      "input": {
+       "command": "echo ensemble-ok",
+       "description": "Print a marker"
+      },
+      "content": [
+       {
+        "type": "text",
+        "text": "ensemble-ok\n"
+       }
+      ],
+      "metadata": {
+       "status": "completed",
+       "truncated": false,
+       "exit": 0
+      }
+     },
+     "time": {
+      "created": 1794971915207,
+      "ran": 1794971915275,
+      "completed": 1794971942952
+     }
+    }
+   ],
+   "snapshot": {
+    "start": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "end": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "files": []
+   },
+   "finish": "tool-calls",
+   "rawFinish": "tool_calls",
+   "cost": 0,
+   "tokens": {
+    "input": 9302,
+    "output": 1,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecaa4034001jboctGD7Ga5E1i",
+   "time": {
+    "created": 1794971942966,
+    "firstToken": 1794971942991,
+    "streamed": 1794971943062,
+    "completed": 1794971943070
+   },
+   "type": "assistant",
+   "agent": "build",
+   "model": {
+    "id": "mock-1",
+    "providerID": "mock",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "The command printed ensemble-ok."
+    }
+   ],
+   "snapshot": {
+    "start": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "end": "ea0435418fc85605730969963ad90ee8353ce0e2",
+    "files": []
+   },
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 9378,
+    "output": 8,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_1ecaa40a00018YemI0nG3KfNrv",
+   "time": {
+    "created": 1794971943072
+   },
+   "type": "idle",
+   "outcome": "succeeded"
+  }
+ ],
+ "cursor": {
+  "previous": "eyJpZCI6Im1zZ18xZWNhOWQzYjUwMDFyYW16TEJUNVRvN1R4cyIsIm9yZGVyIjoiYXNjIiwiZGlyZWN0aW9uIjoicHJldmlvdXMifQ",
+  "next": "eyJpZCI6Im1zZ18xZWNhYTQwYTAwMDE4WWVtSTBuRzNLZk5ydiIsIm9yZGVyIjoiYXNjIiwiZGlyZWN0aW9uIjoibmV4dCJ9"
+ }
+}

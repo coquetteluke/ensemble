@@ -1,0 +1,14 @@
+{
+ "data": [
+  {
+   "id": "cred_1ecae5215001ug36H8EJTnxTmC",
+   "integrationID": "fiftyx",
+   "label": "Ensemble test",
+   "active": true,
+   "value": {
+    "type": "key",
+    "key": "fake-test-key-not-real"
+   }
+  }
+ ]
+}

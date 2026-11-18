@@ -1,0 +1,165 @@
+{
+ "location": {
+  "directory": "/tmp/ensemble-probe"
+ },
+ "data": [
+  {
+   "id": "hy4-flash-free",
+   "modelID": "hy4-flash-free",
+   "providerID": "opencode",
+   "type": "chat",
+   "family": "Hy",
+   "name": "Hy4 flash Free",
+   "package": "@opencode/ai/providers/openai-compatible",
+   "settings": {
+    "apiKey": "public",
+    "baseURL": "https://opencode.ai/inference/openai/v1",
+    "provider": "opencode"
+   },
+   "capabilities": {
+    "tools": true,
+    "input": [
+     "text",
+     "image"
+    ],
+    "output": [
+     "text"
+    ],
+    "temperature": true
+   },
+   "variants": [
+    {
+     "id": "none",
+     "settings": {
+      "reasoningEffort": "none"
+     }
+    },
+    {
+     "id": "high",
+     "settings": {
+      "reasoningEffort": "high"
+     }
+    }
+   ],
+   "time": {
+    "released": 1794787200000
+   },
+   "cost": [
+    {
+     "input": 0,
+     "output": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    }
+   ],
+   "status": "active",
+   "enabled": true,
+   "limit": {
+    "context": 1048576,
+    "input": 983040,
+    "output": 65536
+   }
+  },
+  {
+   "id": "big-pickle",
+   "modelID": "big-pickle",
+   "providerID": "opencode",
+   "type": "chat",
+   "family": "big-pickle",
+   "name": "Big Pickle",
+   "compatibility": {
+    "reasoningField": "reasoning_content"
+   },
+   "package": "@opencode/ai/providers/openai-compatible",
+   "settings": {
+    "apiKey": "public",
+    "baseURL": "https://opencode.ai/inference/openai/v1",
+    "provider": "opencode"
+   },
+   "capabilities": {
+    "tools": true,
+    "input": [
+     "text"
+    ],
+    "output": [
+     "text"
+    ],
+    "temperature": true
+   },
+   "variants": [],
+   "time": {
+    "released": 1760659200000
+   },
+   "cost": [
+    {
+     "input": 0,
+     "output": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    }
+   ],
+   "status": "active",
+   "enabled": true,
+   "limit": {
+    "context": 200000,
+    "input": 160000,
+    "output": 32000
+   }
+  },
+  {
+   "id": "mock-1",
+   "modelID": "mock-1",
+   "providerID": "mock",
+   "name": "Mock 1",
+   "package": "@opencode/ai/providers/openai-compatible",
+   "settings": {
+    "apiKey": "mock",
+    "baseURL": "http://127.0.0.1:47811/v1"
+   },
+   "capabilities": {
+    "tools": true,
+    "input": [
+     "text",
+     "image"
+    ],
+    "output": [
+     "text"
+    ]
+   },
+   "variants": [
+    {
+     "id": "low",
+     "settings": {
+      "reasoningEffort": "low"
+     }
+    },
+    {
+     "id": "medium",
+     "settings": {
+      "reasoningEffort": "medium"
+     }
+    },
+    {
+     "id": "high",
+     "settings": {
+      "reasoningEffort": "high"
+     }
+    }
+   ],
+   "time": {
+    "released": 0
+   },
+   "cost": [],
+   "status": "active",
+   "enabled": true,
+   "limit": {
+    "context": 128000,
+    "output": 4096
+   }
+  }
+ ]
+}

@@ -1,0 +1,32 @@
+{
+ "data": {
+  "id": "ses_e13556bb5ffeY1uEs1EG2lGeBf",
+  "projectID": "global",
+  "model": {
+   "id": "mock-1",
+   "providerID": "mock",
+   "variant": "default"
+  },
+  "cost": 0,
+  "tokens": {
+   "input": 117266,
+   "output": 55,
+   "reasoning": 0,
+   "cache": {
+    "read": 0,
+    "write": 0
+   }
+  },
+  "outcome": "succeeded",
+  "time": {
+   "created": 1794971964492,
+   "updated": 1794972186601,
+   "busy": 1794972186410,
+   "idle": 1794972186604
+  },
+  "title": "Mock session",
+  "location": {
+   "directory": "/tmp/ensemble-probe"
+  }
+ }
+}

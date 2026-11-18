@@ -1,0 +1,11 @@
+{
+ "data": [
+  {
+   "file": "hello.txt",
+   "patch": "diff --git a/hello.txt b/hello.txt\nnew file mode 100644\nindex 0000000..afd462e\n--- /dev/null\n+++ b/hello.txt\n@@ -0,0 +1 @@\n+hello from mock\n",
+   "additions": 1,
+   "deletions": 0,
+   "status": "added"
+  }
+ ]
+}

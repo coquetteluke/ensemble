@@ -1,0 +1,14 @@
+{
+ "version": "2.3.0",
+ "pid": 52525,
+ "hostname": "mac.local",
+ "urls": [
+  "http://127.0.0.1:49374"
+ ],
+ "paths": {
+  "tmp": "/tmp/opencode"
+ },
+ "capabilities": {
+  "persistentPty": true
+ }
+}

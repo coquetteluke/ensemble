@@ -1,0 +1,14 @@
+{
+ "location": {
+  "directory": "/tmp/ensemble-probe"
+ },
+ "data": [
+  {
+   "name": "bogus",
+   "status": {
+    "status": "failed",
+    "error": "Connection closed: MCP server process exited with code 1"
+   }
+  }
+ ]
+}
