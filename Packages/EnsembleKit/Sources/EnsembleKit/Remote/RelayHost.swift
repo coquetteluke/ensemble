@@ -40,8 +40,6 @@ public actor RelayHost {
         /// Opening a socket, and on the control socket getting through to `ready`. The relay itself allows 10 s for
         /// the answer to its challenge and 15 s for a data socket's token.
         var connectTimeout: Duration = .seconds(15)
-        /// Data sockets still opening at once. The relay lets at most 3 phones wait.
-        var maxOpeningDataSockets = 8
     }
 
     private enum SignIn { case auth, claim }
@@ -88,7 +86,7 @@ public actor RelayHost {
     private var signedIn = false
     private var dataMessageBytes = 1 << 20
     /// Data sockets that are still opening, by relay connection id.
-    private var opening: [String: NWConnection] = [:]
+    private var openingData: [String: NWConnection] = [:]
     /// Relay connection ids handed to the server lately, newest last, so bad handshakes are reported only for phones
     /// that came through this relay.
     private var adopted: [String] = []
@@ -155,8 +153,8 @@ public actor RelayHost {
         limitTask?.cancel()
         limitTask = nil
         closeControl()
-        for connection in opening.values { connection.cancel() }
-        opening = [:]
+        for connection in openingData.values { connection.cancel() }
+        openingData = [:]
         adopted = []
         limitResetsAt = nil
         publish(.off)
@@ -420,11 +418,13 @@ public actor RelayHost {
 
     /// A phone proved the access key: open its data socket.
     private func openDataSocket(conn: String, token: String) {
-        // The id goes into a URL path, so it must be exactly the relay's form.
-        guard running, RelayWire.isConnID(conn), RemoteHandshake.decode(token, expectedCount: 32) != nil,
-              opening[conn] == nil, opening.count < timing.maxOpeningDataSockets else { return }
+        // Cap concurrent opening sockets at 4 (the relay's 3 waiting slots plus 1 headroom) before `adopt`, and check
+        // the id before putting it into a URL path.
+        guard running, openingData.count < 4,
+              RelayWire.isConnID(conn), RemoteHandshake.decode(token, expectedCount: 32) != nil,
+              openingData[conn] == nil else { return }
         let connection = NWConnection(to: .url(endpoint("data/\(conn)")), using: parameters(maxMessageBytes: dataMessageBytes))
-        opening[conn] = connection
+        openingData[conn] = connection
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
@@ -446,8 +446,8 @@ public actor RelayHost {
     }
 
     private func dataSocketReady(_ conn: String, connection: NWConnection, token: String) async {
-        guard opening[conn] === connection else { return }
-        opening[conn] = nil
+        guard openingData[conn] === connection else { return }
+        openingData[conn] = nil
         guard running else {
             connection.cancel()
             return
@@ -457,13 +457,13 @@ public actor RelayHost {
         // Remembered before the hand-over, so a bad handshake reported during it is recognised.
         adopted.append(conn)
         if adopted.count > 256 { adopted.removeFirst(adopted.count - 256) }
-        await server.adopt(connection, relayConnection: conn)
+        await server.adopt(connection, relayConnection: conn, relayChannelHost: channelHost)
     }
 
     /// A data socket that never opened, or took too long.
     private func dataSocketGone(_ conn: String, connection: NWConnection) {
-        guard opening[conn] === connection else { return }
-        opening[conn] = nil
+        guard openingData[conn] === connection else { return }
+        openingData[conn] = nil
         connection.cancel()
     }
 

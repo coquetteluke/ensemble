@@ -28,12 +28,16 @@ import Testing
 
     /// - Parameter prepare: sets up the fake relay before the host starts.
     func start(timing: RelayHost.Timing = RelayHost.Timing(),
+               maxPending: Int = 8,
+               maxRelayedPending: Int = 4,
                prepare: (FakeRelay, RelayIdentity) -> Void = { _, _ in }) async throws -> Harness {
         let fake = try await FakeRelay.start()
         let identity = RelayIdentity.make()
         prepare(fake, identity)
         let token = RemoteToken.generate()
-        let config = RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Relay Mac", helloTimeout: .seconds(30))
+        let config = RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Relay Mac",
+                                                helloTimeout: .seconds(30), maxPending: maxPending,
+                                                maxRelayedPending: maxRelayedPending)
         let server = RemoteServer(host: DemoRemoteHost(), token: token, configuration: config)
         try await server.start()
         let port = try #require(await server.boundPort)
@@ -208,6 +212,70 @@ import Testing
             return
         }
         #expect(await h.server.status.devices.count == 1)
+    }
+
+    @Test func relayedPendingIsSeparateFromDirectPendingAndCappedAtMaxRelayedPending() async throws {
+        #expect(RemoteServer.Configuration().maxRelayedPending == 4)
+
+        // Direct pending is 2 while relayed pending is 3, so saturating relayed pending also exceeds maxPending.
+        let h = try await start(maxPending: 2, maxRelayedPending: 3)
+        defer { Task { await h.stop() } }
+        try await connected(h)
+
+        var stalledRelayed: [URLSessionWebSocketTask] = []
+        defer { stalledRelayed.forEach { $0.cancel() } }
+        for _ in 0..<3 {
+            let task = try await h.fake.dialPhone(mailbox: h.mailbox, accessKey: h.accessKey)
+            stalledRelayed.append(task)
+            let first = try RemoteCoding.decode(RemoteServerFrame.self, from: RelayPhone.data(try await task.receive()))
+            guard case .challenge = first.message else {
+                Issue.record("Expected challenge on relayed connection within maxRelayedPending")
+                return
+            }
+        }
+        #expect(await h.server.status.pendingConnections == 3)
+
+        // The next unauthenticated relayed connection hits maxRelayedPending and is closed before getting a challenge.
+        let fourthGotChallenge: Bool = await {
+            do {
+                let fourth = try await h.fake.dialPhone(mailbox: h.mailbox, accessKey: h.accessKey)
+                defer { fourth.cancel() }
+                let frame = try RemoteCoding.decode(RemoteServerFrame.self, from: RelayPhone.data(try await fourth.receive()))
+                if case .challenge = frame.message { return true }
+                return false
+            } catch {
+                return false
+            }
+        }()
+        #expect(!fourthGotChallenge)
+        #expect(await h.server.status.pendingConnections == 3)
+
+        // A direct connection still succeeds because relayed handshakes do not count against direct maxPending.
+        let url = try #require(RemotePairing.webSocketURL(host: "127.0.0.1", port: h.serverPort))
+        let direct = URLSession.shared.webSocketTask(with: url)
+        direct.resume()
+        defer { direct.cancel() }
+        var directPhone = try await RelayPhone.handshake(over: direct, token: h.token, dialedHost: "127.0.0.1",
+                                                         dialedPort: h.serverPort)
+        guard case .welcome(let w) = try directPhone.open(directPhone.reply).message else {
+            Issue.record("Direct phone should succeed while relayed pending slots are full")
+            return
+        }
+        #expect(w.macName == "Relay Mac")
+        #expect(await h.server.status.devices.count == 1)
+
+        // Stopping the relay host removes its channel host and drops pending relayed handshakes immediately,
+        // without touching the direct phone.
+        await h.relay.stop()
+        try await pollUntil("pending relayed handshakes to be cancelled") {
+            await h.server.status.pendingConnections == 0
+        }
+        #expect(await h.server.status.devices.count == 1)
+
+        // Keep 2-argument adopt source compatibility covered.
+        await h.server.stop()
+        await h.server.adopt(NWConnection(host: "127.0.0.1", port: 1, using: .tcp),
+                             relayConnection: "abcdefghijklmnopqrstuv")
     }
 
     @Test func relayedPhoneMustHaveDialedTheRelayIdentity() async throws {
