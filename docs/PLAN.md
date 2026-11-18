@@ -86,7 +86,16 @@ Done when: two or three mock agents debate a question and produce a verdict, and
 
 Done when: from the iPhone on cellular with Tailscale on, you can see a running room, approve a permission, and send a message.
 
-## M5: Polish and release
+## M5: Deep polish and release (starts ONLY when Luke gives the okay)
+
+Luke's goal: nothing should look quickly generated. Do not start this milestone until he explicitly says go.
+- Bug hunt with Luke's bug-hunt workflow (~/Bug Fixing hub: hunters and skeptics per area, then parallel fixers, tests).
+- Design pass: every screen side by side with the Claude Code desktop app in dark and light, at 80/100/150% zoom and on both iPhone Duo screens: spacing, alignment, type scale, icon weights, hover and pressed states, animations, empty, loading and error states, copy (no filler, no em dashes).
+- Real-use pass: real sessions with Claude, Gemini and free models, rooms, the phone; fix every rough edge found.
+- Accessibility (VoiceOver labels, keyboard navigation, contrast) and performance (long transcripts, many sessions, memory).
+- Code tidy: dead code, naming, comments, README with screenshots.
+
+## M5 (original list): Polish and release
 
 - App icon, onboarding (install OpenCode check, add first key), empty states, keyboard shortcuts, accessibility labels.
 - Full end-to-end pass, bug hunt, README screenshots, GitHub release with a built `.app` zip.
