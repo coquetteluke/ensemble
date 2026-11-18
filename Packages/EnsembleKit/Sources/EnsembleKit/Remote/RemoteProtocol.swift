@@ -486,13 +486,59 @@ public struct RemoteUsageSummary: Codable, Hashable, Sendable {
     public var providers: [Row]
     public var agents: [Row]
     public var updated: Date
+    /// Subscription plan limits (Claude plan, Google AI plan). Added after protocol 3 shipped: older Macs send none.
+    public var plans: [RemotePlanUsage]?
 
-    public init(today: Usage = .zero, week: Usage = .zero, providers: [Row] = [], agents: [Row] = [], updated: Date = Date()) {
+    public init(today: Usage = .zero, week: Usage = .zero, providers: [Row] = [], agents: [Row] = [], updated: Date = Date(),
+                plans: [RemotePlanUsage]? = nil) {
         self.today = today
         self.week = week
         self.providers = providers
         self.agents = agents
         self.updated = updated
+        self.plans = plans
+    }
+}
+
+/// One subscription's plan limits for the phone's Usage screen.
+public struct RemotePlanUsage: Codable, Hashable, Sendable, Identifiable {
+    public struct Window: Codable, Hashable, Sendable, Identifiable {
+        public var id: String
+        /// The model group the limit covers ("Gemini models"); nil for plans with one group.
+        public var group: String?
+        /// "Five-hour limit", "Weekly limit".
+        public var label: String
+        /// 0...1.
+        public var usedFraction: Double
+        public var resetsAt: Date?
+
+        public init(id: String, group: String? = nil, label: String, usedFraction: Double, resetsAt: Date? = nil) {
+            self.id = id
+            self.group = group
+            self.label = label
+            self.usedFraction = usedFraction
+            self.resetsAt = resetsAt
+        }
+    }
+
+    /// `claude`, `googleAI` (`SubscriptionPlan`).
+    public var id: String
+    /// "Claude plan", "Google AI plan".
+    public var title: String
+    public var windows: [Window]
+    public var limitReached: Bool
+    /// When a reached limit resets, if reported.
+    public var resetsAt: Date?
+    /// Shown when there are no bars: "agy does not report how much of the plan is left".
+    public var note: String?
+
+    public init(id: String, title: String, windows: [Window] = [], limitReached: Bool = false, resetsAt: Date? = nil, note: String? = nil) {
+        self.id = id
+        self.title = title
+        self.windows = windows
+        self.limitReached = limitReached
+        self.resetsAt = resetsAt
+        self.note = note
     }
 }
 

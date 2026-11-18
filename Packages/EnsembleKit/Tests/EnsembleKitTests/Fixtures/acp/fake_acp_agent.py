@@ -29,6 +29,7 @@ Environment:
   FAKE_ACP_SIGNED_OUT    "1": session/new fails with -32000 (auth required)
   FAKE_ACP_IGNORE_MODE   "1": accept mode changes but keep reporting the initial mode
   FAKE_ACP_NO_MODES      "1": report no modes at all (sessions keep the initial mode)
+  FAKE_ACP_FAIL_MESSAGE  the error message a "fail" prompt answers with (default "fake failure")
 """
 import json, os, sys, threading, time
 
@@ -40,6 +41,7 @@ NO_ALWAYS = os.environ.get("FAKE_ACP_NO_ALWAYS") == "1"
 SIGNED_OUT = os.environ.get("FAKE_ACP_SIGNED_OUT") == "1"
 IGNORE_MODE = os.environ.get("FAKE_ACP_IGNORE_MODE") == "1"
 NO_MODES = os.environ.get("FAKE_ACP_NO_MODES") == "1"
+FAIL_MESSAGE = os.environ.get("FAKE_ACP_FAIL_MESSAGE", "fake failure")
 BYPASS = "--bypass" in sys.argv[1:]
 
 MODES = [("default", "Default"), ("accept-edits", "Accept edits"), ("auto", "Auto"), ("turbo", "Turbo")]
@@ -183,7 +185,7 @@ def run_prompt(rid, sid, text):
             stop = "cancelled" if answer == "cancelled" else "end_turn"
             reply = "Allowed." if answer == "allow" else ("" if answer == "cancelled" else "Rejected.")
         elif "fail" in lower:
-            send({"id": rid, "error": {"code": -32603, "message": "fake failure"}})
+            send({"id": rid, "error": {"code": -32603, "message": FAIL_MESSAGE}})
             return
         elif "slow" in lower:
             for _ in range(100):
