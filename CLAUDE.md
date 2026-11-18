@@ -9,6 +9,7 @@ xcodegen                                   # regenerate Ensemble.xcodeproj from 
 xcodebuild -project Ensemble.xcodeproj -scheme Ensemble -destination 'platform=macOS' build
 xcodebuild -project Ensemble.xcodeproj -scheme EnsembleRemote -destination 'generic/platform=iOS Simulator' build
 cd Packages/EnsembleKit && swift test      # unit tests
+scripts/install-mac.sh                     # build the last commit, install to /Applications, reopen
 ```
 
 - Never edit `Ensemble.xcodeproj` by hand; change `project.yml` and run `xcodegen`. Sources are picked up by folder, so new files need no project edit.
