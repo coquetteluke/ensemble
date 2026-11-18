@@ -76,7 +76,8 @@ function hasKeys(o: Record<string, unknown>, keys: string[]): boolean {
 
 /** Parses one control frame. Returns null for anything that is not exactly a frame from the table. */
 export function parseControl(text: string): ControlFrame | null {
-  if (new TextEncoder().encode(text).length > MAX_CONTROL_BYTES) return null;
+  // The UTF-16 length never exceeds the UTF-8 byte length, so a long string is rejected without encoding it.
+  if (text.length > MAX_CONTROL_BYTES || new TextEncoder().encode(text).length > MAX_CONTROL_BYTES) return null;
   let v: unknown;
   try {
     v = JSON.parse(text);
