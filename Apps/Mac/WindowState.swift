@@ -20,6 +20,8 @@ enum SidePane: Hashable {
     case file(path: String, line: Int?)
     /// The review pane (changes of the session or room).
     case review
+    /// The browser (`BrowserPane`), with the session's dev servers.
+    case browser
 
     /// Width before zoom.
     var width: CGFloat {
@@ -27,6 +29,7 @@ enum SidePane: Hashable {
         case .context: 303
         case .file: FileViewerPane.width
         case .review: 560
+        case .browser: BrowserPane.width
         }
     }
 }
@@ -214,6 +217,14 @@ final class WindowState {
     /// Opens or closes the review pane (Option-Command-R).
     func toggleReview() {
         if reviewOpen { closeSidePane() } else { openSidePane(.review) }
+    }
+
+    /// True while the pane shows the browser.
+    var browserOpen: Bool { showContextPanel && sidePane == .browser }
+
+    /// Opens or closes the browser pane (Option-Command-B).
+    func toggleBrowser() {
+        if browserOpen { closeSidePane() } else { openSidePane(.browser) }
     }
 
     /// Closes a file or review pane: the context panel comes back if it was open before.

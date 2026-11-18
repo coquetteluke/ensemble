@@ -300,6 +300,7 @@ struct EnsembleCommands: Commands {
             Button(window.contextPanelVisible ? "Hide Context Panel" : "Show Context Panel") { window.toggleContextPanel() }
                 .keyboardShortcut("i", modifiers: [.command, .option])
             ReviewMenuCommand(isOpen: window.reviewOpen, isAvailable: reviewAvailable) { window.toggleReview() }
+            BrowserMenuCommand(isOpen: window.browserOpen) { window.toggleBrowser() }
             Divider()
             // Command-= also zooms in (handled by WindowState.installZoomShortcut).
             Button("Zoom In") { window.zoomIn() }

@@ -23,9 +23,9 @@ struct MainView: View {
     static let panelWidth: CGFloat = 303
     /// The narrowest the centre gets when a wide pane (file viewer, review) opens on the right.
     static let centreMinWidth: CGFloat = 400
-    /// Room the window's four toolbar buttons (background, changes, customizations, context panel) take at the top
-    /// right, when no pane is open.
-    static let toolbarButtonsWidth: CGFloat = 170
+    /// Room the window's five toolbar buttons (background, changes, browser, customizations, context panel) take at
+    /// the top right, when no pane is open.
+    static let toolbarButtonsWidth: CGFloat = 210
 
     /// Snapshots pass a fixed zoom; the app uses the stored View > Zoom setting.
     var zoomOverride: CGFloat?
@@ -78,6 +78,7 @@ struct MainView: View {
         .task(id: ObjectIdentifier(store)) { if !isSnapshot { ReviewCenter.shared.follow(store) } }
         .modifier(RoomsWindowSync(store: store, window: window, rooms: rooms))
         .modifier(SplitWindowSync(store: store, window: window))
+        .modifier(BrowserWindowSync(store: store))
         .navigationTitle(windowTitle)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -86,6 +87,10 @@ struct MainView: View {
             .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .primaryAction) {
                 ReviewToolbarButton(isOpen: window.reviewOpen) { window.toggleReview() }
+            }
+            .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .primaryAction) {
+                BrowserToolbarButton(isOpen: window.browserOpen) { window.toggleBrowser() }
             }
             .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .navigation) {
@@ -149,6 +154,17 @@ struct MainView: View {
                     .id(session.id)
             } else {
                 SidePanePlaceholder(symbol: "plus.forwardslash.minus", title: "Changes", detail: "No session selected") {
+                    window.closeSidePane()
+                }
+            }
+        case .browser:
+            if window.route != .room, let session = store.selected {
+                BrowserPane(page: BrowserCenter.shared.page(for: session), store: store, session: session,
+                            onClose: { window.closeSidePane() })
+                    .id(session.id)
+            } else {
+                SidePanePlaceholder(symbol: "globe", title: "Browser",
+                                    detail: window.route == .room ? "The browser works in a session, not in a room" : "No session selected") {
                     window.closeSidePane()
                 }
             }
@@ -518,6 +534,9 @@ struct SnapshotWindowChrome: View {
                 Image(systemName: "plus.forwardslash.minus")
                     .font(.system(size: 14))
                     .foregroundStyle(window.reviewOpen ? theme.textPrimary : theme.textSecondary)
+                Image(systemName: "globe")
+                    .font(.system(size: 14))
+                    .foregroundStyle(window.browserOpen ? theme.textPrimary : theme.textSecondary)
                 Image(systemName: "puzzlepiece.extension")
                     .font(.system(size: 14))
                     .foregroundStyle(theme.textSecondary)

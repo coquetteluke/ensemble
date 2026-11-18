@@ -90,7 +90,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
     case switchModel, switchMode, modeAsk, modeAcceptEdits, modeAuto, modePlan, modeBypass, changeEffort, toggleFastMode, sideQuestion, focusComposer
     case allowOnce, alwaysAllow, reject
     case nextTranscriptView, viewNormal, viewThinking, viewVerbose
-    case toggleSidebar, toggleContextPanel, closeFileViewer, zoomIn, zoomOut, actualSize
+    case toggleSidebar, toggleContextPanel, toggleBrowser, closeFileViewer, zoomIn, zoomOut, actualSize
     case openInSplit, closePane, nextPane, previousPane, equalizePanes, closeSplit
     case appearanceDark, appearanceLight, appearanceSystem
 
@@ -135,6 +135,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .viewVerbose: "Transcript view: Verbose"
         case .toggleSidebar: "Show or hide the sidebar"
         case .toggleContextPanel: "Show or hide the context panel"
+        case .toggleBrowser: "Show or hide the browser"
         case .closeFileViewer: "Close the file viewer"
         case .zoomIn: "Zoom in"
         case .zoomOut: "Zoom out"
@@ -160,7 +161,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
              .focusComposer: .composer
         case .allowOnce, .alwaysAllow, .reject: .permissions
         case .nextTranscriptView, .viewNormal, .viewThinking, .viewVerbose: .transcript
-        case .toggleSidebar, .toggleContextPanel, .closeFileViewer, .zoomIn, .zoomOut, .actualSize,
+        case .toggleSidebar, .toggleContextPanel, .toggleBrowser, .closeFileViewer, .zoomIn, .zoomOut, .actualSize,
              .appearanceDark, .appearanceLight, .appearanceSystem: .view
         case .openInSplit, .closePane, .nextPane, .previousPane, .equalizePanes, .closeSplit: .split
         }
@@ -204,6 +205,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .viewVerbose: TranscriptViewMode.verbose.symbol
         case .toggleSidebar: "sidebar.left"
         case .toggleContextPanel: "sidebar.right"
+        case .toggleBrowser: "globe"
         case .closeFileViewer: "xmark.rectangle"
         case .zoomIn: "plus.magnifyingglass"
         case .zoomOut: "minus.magnifyingglass"
@@ -239,6 +241,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .nextTranscriptView: AppShortcut("o", .control)
         case .toggleSidebar: AppShortcut("s", [.command, .control])
         case .toggleContextPanel: AppShortcut("i", [.command, .option])
+        case .toggleBrowser: AppShortcut("b", [.command, .option])
         case .zoomIn: AppShortcut("+")
         case .zoomOut: AppShortcut("-")
         case .actualSize: AppShortcut("0")
@@ -269,6 +272,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .nextTranscriptView, .viewNormal, .viewThinking, .viewVerbose: ["detail", "tools", "thinking", "verbose"]
         case .toggleSidebar: ["sessions list"]
         case .toggleContextPanel: ["context", "usage", "connectors"]
+        case .toggleBrowser: ["web", "page", "preview", "dev server", "localhost", "launch.json", "console"]
         case .zoomIn, .zoomOut, .actualSize: ["text size", "font size", "scale"]
         case .appearanceDark, .appearanceLight, .appearanceSystem: ["theme", "dark mode", "light mode"]
         case .openInSplit: ["split view", "side by side", "beside", "pane"]
@@ -282,6 +286,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         switch self {
         case .toggleSidebar: "Sidebar"
         case .toggleContextPanel: "Context panel"
+        case .toggleBrowser: "Browser"
         case .keyboardShortcuts: "Keyboard shortcuts"
         default: title
         }
@@ -365,6 +370,7 @@ enum CommandRegistry {
         switch id {
         case .toggleSidebar: context.window.showSidebar ? "Hide sidebar" : "Show sidebar"
         case .toggleContextPanel: context.window.contextPanelVisible ? "Hide context panel" : "Show context panel"
+        case .toggleBrowser: context.window.browserOpen ? "Hide browser" : "Show browser"
         case .toggleFastMode: (context.store?.selected?.fastMode ?? false) ? "Turn fast mode off" : "Turn fast mode on"
         default: id.title
         }
@@ -458,6 +464,7 @@ enum CommandRegistry {
         case .viewVerbose: UserDefaults.standard.set(TranscriptViewMode.verbose.rawValue, forKey: TranscriptViewMode.storageKey)
         case .toggleSidebar: window.toggleSidebar()
         case .toggleContextPanel: window.toggleContextPanel()
+        case .toggleBrowser: window.toggleBrowser()
         case .closeFileViewer: search.closeFile()
         case .zoomIn: window.zoomIn()
         case .zoomOut: window.zoomOut()
