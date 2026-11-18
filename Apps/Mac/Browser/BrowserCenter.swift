@@ -81,6 +81,24 @@ struct BrowserWindowSync: ViewModifier {
             guard store.isLoaded, !isSnapshot, !closed.isEmpty else { return }
             BrowserCenter.shared.close(owners: closed)
         }
+        // The agent tools' keys and cards of sessions that were archived or deleted.
+        .onChange(of: closedAgentSessions) { _, closed in
+            guard store.isLoaded, !isSnapshot, !closed.isEmpty else { return }
+            AgentToolsCenter.shared.close(sessions: closed)
+        }
+    }
+
+    /// Sessions with agent tools state whose session is gone or archived.
+    private var closedAgentSessions: [String] {
+        let center = AgentToolsCenter.shared
+        var ids = Set(center.server.sessionsWithKeys)
+        if let coordinator = center.coordinator {
+            ids.formUnion(coordinator.proposals.map(\.sessionID))
+            ids.formUnion(coordinator.browserStates.keys)
+        }
+        guard !ids.isEmpty else { return [] }
+        let sessions = Dictionary(store.sessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return ids.filter { sessions[$0].map { $0.info.archived } ?? true }.sorted()
     }
 
     /// Browser owners whose session is gone or archived.

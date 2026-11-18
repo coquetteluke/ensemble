@@ -638,7 +638,9 @@ actor ACPEngineCore {
         // The folder with every symlink resolved: agy 1.5.10 runs shell commands in its own working folder, not the
         // project, when the session folder's path goes through a link (`/var/folders/...` is `/private/var/...`).
         let cwd = WorkspaceTrust.resolvedPath(record.directory) ?? record.directory
-        let base: JSONValue = ["cwd": .string(cwd), "mcpServers": []]
+        // Ensemble's own tools (`AgentToolsServer`) for this session only.
+        let tools = configuration.agentTools?.attachment(for: .session(id)).map { [$0.acpServer] } ?? []
+        let base: JSONValue = ["cwd": .string(cwd), "mcpServers": .array(tools)]
         var setup: ACPSessionSetup?
         if let agentID = record.agentSessionID {
             agentSessions[agentID] = id

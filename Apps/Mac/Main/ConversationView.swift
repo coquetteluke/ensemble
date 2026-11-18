@@ -28,6 +28,7 @@ struct ConversationView: View {
                 // "Trust this folder?" when the session's engine skips or refuses the folder's own settings.
                 SessionTrustCard(store: store, session: session)
                 PullRequestBarHost(store: store, session: session)
+                AgentBrowserPermissionHost(session: session)
                 ComposerView(store: store, session: session, window: window, worktreeSwitchInMore: worktreeSwitchInMore)
                 StatusLine(store: store, session: session, window: window,
                            onWorktreeSwitchHidden: { hidden in
@@ -50,6 +51,7 @@ struct ConversationView: View {
                 SubagentBanner(store: store, parentID: parentID, window: window)
             }
             TranscriptList(items: session.items, resolutions: session.resolutions, agents: store.agents)
+            ProposalCardsHost(session: session)
             if let todos = TodoParser.latest(in: session.items), !todos.isEmpty,
                session.isWorking || todos.contains(where: { $0.status == .pending || $0.status == .inProgress }) {
                 TaskListCard(items: todos)

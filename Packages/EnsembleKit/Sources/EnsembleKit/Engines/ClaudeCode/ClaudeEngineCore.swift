@@ -512,6 +512,11 @@ actor ClaudeEngineCore {
         case .userOnly:
             break
         }
+        // Ensemble's own tools (`AgentToolsServer`), in every folder: a private `--mcp-config` next to the snapshot.
+        if let tools = Self.agentToolsFile(configuration.agentTools, sessionID: id, folder: snapshotFolder) {
+            snapshotFolder = tools.folder
+            snapshotArguments += tools.arguments
+        }
         let options = ClaudeLaunchOptions(sessionID: record.cliID, start: start, resumeAt: start == .new ? nil : record.resumeAt,
                                           model: model, effort: record.effort, permissionMode: record.permissionMode,
                                           settingSources: configuration.settingSources.effective(trusted: plan == .project),

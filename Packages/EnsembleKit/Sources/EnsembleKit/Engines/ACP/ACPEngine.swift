@@ -90,6 +90,8 @@ public final class ACPEngine: OpenCodeAPI, EngineModelOptionsControl, EngineComm
         /// How long an interrupted turn may take to answer `cancelled` before Ensemble ends it on its side.
         public var interruptGrace: Duration
         public var clientVersion: String
+        /// Ensemble's own MCP server (`AgentToolsServer`), sent in `mcpServers` when a session opens.
+        public var agentTools: (any AgentToolsAttaching)? = AgentToolsServer.shared
 
         public init(agent: ACPAgentDefinition, executablePath: String? = nil, storeURL: URL? = nil, workDirectory: URL? = nil,
                     maxConcurrentTurns: Int? = nil, extraArguments: [String] = [],

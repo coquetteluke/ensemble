@@ -79,6 +79,7 @@ struct MainView: View {
         .modifier(RoomsWindowSync(store: store, window: window, rooms: rooms))
         .modifier(SplitWindowSync(store: store, window: window))
         .modifier(BrowserWindowSync(store: store))
+        .modifier(AgentToolsWindowSync(store: store, window: window))
         .navigationTitle(windowTitle)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {

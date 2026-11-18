@@ -17,6 +17,8 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
     private let state = Mutex(State())
     /// Plans waiting for an answer and the live event streams that hear about them (`OpenCodeClient+Interactions`).
     let interactions = Mutex(OpenCodeInteractionState())
+    /// Folders that have Ensemble's agent tools on this server (`OpenCodeClient+AgentTools`).
+    let agentToolsState = Mutex(OpenCodeAgentToolsState())
 
     private struct State {
         var modelCache: [String: (date: Date, models: [Wire.Model])] = [:]
@@ -196,6 +198,7 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
     }
 
     public func prompt(_ sessionID: String, text: String, files: [URL], delivery: Delivery?) async throws {
+        await ensureAgentTools(sessionID: sessionID)
         var body: [String: JSONValue] = ["text": .string(text)]
         if !files.isEmpty {
             body["files"] = .array(try files.map { url in

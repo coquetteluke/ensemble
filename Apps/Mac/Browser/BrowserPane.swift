@@ -11,6 +11,8 @@ struct BrowserPane: View {
     let session: SessionModel
     var servers: DevServers = BrowserCenter.shared.servers
     var topInset: CGFloat = 52
+    /// Ensemble's agent tools (the agent bar and its permission card); snapshots pass their own.
+    var agentTools: AgentToolsCenter = .shared
     let onClose: () -> Void
 
     @Environment(\.theme) private var theme
@@ -27,6 +29,8 @@ struct BrowserPane: View {
             HLine()
             addressBar
             progressLine
+            // An agent using this page (Ensemble's browser tools): what it does, Stop, Take over, and its permission card.
+            AgentBrowserBarHost(session: session, center: agentTools)
             if let pending = page.pendingStart {
                 DevServerConfirmCard(page: page, pending: pending, servers: servers)
                 HLine()

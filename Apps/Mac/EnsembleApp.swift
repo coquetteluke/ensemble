@@ -75,6 +75,8 @@ final class AppEngine {
         newStore.defaultModel = defaults.string(forKey: "defaultModel").flatMap(ModelRef.init(string:))
         newStore.defaultPermissionMode = defaults.string(forKey: "defaultPermissionMode").flatMap(PermissionMode.init(rawValue:)) ?? .auto
         store = newStore
+        // Ensemble's tools for agents (propose_session, the browser tools); never in previews.
+        if !Self.usePreview { AgentToolsCenter.shared.start(store: newStore) }
         let remoteHost = MacRemoteHost(store: newStore)
         let remoteControl = RemoteControlController(host: remoteHost)
         remote = remoteControl

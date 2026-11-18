@@ -67,6 +67,8 @@ public final class ClaudeCodeEngine: OpenCodeAPI, EngineModelOptionsControl, Eng
         public var extraArguments: [String]
         /// The environment the child's allowlist is taken from.
         public var baseEnvironment: [String: String]
+        /// Ensemble's own MCP server (`AgentToolsServer`), attached to every agent with a private `--mcp-config` file.
+        public var agentTools: (any AgentToolsAttaching)? = AgentToolsServer.shared
 
         public init(executablePath: String? = nil, storeURL: URL? = nil, projectsDirectory: URL? = nil,
                     settingSources: ClaudeSettingSources = .all, thinkingDisplay: String? = "summarized",
