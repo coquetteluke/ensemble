@@ -99,26 +99,30 @@ enum FileActions {
     }
 
     static func openWithDefaultApp(_ link: FileLink) {
-        guard canOpenWithDefaultApp(link) else { return }
-        NSWorkspace.shared.open(URL(fileURLWithPath: link.path))
+        // Opens exactly the file that was checked: the real target, never the link that points at it.
+        guard let target = defaultAppTarget(link) else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: target))
     }
 
-    /// False for anything that would run instead of open: executables, scripts, apps and installers, which an
-    /// agent could otherwise get launched with one click on a path it wrote.
-    static func canOpenWithDefaultApp(_ link: FileLink) -> Bool {
-        let path = link.path
-        if FileManager.default.isExecutableFile(atPath: path) { return false }
-        if path.split(separator: "/").contains(where: { $0.lowercased().hasSuffix(".app") }) { return false }
-        let ext = (path as NSString).pathExtension.lowercased()
-        let runnable: Set<String> = ["app", "command", "tool", "terminal", "sh", "bash", "zsh", "csh", "ksh", "py", "pl", "rb",
-                                     "scpt", "scptd", "applescript", "workflow", "action", "pkg", "mpkg", "dmg", "prefpane",
-                                     "kext", "plugin", "bundle", "webloc", "inetloc", "fileloc", "jar", "osascript", "url"]
-        if runnable.contains(ext) { return false }
-        if let type = UTType(filenameExtension: ext),
-           [UTType.executable, .application, .applicationBundle, .script, .shellScript, .unixExecutable].contains(where: { type.conforms(to: $0) }) {
-            return false
-        }
-        return true
+    static func canOpenWithDefaultApp(_ link: FileLink) -> Bool { defaultAppTarget(link) != nil }
+
+    /// Document types the default app may open: things that are viewed, not run.
+    private static let viewable: [UTType] = [.plainText, .json, .image, .pdf, .audiovisualContent, .rtf, .spreadsheet, .presentation]
+    /// Types that run (or install, or mount) when opened, even where they also count as text.
+    private static let runnable: [UTType] = [.executable, .application, .applicationBundle, .script, .shellScript,
+                                             .unixExecutable, .diskImage, .archive, .package, .bundle, .internetShortcut]
+
+    /// The resolved file the default app may open, or nil. An allowlist checked on the symlink's real target, so a
+    /// link named `notes.txt` that points at a script, an app or an installer never runs with one click.
+    static func defaultAppTarget(_ link: FileLink) -> String? {
+        let resolved = (link.path as NSString).resolvingSymlinksInPath
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory), !isDirectory.boolValue else { return nil }
+        if FileManager.default.isExecutableFile(atPath: resolved) { return nil }
+        if resolved.split(separator: "/").contains(where: { $0.lowercased().hasSuffix(".app") }) { return nil }
+        guard let type = UTType(filenameExtension: (resolved as NSString).pathExtension) else { return nil }
+        if runnable.contains(where: { type.conforms(to: $0) }) { return nil }
+        return viewable.contains(where: { type.conforms(to: $0) }) ? resolved : nil
     }
 
     /// "Open in" entries: each installed editor, then the default app for the file type (not for runnable files).
