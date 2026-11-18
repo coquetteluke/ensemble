@@ -11,7 +11,7 @@ struct NewSessionSheet: View {
 
     @State private var directory = ""
     @State private var modelID = ""
-    @State private var mode: PermissionMode = .ask
+    @State private var mode: PermissionMode = .auto
     @State private var creating = false
     @State private var error: String?
 

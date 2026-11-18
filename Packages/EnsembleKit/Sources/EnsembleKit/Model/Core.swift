@@ -107,7 +107,7 @@ public struct RoomSpec: Codable, Hashable, Sendable, Identifiable {
     public var debateRounds: Int
 
     public init(id: UUID = UUID(), title: String, directory: String, agents: [AgentSpec], mode: RoomMode,
-                leadAgentID: UUID? = nil, permissionMode: PermissionMode = .ask, created: Date = Date(), debateRounds: Int = 3) {
+                leadAgentID: UUID? = nil, permissionMode: PermissionMode = .auto, created: Date = Date(), debateRounds: Int = 3) {
         self.id = id
         self.title = title
         self.directory = directory

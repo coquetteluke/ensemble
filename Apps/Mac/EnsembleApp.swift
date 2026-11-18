@@ -39,7 +39,7 @@ final class AppEngine {
     private func open(_ newStore: SessionStore) {
         let defaults = UserDefaults.standard
         newStore.defaultModel = defaults.string(forKey: "defaultModel").flatMap(ModelRef.init(string:))
-        newStore.defaultPermissionMode = defaults.string(forKey: "defaultPermissionMode").flatMap(PermissionMode.init(rawValue:)) ?? .ask
+        newStore.defaultPermissionMode = defaults.string(forKey: "defaultPermissionMode").flatMap(PermissionMode.init(rawValue:)) ?? .auto
         store = newStore
         Task { await newStore.start() }
     }

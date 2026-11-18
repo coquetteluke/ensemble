@@ -203,7 +203,7 @@ struct ModelsSettingsView: View {
 struct GeneralSettingsView: View {
     let store: SessionStore
     @AppStorage("appearance") private var appearance = AppearanceSetting.dark.rawValue
-    @AppStorage("defaultPermissionMode") private var defaultMode = PermissionMode.ask.rawValue
+    @AppStorage("defaultPermissionMode") private var defaultMode = PermissionMode.auto.rawValue
 
     var body: some View {
         Form {
@@ -220,7 +220,7 @@ struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .onChange(of: defaultMode) {
-            store.defaultPermissionMode = PermissionMode(rawValue: defaultMode) ?? .ask
+            store.defaultPermissionMode = PermissionMode(rawValue: defaultMode) ?? .auto
         }
     }
 }
