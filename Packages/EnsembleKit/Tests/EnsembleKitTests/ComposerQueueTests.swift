@@ -50,17 +50,17 @@ final class SteeringTestEngine: PreviewForwarding, EngineSteeringControl, Engine
     let delivery: QueuedDelivery
     let steerable: Bool
     let forkable: Bool
-    /// How long making a copy takes, so a test can act while it is still in progress.
-    let forkDelay: Duration
+    /// Making a copy waits until this opens, so a test can act while it is still in progress.
+    let forkGate: TestGate
     private let log = Mutex<[String]>([])
 
     init(delivery: QueuedDelivery = .inOrder, steerable: Bool = true, forkable: Bool = true, delayScale: Double = 0.1,
-         forkDelay: Duration = .zero) {
+         holdForks: Bool = false) {
         base = PreviewEngine(seed: PreviewData.seed(), delayScale: delayScale)
         self.delivery = delivery
         self.steerable = steerable
         self.forkable = forkable
-        self.forkDelay = forkDelay
+        forkGate = TestGate(open: !holdForks)
     }
 
     var calls: [String] { log.withLock { $0 } }
@@ -93,7 +93,7 @@ final class SteeringTestEngine: PreviewForwarding, EngineSteeringControl, Engine
 
     var rewindRestoresFiles: Bool { false }
     func fork(_ sessionID: String, atMessageID messageID: String?) async throws -> EngineSession {
-        if forkDelay > .zero { try await Task.sleep(for: forkDelay) }
+        await forkGate.wait()
         return try await base.fork(sessionID, atMessageID: messageID)
     }
     func rewind(_ sessionID: String, toBeforeMessageID messageID: String) async throws {
@@ -109,18 +109,6 @@ final class PlainTestEngine: PreviewForwarding, Sendable {
 @MainActor
 @Suite("Composer queue and side questions", .serialized)
 struct ComposerQueueTests {
-    /// Polls until `condition` holds; fails the test after `timeout`.
-    func until(_ what: String, timeout: Duration = .seconds(10), _ condition: () -> Bool) async {
-        let deadline = ContinuousClock.now + timeout
-        while !condition() {
-            guard ContinuousClock.now < deadline else {
-                Issue.record("Timed out waiting for \(what)")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(20))
-        }
-    }
-
     func started(_ engine: any OpenCodeAPI) async throws -> (SessionStore, SessionModel) {
         let store = SessionStore(engine: engine)
         await store.start()
@@ -147,7 +135,7 @@ struct ComposerQueueTests {
         #expect(userTexts(session) == ["First task"], "held messages are not in the transcript yet")
         #expect(engine.calls == ["prompt:First task"])
 
-        await until("both held messages to go out") { userTexts(session).count == 3 && !session.isWorking }
+        try await waitUntil("both held messages to go out") { userTexts(session).count == 3 && !session.isWorking }
         #expect(userTexts(session) == ["First task", "Second", "Third\n\nAttached: notes.md"])
         #expect(engine.calls == ["prompt:First task", "prompt:Second", "prompt:Third"], "one prompt per turn, oldest first")
         #expect(store.queue(for: session.id).isEmpty)
@@ -160,7 +148,7 @@ struct ComposerQueueTests {
         await store.send("Also add tests", to: session.id)
         await store.send("And update the README", to: session.id)
         #expect(store.queuedDelivery(for: session.id) == .combined)
-        await until("the combined message") { userTexts(session).count == 2 && !session.isWorking }
+        try await waitUntil("the combined message") { userTexts(session).count == 2 && !session.isWorking }
         #expect(engine.calls == ["prompt:Build the panel", "prompt:Also add tests\n\nAnd update the README"])
         #expect(store.queue(for: session.id).isEmpty)
     }
@@ -171,18 +159,20 @@ struct ComposerQueueTests {
         #expect(store.queue(for: session.id).isEmpty)
         #expect(userTexts(session) == ["Hello"])
         #expect(store.sendNowBehavior(for: session.id) == .steer)
-        await until("the turn to end") { !session.isWorking }
+        try await waitUntil("the turn to end") { !session.isWorking }
         #expect(store.sendNowBehavior(for: session.id) == .send)
     }
 
     @Test func stoppingTheTurnHoldsTheQueue() async throws {
-        let engine = SteeringTestEngine(delayScale: 1)
+        let engine = SteeringTestEngine(delayScale: TestWait.longTurnScale)
         let (store, session) = try await started(engine)
         await store.send("Long task", to: session.id)
         await store.send("Follow up", to: session.id)
         await store.stop()
-        await until("the interrupt") { !session.isWorking }
-        try await Task.sleep(for: .milliseconds(600))
+        try await waitUntil("the interrupt") { !session.isWorking }
+        // Nothing announces that the store chose not to send, so give a wrong send well past the store's settle delay
+        // to show up.
+        try await Task.sleep(for: SessionStore.queueSettleDelay * 2 + .milliseconds(100))
         #expect(store.queue(for: session.id).map(\.text) == ["Follow up"], "a stopped turn does not send what is waiting")
         #expect(store.isQueueHeld(session.id))
         #expect(!engine.calls.contains("prompt:Follow up"))
@@ -196,7 +186,7 @@ struct ComposerQueueTests {
     }
 
     @Test func sendNowSteersTheRunningTurn() async throws {
-        let engine = SteeringTestEngine(delayScale: 1)
+        let engine = SteeringTestEngine(delayScale: TestWait.longTurnScale)
         let (store, session) = try await started(engine)
         await store.send("Long task", to: session.id)
         await store.send("Use the new API instead", to: session.id)
@@ -212,7 +202,7 @@ struct ComposerQueueTests {
     }
 
     @Test func sendNowStopsAndSendsWhenTheEngineCannotSteer() async throws {
-        let engine = SteeringTestEngine(steerable: false, delayScale: 1)
+        let engine = SteeringTestEngine(steerable: false, delayScale: TestWait.longTurnScale)
         let (store, session) = try await started(engine)
         await store.send("Long task", to: session.id)
         await store.send("Change of plan", to: session.id)
@@ -236,7 +226,7 @@ struct ComposerQueueTests {
     }
 
     @Test func editAndCancelTakeMessagesOut() async throws {
-        let engine = SteeringTestEngine(delayScale: 1)
+        let engine = SteeringTestEngine(delayScale: TestWait.longTurnScale)
         let (store, session) = try await started(engine)
         await store.send("Long task", to: session.id)
         await store.send("One", to: session.id)
@@ -258,7 +248,7 @@ struct ComposerQueueTests {
         let engine = SteeringTestEngine()
         let (store, session) = try await started(engine)
         await store.send("Build the panel", to: session.id)
-        await until("the first turn") { !session.isWorking }
+        try await waitUntil("the first turn") { !session.isWorking }
         let itemsBefore = session.items
         let sessionsBefore = store.sidebarOrder.map(\.id)
 
@@ -270,7 +260,7 @@ struct ComposerQueueTests {
         #expect(store.sidebarOrder.map(\.id) == sessionsBefore, "the copy is not in the sidebar")
         #expect(store.session(forkID)?.permissionMode == .ask, "the copy never runs in the source's mode")
 
-        await until("the answer") { store.sideQuestions[session.id]?.phase == .answered }
+        try await waitUntil("the answer") { store.sideQuestions[session.id]?.phase == .answered }
         let answer = try #require(store.sideQuestions[session.id].map { store.sideQuestionAnswer($0) })
         #expect(!answer.text.isEmpty)
         #expect(!answer.streaming)
@@ -295,7 +285,7 @@ struct ComposerQueueTests {
         let (store, session) = try await started(engine)
         await store.askSideQuestion("Summarise the plan", about: session.id)
         let forkID = try #require(store.sideQuestions[session.id]?.forkSessionID)
-        await until("the answer") { store.sideQuestions[session.id]?.phase == .answered }
+        try await waitUntil("the answer") { store.sideQuestions[session.id]?.phase == .answered }
 
         let kept = await store.continueSideQuestion(for: session.id)
         #expect(kept?.id == forkID)
@@ -305,17 +295,18 @@ struct ComposerQueueTests {
         #expect(store.selectedSessionID == forkID)
         #expect(kept?.permissionMode == .bypass, "kept like a fork, with the source's mode")
         #expect(kept?.title == "Summarise the plan")
-        await until("the kept session's transcript") { kept?.transcriptLoaded == true }
+        try await waitUntil("the kept session's transcript") { kept?.transcriptLoaded == true }
     }
 
     @Test func closingWhileTheCopyIsMadeThrowsTheCopyAway() async throws {
-        // The copy takes half a second, so the close below always lands while it is being made.
-        let engine = SteeringTestEngine(forkDelay: .milliseconds(500))
+        // The copy is held until the close below has happened, so the close always lands while it is being made.
+        let engine = SteeringTestEngine(holdForks: true)
         let (store, session) = try await started(engine)
         let ask = Task { await store.askSideQuestion("Quick one", about: session.id) }
-        while store.sideQuestions[session.id] == nil { await Task.yield() }
+        try await waitUntil("the side question to start") { store.sideQuestions[session.id] != nil }
         #expect(store.sideQuestions[session.id]?.forkSessionID == nil, "closed while the copy is still being made")
         await store.closeSideQuestion(for: session.id)
+        engine.forkGate.open()
         await ask.value
         #expect(store.sideQuestions[session.id] == nil)
         #expect(store.hiddenSessionIDs.isEmpty, "no hidden copy is left behind")
@@ -370,7 +361,7 @@ struct ComposerQueueTests {
         let leftover = try #require(first.sideQuestions[a.id]?.forkSessionID)
         await first.askSideQuestion("Kept as a session", about: b.id)
         let kept = try #require(first.sideQuestions[b.id]?.forkSessionID)
-        await until("both answers") { first.sideQuestions.values.allSatisfy { $0.phase != .asking } }
+        try await waitUntil("both answers") { first.sideQuestions.values.allSatisfy { $0.phase != .asking } }
         await first.continueSideQuestion(for: b.id)
         #expect(first.sideQuestionCopyRecords().map(\.id) == [leftover], "a kept copy is off the list at once")
         first.stopListening()
@@ -398,7 +389,7 @@ struct ComposerQueueTests {
         let session = try await first.newSession(directory: "/tmp/side-retry", model: nil, permissionMode: .bypass)
         await first.askSideQuestion("Anything", about: session.id)
         let leftover = try #require(first.sideQuestions[session.id]?.forkSessionID)
-        await until("the answer") { first.sideQuestions[session.id]?.phase != .asking }
+        try await waitUntil("the answer") { first.sideQuestions[session.id]?.phase != .asking }
         first.stopListening()
 
         engine.failDeletes.withLock { $0 = true }

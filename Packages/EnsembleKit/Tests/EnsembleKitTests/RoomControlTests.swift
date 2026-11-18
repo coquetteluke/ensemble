@@ -310,7 +310,7 @@ import Testing
         fake.on("Beta", "[Room] Reply DONE", reply: "DONE")
         let engine = try await RoomFixtures.engine(RoomFixtures.spec(.team, ["Alpha", "Beta"]), fake: fake)
         await engine.start(task: "Build it")
-        try await engine.waitFor("finish", timeout: .seconds(10), fake: fake) { $0.state.phase == .finished }
+        try await engine.waitFor("finish", fake: fake) { $0.state.phase == .finished }
         let pings = fake.sent.filter { $0.wake && $0.text.hasSuffix("to you: ping") }
         #expect(pings.count <= RoomEngine.relayWakeLimit + 2)
         #expect(engine.notices.contains { $0.hasPrefix("Agents have woken each other") })

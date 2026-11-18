@@ -8,17 +8,6 @@ import Testing
 @Suite @MainActor struct GitReviewStoreTests {
     let helper = GitReviewServiceTests()
 
-    func until(_ what: String, timeout: Duration = .seconds(15), _ condition: () -> Bool) async {
-        let deadline = ContinuousClock.now + timeout
-        while !condition() {
-            guard ContinuousClock.now < deadline else {
-                Issue.record("Timed out waiting for \(what)")
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(20))
-        }
-    }
-
     @Test func eachTurnStartSnapshotsTheSessionFolder() async throws {
         let repo = try helper.makeRepo(files: ["a.txt": "a\n"])
         let store = SessionStore(engine: PreviewEngine(delayScale: 0.02))
@@ -29,12 +18,12 @@ import Testing
         snapshots.follow(store)
 
         await store.send("First turn", to: session.id)
-        await until("the first snapshot") { snapshots.marks[session.id]?.count == 1 }
-        await until("the first turn to end") { !session.isWorking }
+        try await waitUntil("the first snapshot") { snapshots.marks[session.id]?.count == 1 }
+        try await waitUntil("the first turn to end") { !session.isWorking }
         try helper.write("a2\n", "a.txt", in: repo)
         await store.send("Second turn", to: session.id)
-        await until("the second snapshot") { snapshots.marks[session.id]?.count == 2 }
-        await until("the second turn to end") { !session.isWorking }
+        try await waitUntil("the second snapshot") { snapshots.marks[session.id]?.count == 2 }
+        try await waitUntil("the second turn to end") { !session.isWorking }
 
         let marks = try #require(snapshots.marks[session.id])
         #expect(marks.count == 2, "one snapshot per turn, not per activity change")
@@ -52,7 +41,7 @@ import Testing
         await store.start()
         let session = try await store.newSession(directory: "/tmp/review-demo", model: nil, permissionMode: .bypass)
         await store.send("Build the panel", to: session.id)
-        await until("the first turn") { !session.isWorking }
+        try await waitUntil("the first turn") { !session.isWorking }
         let itemsBefore = session.items
         let sidebarBefore = store.sidebarOrder.map(\.id)
         let sessionsBefore = try await engine.listSessions().count
@@ -65,7 +54,7 @@ import Testing
         #expect(session.items == itemsBefore, "nothing was added to the session")
         #expect(store.sidebarOrder.map(\.id) == sidebarBefore, "the copy never showed in the sidebar")
 
-        await until("the copy to be deleted") { store.hiddenSessionIDs.isEmpty }
+        try await waitUntil("the copy to be deleted") { store.hiddenSessionIDs.isEmpty }
         #expect(try await engine.listSessions().count == sessionsBefore)
         store.stopListening()
     }

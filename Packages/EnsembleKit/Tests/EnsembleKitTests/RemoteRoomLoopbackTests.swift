@@ -17,7 +17,7 @@ import Testing
     func startServer() async throws -> Harness {
         let host = DemoRemoteHost(data: .showcase())
         let token = RemoteToken.generate()
-        let config = RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Loopback Mac", helloTimeout: .seconds(3))
+        let config = RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Loopback Mac", helloTimeout: .seconds(30))
         let server = RemoteServer(host: host, token: token, configuration: config)
         try await server.start()
         let port = try #require(await server.boundPort)
@@ -27,18 +27,9 @@ import Testing
     func client(_ h: Harness, token: String? = nil) -> RemoteClient {
         let pairing = RemotePairing(hosts: ["127.0.0.1"], port: h.port, token: token ?? h.token, macName: "Loopback Mac")
         let c = RemoteClient(pairing: pairing, deviceName: "Test Phone", deviceID: "test-\(UUID().uuidString)")
-        c.handshakeTimeout = .seconds(3)
-        c.requestTimeout = .seconds(5)
+        c.handshakeTimeout = .seconds(30)
+        c.requestTimeout = .seconds(60)
         return c
-    }
-
-    func eventually(_ timeout: Duration = .seconds(5), _ condition: () async -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
-            if await condition() { return true }
-            try? await Task.sleep(for: .milliseconds(20))
-        }
-        return await condition()
     }
 
     let teamID = RemoteDemoData.IDs.teamRoomID
@@ -49,7 +40,7 @@ import Testing
         let c = client(h)
         c.start()
         defer { c.stop() }
-        #expect(await eventually { c.rooms.count == 2 })
+        try await waitUntil { c.rooms.count == 2 }
         let team = try #require(c.room(id: teamID))
         #expect(team.decision?.kind == .approvePlan)
         #expect(team.decision?.items.count == 3)
@@ -68,14 +59,14 @@ import Testing
         let c = client(h)
         c.start()
         defer { c.stop() }
-        #expect(await eventually { c.rooms.count == 2 && !c.permissions.isEmpty })
+        try await waitUntil { c.rooms.count == 2 && !c.permissions.isEmpty }
 
         let team = try #require(c.room(id: teamID))
         let decision = try #require(team.decision)
         try await c.decide(decision, in: teamID, choice: decision.choices[0])
-        #expect(await eventually { c.room(id: self.teamID)?.decision == nil && c.room(id: self.teamID)?.state == .running })
+        try await waitUntil { c.room(id: self.teamID)?.decision == nil && c.room(id: self.teamID)?.state == .running }
         // The hub row leaves Needs you.
-        #expect(await eventually { c.sessions.first { $0.roomID == self.teamID }?.pendingAsk == nil })
+        try await waitUntil { c.sessions.first { $0.roomID == self.teamID }?.pendingAsk == nil }
 
         let lint = try #require(c.pendingPermissions(inRoom: RemoteDemoData.IDs.roomID).first)
         try await c.reply(to: lint, decision: .once)
@@ -97,7 +88,7 @@ import Testing
         let c = client(h)
         c.start()
         defer { c.stop() }
-        #expect(await eventually { c.rooms.count == 2 })
+        try await waitUntil { c.rooms.count == 2 }
         var decision = try #require(c.room(id: teamID)?.decision)
 
         // An old id (the plan changed since the phone showed it).
@@ -126,14 +117,14 @@ import Testing
         c.onAlert = { alerts.append($0) }
         c.start()
         defer { c.stop() }
-        #expect(await eventually { c.rooms.count == 2 && c.permissions.count == 3 })
+        try await waitUntil { c.rooms.count == 2 && c.permissions.count == 3 }
         try await Task.sleep(for: .milliseconds(200))
         #expect(alerts.isEmpty, "what was already waiting when the phone connected is not alerted")
 
         // A new prompt from a room agent: the room's title, the agent, no command.
         let ask = PermissionRequest(id: "live-room-perm", sessionID: "demo-room-grace", kind: "bash", title: "rm -rf build && make")
         await h.host.emit(.permissionAsked(request: ask))
-        #expect(await eventually { alerts.count == 1 })
+        try await waitUntil { alerts.count == 1 }
         #expect(alerts.first?.title == "Design the sync API")
         #expect(alerts.first?.body == "Grace: Wants to run a command")
         #expect(alerts.first?.sessionID == RemoteDemoData.IDs.roomSession)
@@ -145,7 +136,7 @@ import Testing
                                            choices: [RemoteRoomChoice(id: "verdict", label: "Give the verdict", input: .required)])
         await h.host.emit(.roomUpserted(room: room))
         await h.host.emit(.roomUpserted(room: room))
-        #expect(await eventually { alerts.count == 2 })
+        try await waitUntil { alerts.count == 2 }
         try await Task.sleep(for: .milliseconds(150))
         #expect(alerts.count == 2)
         #expect(alerts.last?.kind == .roomDecision)
@@ -180,7 +171,7 @@ import Testing
                 continue
             }
             #expect(error.code == .unauthorized)
-            #expect(await RemoteLoopbackTests.connectionEnds(task, within: .seconds(5)))
+            #expect(await RemoteLoopbackTests.connectionEnds(task, within: TestWait.ceiling))
         }
         #expect(await h.host.recordedActions.isEmpty)
         #expect(await h.server.status.devices.isEmpty)
@@ -193,10 +184,10 @@ import Testing
         let c = client(h, token: RemoteToken.generate())
         c.start()
         defer { c.stop() }
-        #expect(await eventually {
+        try await waitUntil {
             if case .rejected = c.state { return true }
             return false
-        })
+        }
         await #expect(throws: RemoteError.self) { try await c.controlRoom(self.teamID, action: .stop) }
         #expect(c.rooms.isEmpty)
         #expect(await h.host.recordedActions.isEmpty)

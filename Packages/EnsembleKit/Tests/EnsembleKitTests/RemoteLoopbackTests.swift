@@ -14,7 +14,8 @@ import Testing
         let port: Int
     }
 
-    func startServer(heartbeat: Duration = .seconds(15), helloTimeout: Duration = .seconds(3), port: UInt16 = 0,
+    /// The hello and handshake timeouts are long so a slow machine never trips them; tests about them set their own.
+    func startServer(heartbeat: Duration = .seconds(15), helloTimeout: Duration = .seconds(30), port: UInt16 = 0,
                      maxDevices: Int = 8, maxPending: Int = 8, maxPendingPerAddress: Int = 3,
                      acceptedHosts: [String] = []) async throws -> Harness {
         let host = DemoRemoteHost()
@@ -29,22 +30,13 @@ import Testing
         return Harness(host: host, server: server, token: token, port: Int(port))
     }
 
-    func client(_ h: Harness, token: String? = nil, hosts: [String] = ["127.0.0.1"]) -> RemoteClient {
+    func client(_ h: Harness, token: String? = nil, hosts: [String] = ["127.0.0.1"],
+                handshakeTimeout: Duration = .seconds(30)) -> RemoteClient {
         let pairing = RemotePairing(hosts: hosts, port: h.port, token: token ?? h.token, macName: "Loopback Mac")
         let c = RemoteClient(pairing: pairing, deviceName: "Test Phone", deviceID: "test-\(UUID().uuidString)")
-        c.handshakeTimeout = .seconds(3)
-        c.requestTimeout = .seconds(5)
+        c.handshakeTimeout = handshakeTimeout
+        c.requestTimeout = .seconds(60)
         return c
-    }
-
-    /// Polls `condition` on the main actor until it is true or the timeout passes.
-    func eventually(_ timeout: Duration = .seconds(5), _ condition: () async -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
-            if await condition() { return true }
-            try? await Task.sleep(for: .milliseconds(20))
-        }
-        return await condition()
     }
 
     @Test func rightTokenGetsWelcomeAndHub() async throws {
@@ -54,8 +46,8 @@ import Testing
         c.start()
         defer { c.stop() }
 
-        #expect(await eventually { c.state == .connected(host: "127.0.0.1") })
-        #expect(await eventually { c.sessions.count == 4 && c.rooms.count == 1 && c.usage != nil })
+        try await waitUntil { c.state == .connected(host: "127.0.0.1") }
+        try await waitUntil { c.sessions.count == 4 && c.rooms.count == 1 && c.usage != nil }
         #expect(c.macName == "Loopback Mac")
         #expect(c.permissions.map(\.id) == [RemoteDemoData.IDs.permission])
 
@@ -72,10 +64,10 @@ import Testing
         c.start()
         defer { c.stop() }
 
-        #expect(await eventually {
+        try await waitUntil {
             if case .rejected = c.state { return true }
             return false
-        })
+        }
         #expect(c.sessions.isEmpty)
         #expect(await h.server.status.devices.isEmpty)
     }
@@ -83,11 +75,12 @@ import Testing
     @Test func triesNextHostWhenFirstFails() async throws {
         let h = try await startServer()
         defer { Task { await h.server.stop() } }
-        // 127.0.0.2 is loopback too but nothing listens there for this port.
-        let c = client(h, hosts: ["127.0.0.2", "127.0.0.1"])
+        // 127.0.0.2 is loopback too but nothing listens there for this port. A short handshake timeout, so giving up
+        // on it does not take long.
+        let c = client(h, hosts: ["127.0.0.2", "127.0.0.1"], handshakeTimeout: .seconds(3))
         c.start()
         defer { c.stop() }
-        #expect(await eventually(.seconds(8)) { c.state == .connected(host: "127.0.0.1") })
+        try await waitUntil { c.state == .connected(host: "127.0.0.1") }
     }
 
     @Test func actionsReachTheHost() async throws {
@@ -96,7 +89,7 @@ import Testing
         let c = client(h)
         c.start()
         defer { c.stop() }
-        #expect(await eventually { !c.permissions.isEmpty })
+        try await waitUntil { !c.permissions.isEmpty }
 
         let permission = try #require(c.permissions.first)
         try await c.reply(to: permission, decision: .once)
@@ -117,7 +110,7 @@ import Testing
         ])
         #expect(c.permissions.isEmpty)
         #expect(c.permissionDecisions[RemoteDemoData.IDs.permission] == .once)
-        #expect(await eventually { c.room(id: RemoteDemoData.IDs.roomID)?.state == .paused })
+        try await waitUntil { c.room(id: RemoteDemoData.IDs.roomID)?.state == .paused }
     }
 
     @Test func failedActionReturnsError() async throws {
@@ -126,7 +119,7 @@ import Testing
         let c = client(h)
         c.start()
         defer { c.stop() }
-        #expect(await eventually { c.state.isConnected })
+        try await waitUntil { c.state.isConnected }
 
         await #expect(throws: RemoteError.self) {
             try await c.open(sessionID: "does-not-exist")
@@ -145,11 +138,11 @@ import Testing
         let c = client(h)
         c.start()
         defer { c.stop() }
-        #expect(await eventually { c.sessions.count == 4 })
+        try await waitUntil { c.sessions.count == 4 }
 
         // Hub-wide update reaches every phone.
         await h.host.emit(.activity(sessionID: RemoteDemoData.IDs.docsSession, activity: .working))
-        #expect(await eventually { c.sessions.first { $0.id == RemoteDemoData.IDs.docsSession }?.activity == .working })
+        try await waitUntil { c.sessions.first { $0.id == RemoteDemoData.IDs.docsSession }?.activity == .working }
 
         // Transcript updates only stream for the open chat.
         try await c.open(sessionID: RemoteDemoData.IDs.roomSession)
@@ -157,15 +150,15 @@ import Testing
         await h.host.emit(.transcriptUpsert(sessionID: RemoteDemoData.IDs.roomSession,
                                              item: .agentText(id: "live-1", text: "Routes", agentID: RemoteDemoData.IDs.agentA, streaming: true)))
         await h.host.emit(.textDelta(sessionID: RemoteDemoData.IDs.roomSession, itemID: "live-1", delta: " done."))
-        #expect(await eventually {
+        try await waitUntil {
             if case .agentText(_, let text, _, _)? = c.openTranscript?.items.last { return text == "Routes done." }
             return false
-        })
+        }
 
         // A new permission prompt shows up in the hub list and the open chat.
         let ask = PermissionRequest(id: "live-perm", sessionID: RemoteDemoData.IDs.roomSession, kind: "bash", title: "git push")
         await h.host.emit(.permissionAsked(request: ask))
-        #expect(await eventually { c.permissions.contains { $0.id == "live-perm" } })
+        try await waitUntil { c.permissions.contains { $0.id == "live-perm" } }
         #expect(c.openTranscript?.items.contains { $0.id == "live-perm" } == true)
     }
 
@@ -177,22 +170,22 @@ import Testing
         a.start()
         b.start()
         defer { a.stop(); b.stop() }
-        #expect(await eventually { a.state.isConnected && b.state.isConnected })
-        #expect(await eventually { await h.server.status.devices.count == 2 })
+        try await waitUntil { a.state.isConnected && b.state.isConnected }
+        try await pollUntil { await h.server.status.devices.count == 2 }
 
         await h.host.emit(.sessionRemoved(sessionID: RemoteDemoData.IDs.oldSession))
-        #expect(await eventually { a.sessions.count == 3 && b.sessions.count == 3 })
+        try await waitUntil { a.sessions.count == 3 && b.sessions.count == 3 }
 
         await h.server.setToken(RemoteToken.generate())
-        #expect(await eventually {
+        try await waitUntil {
             if case .rejected = a.state, case .rejected = b.state { return true }
             return false
-        })
+        }
         #expect(await h.server.status.devices.isEmpty)
     }
 
     @Test func silentConnectionIsClosedWithoutHello() async throws {
-        let h = try await startServer()
+        let h = try await startServer(helloTimeout: .seconds(3))
         defer { Task { await h.server.stop() } }
         let url = try #require(RemotePairing.webSocketURL(host: "127.0.0.1", port: h.port))
         let task = URLSession.shared.webSocketTask(with: url)
@@ -206,7 +199,7 @@ import Testing
         }
         #expect(RemoteHandshake.decode(challenge.serverNonce, expectedCount: 32) != nil)
         // No hello: the server closes the socket after its 3 s hello timeout.
-        #expect(await Self.receiveFails(task, within: .seconds(8)))
+        #expect(await Self.receiveFails(task, within: TestWait.ceiling))
     }
 
     @Test func oldPhoneIsToldToUpdate() async throws {
@@ -247,13 +240,13 @@ import Testing
         defer { fake.stop() }
         let pairing = RemotePairing(hosts: ["127.0.0.1"], port: Int(fake.port), token: RemoteToken.generate(), macName: "Old Mac")
         let c = RemoteClient(pairing: pairing, deviceName: "Test Phone", deviceID: "test")
-        c.handshakeTimeout = .seconds(3)
+        c.handshakeTimeout = .seconds(30)
         c.start()
         defer { c.stop() }
-        #expect(await eventually {
+        try await waitUntil {
             if case .rejected(let message) = c.state { return message == "Update Ensemble on your Mac to connect from this iPhone." }
             return false
-        })
+        }
         #expect(fake.log.all.isEmpty)   // no hello, no proof
     }
 
@@ -305,8 +298,8 @@ import Testing
         _ = try phone.open(phone.reply)
         let text = String(decoding: try RemoteCoding.encode(RemoteClientFrame(Self.sendHi, id: "2")), as: UTF8.self)
         try await phone.task.send(.string(text))
-        #expect(await Self.connectionEnds(phone.task, within: .seconds(5)))
-        #expect(await eventually { await h.server.status.devices.isEmpty })
+        #expect(await Self.connectionEnds(phone.task, within: TestWait.ceiling))
+        try await pollUntil { await h.server.status.devices.isEmpty }
         #expect(await h.host.recordedActions.isEmpty)
     }
 
@@ -318,8 +311,8 @@ import Testing
         var sealed = try phone.seal(Self.sendHi, id: "2")
         sealed[sealed.count / 2] ^= 0x01
         try await phone.task.send(.data(sealed))
-        #expect(await Self.connectionEnds(phone.task, within: .seconds(5)))
-        #expect(await eventually { await h.server.status.devices.isEmpty })
+        #expect(await Self.connectionEnds(phone.task, within: TestWait.ceiling))
+        try await pollUntil { await h.server.status.devices.isEmpty }
         #expect(await h.host.recordedActions.isEmpty)
     }
 
@@ -337,8 +330,8 @@ import Testing
         }
         // The same bytes again: a relay replaying "send this message".
         try await phone.task.send(.data(sealed))
-        #expect(await Self.connectionEnds(phone.task, within: .seconds(5)))
-        #expect(await eventually { await h.server.status.devices.isEmpty })
+        #expect(await Self.connectionEnds(phone.task, within: TestWait.ceiling))
+        try await pollUntil { await h.server.status.devices.isEmpty }
         #expect(await h.host.recordedActions.count == 1)
     }
 
@@ -371,7 +364,7 @@ import Testing
         let c = client(h, hosts: ["::1"])
         c.start()
         defer { c.stop() }
-        #expect(await eventually { c.state == .connected(host: "::1") && c.sessions.count == 4 })
+        try await waitUntil { c.state == .connected(host: "::1") && c.sessions.count == 4 }
         try await c.open(sessionID: RemoteDemoData.IDs.fixSession)
         #expect(c.openTranscript?.items.isEmpty == false)
 
@@ -392,8 +385,8 @@ import Testing
         let c = client(h, hosts: ["::1"])
         c.start()
         defer { c.stop() }
-        #expect(await eventually { (c.lastError ?? "").contains("could not be verified") })
-        #expect(await eventually { relay.connectionCount >= 2 })   // dropped, then tried again
+        try await waitUntil { (c.lastError ?? "").contains("could not be verified") }
+        try await waitUntil { relay.connectionCount >= 2 }   // dropped, then tried again
         #expect(c.sessions.isEmpty)
         #expect(relay.tamperedFrames >= 1)
     }
@@ -407,7 +400,7 @@ import Testing
         let c = client(h, hosts: ["::1"])
         c.start()
         defer { c.stop() }
-        #expect(await eventually { (c.lastError ?? "").contains("could not prove") })
+        try await waitUntil { (c.lastError ?? "").contains("could not prove") }
         #expect(!c.state.isConnected)
         #expect(c.sessions.isEmpty)
     }
@@ -418,11 +411,11 @@ import Testing
         let token = RemoteToken.generate()
         let pairing = RemotePairing(hosts: ["127.0.0.1"], port: Int(fake.port), token: token, macName: "Fake")
         let c = RemoteClient(pairing: pairing, deviceName: "Test Phone", deviceID: "test")
-        c.handshakeTimeout = .seconds(3)
+        c.handshakeTimeout = .seconds(30)
         c.start()
         defer { c.stop() }
 
-        #expect(await eventually { !fake.log.all.isEmpty && (c.lastError ?? "").contains("could not prove") })
+        try await waitUntil { !fake.log.all.isEmpty && (c.lastError ?? "").contains("could not prove") }
         #expect(!c.state.isConnected)
         #expect(c.sessions.isEmpty)
         let sent = fake.log.all
@@ -439,36 +432,40 @@ import Testing
         let c = client(h, hosts: ["::1", "127.0.0.1"])
         c.start()
         defer { c.stop() }
-        #expect(await eventually(.seconds(8)) { c.state == .connected(host: "127.0.0.1") })
+        try await waitUntil { c.state == .connected(host: "127.0.0.1") }
         #expect(fake.log.all.count >= 1)
-        #expect(await eventually { c.sessions.count == 4 })
+        try await waitUntil { c.sessions.count == 4 }
     }
 
     @Test func stalledTCPConnectionIsClosedAtTheDeadline() async throws {
-        let h = try await startServer(helloTimeout: .seconds(1))
+        // The pending connection has to be seen before the deadline closes it, so the deadline is not too short.
+        let h = try await startServer(helloTimeout: .seconds(3))
         defer { Task { await h.server.stop() } }
         // Plain TCP that never sends the WebSocket upgrade, so the server-side connection never becomes ready.
         let raw = Self.silentTCP(port: h.port)
         defer { raw.cancel() }
-        #expect(await eventually { await h.server.status.pendingConnections == 1 })
-        #expect(await Self.tcpClosedByServer(raw, within: .seconds(5)))
-        #expect(await eventually { await h.server.status.pendingConnections == 0 })
+        try await pollUntil { await h.server.status.pendingConnections == 1 }
+        #expect(await Self.tcpClosedByServer(raw, within: TestWait.ceiling))
+        try await pollUntil { await h.server.status.pendingConnections == 0 }
     }
 
     @Test func handshakeFloodCannotTakePairedPhoneSlots() async throws {
-        let h = try await startServer(helloTimeout: .seconds(2), maxDevices: 2, maxPending: 2, maxPendingPerAddress: 2)
+        // The flood's handshake slots are checked before their deadline clears them, so the deadline is not too short.
+        let h = try await startServer(helloTimeout: .seconds(5), maxDevices: 2, maxPending: 2, maxPendingPerAddress: 2)
         defer { Task { await h.server.stop() } }
         let phone = client(h)
         phone.start()
         defer { phone.stop() }
-        #expect(await eventually { phone.state.isConnected })
+        try await waitUntil { phone.state.isConnected }
 
         // Six silent connections: only two get a handshake slot, the rest are closed at once.
         let flood = (0..<6).map { _ in Self.silentTCP(port: h.port) }
         defer { flood.forEach { $0.cancel() } }
-        try await Task.sleep(for: .milliseconds(500))
+        let closed = ServerClosures(flood)
+        try await waitUntil("four connections to be turned away") { closed.count >= 4 }
         let status = await h.server.status
         #expect(status.pendingConnections == 2)
+        #expect(closed.count == 4)
         #expect(status.devices.count == 1)
         #expect(phone.state.isConnected)
 
@@ -476,18 +473,20 @@ import Testing
         let second = client(h)
         second.start()
         defer { second.stop() }
-        #expect(await eventually(.seconds(10)) { second.state.isConnected })
+        try await waitUntil { second.state.isConnected }
         #expect(await h.server.status.devices.count == 2)
         #expect(phone.state.isConnected)
     }
 
     @Test func pendingLimitIsPerAddressToo() async throws {
-        let h = try await startServer(helloTimeout: .seconds(3), maxPending: 8, maxPendingPerAddress: 2)
+        let h = try await startServer(maxPending: 8, maxPendingPerAddress: 2)
         defer { Task { await h.server.stop() } }
         let flood = (0..<5).map { _ in Self.silentTCP(port: h.port) }
         defer { flood.forEach { $0.cancel() } }
-        try await Task.sleep(for: .milliseconds(500))
+        let closed = ServerClosures(flood)
+        try await waitUntil("three connections to be turned away") { closed.count >= 3 }
         #expect(await h.server.status.pendingConnections == 2)
+        #expect(closed.count == 3)
     }
 
     @Test func extraPhonesBeyondTheDeviceLimitAreTurnedAway() async throws {
@@ -496,11 +495,11 @@ import Testing
         let a = client(h)
         a.start()
         defer { a.stop() }
-        #expect(await eventually { a.state.isConnected })
+        try await waitUntil { a.state.isConnected }
         let b = client(h)
         b.start()
         defer { b.stop() }
-        #expect(await eventually { (b.lastError ?? "").contains("most phones") })
+        try await waitUntil { (b.lastError ?? "").contains("most phones") }
         #expect(!b.state.isConnected)
         #expect(await h.server.status.devices.count == 1)
     }
@@ -633,14 +632,14 @@ import Testing
         let c = client(h)
         c.start()
         defer { c.stop() }
-        #expect(await eventually { c.state.isConnected })
+        try await waitUntil { c.state.isConnected }
         await h.server.stop()
-        #expect(await eventually {
+        try await waitUntil {
             switch c.state {
             case .waiting, .connecting: return true
             default: return false
             }
-        })
+        }
         #expect(await h.server.status.running == false)
     }
 
@@ -649,15 +648,36 @@ import Testing
         let c = RemoteClient(inProcessHost: host)
         c.start()
         defer { c.stop() }
-        #expect(await eventually { c.sessions.count == 4 })
+        try await waitUntil { c.sessions.count == 4 }
         try await c.open(sessionID: RemoteDemoData.IDs.fixSession)
         try await c.send("hi", to: .session(RemoteDemoData.IDs.fixSession))
-        #expect(await eventually {
+        try await waitUntil {
             if case .user(_, let text, _)? = c.openTranscript?.items.last { return text == "hi" }
             return false
-        })
+        }
     }
 }
+/// Counts how many of some TCP connections the server has closed.
+final class ServerClosures: Sendable {
+    private let closed = Mutex(0)
+
+    init(_ connections: [NWConnection]) {
+        for connection in connections { watch(connection) }
+    }
+
+    var count: Int { closed.withLock { $0 } }
+
+    private func watch(_ connection: NWConnection) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1024) { [self] _, _, isComplete, error in
+            if isComplete || error != nil {
+                closed.withLock { $0 += 1 }
+            } else {
+                watch(connection)
+            }
+        }
+    }
+}
+
 /// Thread-safe list of the hello frames a fake host received.
 final class HelloLog: Sendable {
     private let items = Mutex<[String]>([])

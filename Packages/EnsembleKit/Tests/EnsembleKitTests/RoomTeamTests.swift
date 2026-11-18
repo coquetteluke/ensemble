@@ -49,13 +49,14 @@ import Testing
         let planRequest = try #require(fake.wakes(to: "Alpha").first)
         #expect(planRequest.text.contains("Task for the room:\nBuild a small calculator library."))
         #expect(planRequest.text.contains("Agents: Alpha, Beta, Gamma."))
-        try await Task.sleep(for: .milliseconds(30))
+        // Once the room has handled the plan turn completely, nothing more is sent until the user approves.
+        try await engine.waitForQuiet(fake: fake)
         #expect(!fake.sent.contains { $0.text.contains("Your assignment") }, "work must wait for approval")
         #expect(git.worktrees.isEmpty)
 
         // 3. Work in parallel, each in its own worktree.
         await engine.approvePlan()
-        try await engine.waitFor("the run to finish", timeout: .seconds(10), fake: fake) { $0.state.phase == .finished }
+        try await engine.waitFor("the run to finish", fake: fake) { $0.state.phase == .finished }
 
         #expect(git.worktrees == ["ensemble/test-room/alpha", "ensemble/test-room/beta", "ensemble/test-room/gamma"])
         let work = try #require(fake.wakes(to: "Beta").first { $0.text.contains("Your assignment") })

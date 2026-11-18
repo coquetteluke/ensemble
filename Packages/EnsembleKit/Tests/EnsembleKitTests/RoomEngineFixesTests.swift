@@ -115,7 +115,10 @@ import Testing
         try await engine.waitFor("Alpha's piece to wait for Beta's review", fake: fake) {
             $0.state.outbox[beta]?.contains { $0.text.contains("Please review Alpha") } == true
         }
-        try await Task.sleep(for: .milliseconds(150))
+        // Everything the room does about Beta's finished turn has happened. A check on Beta would come from the settle
+        // timer, which nothing announces, so give it time to fire as well.
+        try await engine.waitForQuiet(fake: fake)
+        try await Task.sleep(for: engine.subagentSettleDelay * 3)
         #expect(!fake.sent(to: "Beta").contains { $0.text.hasPrefix("[Room] Reply DONE on its own line") })
         #expect(!engine.notices.contains { $0.contains("did not reply DONE") })
         #expect(engine.state.assignments.first { $0.agentID == beta }?.status == .working)
@@ -161,7 +164,10 @@ import Testing
         fake.emit(.activity(sessionID: "ses_child_2", .working))
         try await engine.waitFor("the subagent to count", fake: fake) { $0.hasWorkingSubagents(beta) }
         await fake.release("Beta")
-        try await Task.sleep(for: .milliseconds(150))
+        // Everything the room does about Beta's finished turn has happened; the subagent still works. A nudge would
+        // come from the settle timer, which nothing announces, so give it time to fire as well.
+        try await engine.waitForQuiet(fake: fake)
+        try await Task.sleep(for: engine.subagentSettleDelay * 3)
         #expect(!fake.sent(to: "Beta").contains { $0.text.hasPrefix("[Room] Reply DONE on its own line") })
 
         let sentBefore = fake.sent.count

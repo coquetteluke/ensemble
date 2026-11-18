@@ -14,14 +14,15 @@ actor ACPRecorder {
     func append(_ event: EngineEvent) { events.append(event) }
     func mark() -> Int { events.count }
 
-    func wait(_ what: String, after mark: Int = 0, timeout: Double = 20,
+    func wait(_ what: String, after mark: Int = 0, timeout: Double = TestWait.ceilingSeconds,
               _ predicate: @escaping @Sendable (EngineEvent) -> Bool) async throws -> EngineEvent {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if let match = events.dropFirst(mark).first(where: predicate) { return match }
-            try await Task.sleep(for: .milliseconds(20))
+        var match: EngineEvent?
+        try await pollUntil(what, timeout: .seconds(timeout)) {
+            match = events.dropFirst(mark).first(where: predicate)
+            return match != nil
         }
-        throw ACPTimeout(what: what)
+        guard let match else { throw ACPTimeout(what: what) }
+        return match
     }
 
     func all(after mark: Int, _ predicate: (EngineEvent) -> Bool) -> [EngineEvent] {
@@ -32,7 +33,7 @@ actor ACPRecorder {
         events.dropFirst(mark).compactMap { if case .textEnded(session, _, let text) = $0 { text } else { nil } }
     }
 
-    func ended(_ session: String, after mark: Int, timeout: Double = 20) async throws -> (outcome: String, error: String?) {
+    func ended(_ session: String, after mark: Int, timeout: Double = TestWait.ceilingSeconds) async throws -> (outcome: String, error: String?) {
         let event = try await wait("turn end", after: mark, timeout: timeout) {
             if case .executionEnded(session, _, _) = $0 { true } else { false }
         }
@@ -92,7 +93,7 @@ final class FakeACPHarness: @unchecked Sendable {
         let script = Fixtures.url("acp/fake_acp_agent.py").path
         let engine = ACPEngine(configuration: .init(agent: Self.definition(script: script), executablePath: executable, storeURL: store,
                                                     workDirectory: folder.appendingPathComponent("work"), maxConcurrentTurns: maxTurns,
-                                                    baseEnvironment: env, trust: trust, requestTimeout: .seconds(20),
+                                                    baseEnvironment: env, trust: trust, requestTimeout: TestWait.ceiling,
                                                     interruptGrace: .seconds(5)))
         let stream = engine.events()
         let recorder = recorder
@@ -116,13 +117,8 @@ final class FakeACPHarness: @unchecked Sendable {
 
     func events(_ name: String) -> [JSONValue] { logEntries.filter { $0["event"]?.stringValue == name } }
 
-    func waitForLog(_ what: String, timeout: Double = 10, _ predicate: @escaping ([JSONValue]) -> Bool) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if predicate(logEntries) { return }
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        throw ACPTimeout(what: what)
+    func waitForLog(_ what: String, timeout: Double = TestWait.ceilingSeconds, _ predicate: @escaping ([JSONValue]) -> Bool) async throws {
+        try await waitUntil(what, timeout: .seconds(timeout)) { predicate(logEntries) }
     }
 
     func session(_ engine: ACPEngine, mode: PermissionMode = .ask, model: ModelRef? = nil) async throws -> EngineSession {
@@ -368,7 +364,7 @@ struct ACPEngineTests {
         let session = try await h.session(engine, mode: .ask)
         let mark = await h.recorder.mark()
         try await engine.prompt(session.id, text: "run the shell", files: [])
-        let end = try await h.recorder.ended(session.id, after: mark, timeout: 5)
+        let end = try await h.recorder.ended(session.id, after: mark)
         #expect(end.outcome == "failed")
         #expect(end.error?.contains("did not switch to Ask permissions") == true)
         #expect(await h.recorder.all(after: mark) { $0 == .activity(sessionID: session.id, .failed) }.count == 1)
@@ -461,6 +457,8 @@ struct ACPEngineTests {
         try await engine.prompt(first.id, text: "go slow", files: [])
         _ = try await h.recorder.wait("first delta", after: mark) { if case .textDelta(first.id, _, _) = $0 { true } else { false } }
         try await engine.prompt(second.id, text: "hello", files: [])
+        // Nothing announces a turn that waits for a slot, so give a wrongly started turn time to show up. The first
+        // turn ticks for at least 10 s, far longer than this.
         try await Task.sleep(for: .milliseconds(400))
         #expect(h.events("prompt_start").count == 1)
         try await engine.interrupt(first.id)

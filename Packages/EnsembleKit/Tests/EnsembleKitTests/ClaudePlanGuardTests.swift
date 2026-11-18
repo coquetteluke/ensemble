@@ -102,8 +102,8 @@ struct ClaudePlanGuardTests {
         var userMessages: Int { lines().filter { $0["type"]?.stringValue == "user" }.count }
 
         /// Waits until the CLI has read `count` user messages (it logs them as it reads them).
-        func waitForUserMessages(_ count: Int) async {
-            for _ in 0..<100 where userMessages < count { try? await Task.sleep(for: .milliseconds(50)) }
+        func waitForUserMessages(_ count: Int) async throws {
+            try await waitUntil("the CLI to read \(count) user messages") { userMessages >= count }
         }
     }
 
@@ -139,7 +139,7 @@ struct ClaudePlanGuardTests {
         try FileManager.default.removeItem(at: cli.failFlag)
         let mark = await recorder.mark()
         try await engine.prompt(plan.id, text: "Make a plan", files: [])
-        _ = try await recorder.wait("the plan turn", after: mark, timeout: 20) { $0 == .executionEnded(sessionID: plan.id, outcome: "succeeded", error: nil) }
+        _ = try await recorder.wait("the plan turn", after: mark, timeout: TestWait.ceilingSeconds) { $0 == .executionEnded(sessionID: plan.id, outcome: "succeeded", error: nil) }
         #expect(cli.userMessages == 1)
         let order = cli.lines().map { $0["type"]?.stringValue == "user" ? "user" : ($0["request"]?["subtype"]?.stringValue ?? "") }
         let guardIndex = try #require(order.lastIndex(of: "apply_flag_settings"))
@@ -152,7 +152,7 @@ struct ClaudePlanGuardTests {
         let ask = try await engine.createSession(directory: box.project.path, model: haiku, agent: nil, permissionMode: .ask, parentID: nil)
         let askMark = await recorder.mark()
         try await engine.prompt(ask.id, text: "hello", files: [])
-        _ = try await recorder.wait("the ask turn", after: askMark, timeout: 20) { $0 == .executionEnded(sessionID: ask.id, outcome: "succeeded", error: nil) }
+        _ = try await recorder.wait("the ask turn", after: askMark, timeout: TestWait.ceilingSeconds) { $0 == .executionEnded(sessionID: ask.id, outcome: "succeeded", error: nil) }
         try Data().write(to: cli.failFlag)
         let modesBefore = cli.requests("set_permission_mode").count
         await #expect(throws: (any Error).self) { try await engine.setPermissionMode(ask.id, mode: .plan) }
@@ -162,7 +162,7 @@ struct ClaudePlanGuardTests {
         // It keeps working in Ask, without the guard.
         let sentBefore = cli.userMessages
         try await engine.prompt(ask.id, text: "again", files: [])
-        await cli.waitForUserMessages(sentBefore + 1)
+        try await cli.waitForUserMessages(sentBefore + 1)
         #expect(cli.userMessages == sentBefore + 1)
         await engine.shutdown()
     }

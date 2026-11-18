@@ -40,7 +40,7 @@ import Testing
         #expect(claude.created.first?.model == ModelRef(providerID: "claude-code", id: "opus"))
 
         await engine.start(task: "Build both parts")
-        try await engine.waitFor("the run to finish", timeout: .seconds(10), fake: openCode) { $0.state.phase == .finished }
+        try await engine.waitFor("the run to finish", fake: openCode) { $0.state.phase == .finished }
 
         // Beta's question crossed engines and Alpha's answer came back.
         #expect(openCode.wakes(to: "Alpha").contains { $0.text == "[Room] Beta (claude-code/opus) to you: is part a merged first?" })

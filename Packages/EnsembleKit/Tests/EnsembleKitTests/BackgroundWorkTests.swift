@@ -179,8 +179,7 @@ struct BackgroundWorkTests {
         engine.tasks.withLock { $0 = [BackgroundTask(id: "new", sessionID: "rootB", kind: .shell, title: "make watch")] }
         store.apply(.other(type: ClaudeEventTypes.backgroundTasks))
         store.apply(.other(type: "shell.exited"))
-        for _ in 0..<40 where store.background.tasks.map(\.id) != ["new"] { try await Task.sleep(for: .milliseconds(25)) }
-        #expect(store.background.tasks.map(\.id) == ["new"])
+        try await waitUntil("the refreshed task list") { store.background.tasks.map(\.id) == ["new"] }
         // One refresh for the burst.
         #expect(engine.calls.filter { $0 == "listTasks" }.count == 1)
         let revision = store.background.planLimitsRevision
@@ -284,9 +283,7 @@ struct AutoContinueTests {
         store.apply(.executionEnded(sessionID: "s1", outcome: "failed", error: limitText))
         store.apply(.activity(sessionID: "s1", .failed))
         if reportsReset {
-            for _ in 0..<40 where store.background.limitStops.values.first?.resetsAt == nil {
-                try await Task.sleep(for: .milliseconds(10))
-            }
+            try await waitUntil("the reset time") { store.background.limitStops.values.first?.resetsAt != nil }
         }
         return (store, engine, clock, reset)
     }
@@ -373,7 +370,7 @@ struct AutoContinueTests {
         store.background.timerEnabled = true
         store.rescheduleAutoContinueTimer()
         clock.now = reset.addingTimeInterval(61)
-        for _ in 0..<60 where Self.prompts(engine) == 0 { try await Task.sleep(for: .milliseconds(25)) }
+        try await waitUntil("the timer to continue the session") { Self.prompts(engine) > 0 }
         #expect(Self.prompts(engine) == 1)
         #expect(store.background.timer == nil)
     }

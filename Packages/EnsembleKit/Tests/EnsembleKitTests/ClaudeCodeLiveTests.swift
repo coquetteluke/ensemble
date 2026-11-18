@@ -22,12 +22,13 @@ actor ClaudeLiveRecorder {
 
     func wait(_ what: String, after mark: Int, timeout: Double = 120,
               _ predicate: @escaping @Sendable (EngineEvent) -> Bool) async throws -> EngineEvent {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if let match = events.dropFirst(mark).first(where: predicate) { return match }
-            try await Task.sleep(for: .milliseconds(100))
+        var match: EngineEvent?
+        try await pollUntil(what, timeout: .seconds(timeout)) {
+            match = events.dropFirst(mark).first(where: predicate)
+            return match != nil
         }
-        throw ClaudeLiveTimeout(what: what)
+        guard let match else { throw ClaudeLiveTimeout(what: what) }
+        return match
     }
 
     func texts(after mark: Int, session: String) -> [String] {

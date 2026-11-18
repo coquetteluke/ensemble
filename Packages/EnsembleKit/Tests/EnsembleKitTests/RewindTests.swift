@@ -275,12 +275,11 @@ struct RewindTests {
 
     @MainActor
     private func waitForPlan(_ store: SessionStore) async throws {
-        for _ in 0..<200 {
-            if store.rewinds.request?.plan != nil { return }
-            if case .failed(let message)? = store.rewinds.request?.phase { Issue.record("plan failed: \(message)"); return }
-            try await Task.sleep(for: .milliseconds(10))
+        try await waitUntil("the rewind plan") {
+            if case .failed? = store.rewinds.request?.phase { return true }
+            return store.rewinds.request?.plan != nil
         }
-        Issue.record("the plan never loaded")
+        if case .failed(let message)? = store.rewinds.request?.phase { Issue.record("plan failed: \(message)") }
     }
 
     @Test @MainActor func storeRewindsWithTheChosenScopeAndRedoes() async throws {

@@ -244,9 +244,9 @@ final class RouterCapableFakeEngine: RouterFakeEngine, EngineHistoryControl, Eng
         let task = Task {
             for await _ in router.events() {}
         }
-        try await waitUntil { openCode.streamCount == 1 && claude.streamCount == 1 }
+        try await waitUntil("both engines to be subscribed") { openCode.streamCount == 1 && claude.streamCount == 1 }
         task.cancel()
-        try await waitUntil { openCode.streamCount == 0 && claude.streamCount == 0 && router.subscriberCount == 0 }
+        try await waitUntil("every subscription to end") { openCode.streamCount == 0 && claude.streamCount == 0 && router.subscriberCount == 0 }
     }
 
     @Test func laterEnginesJoinOpenStreams() async throws {
@@ -266,7 +266,7 @@ final class RouterCapableFakeEngine: RouterFakeEngine, EngineHistoryControl, Eng
         // Registering the same id again replaces the engine and its live events.
         let replacement = RouterFakeEngine(name: "acp2")
         router.register(replacement, providers: ["antigravity"], id: "antigravity", name: "Antigravity")
-        try await waitUntil { acp.streamCount == 0 && replacement.streamCount == 1 }
+        try await waitUntil("the replacement engine to be subscribed") { acp.streamCount == 0 && replacement.streamCount == 1 }
         replacement.send(.connectorsChanged)
         #expect(await iterator.next() == .connectorsChanged)
     }
@@ -409,13 +409,5 @@ final class RouterCapableFakeEngine: RouterFakeEngine, EngineHistoryControl, Eng
         let billing = try await router.modelBilling()
         #expect(billing["claude-code"] == .subscription)
         #expect(billing["claude-code-api"] == .apiKey)
-    }
-
-    private func waitUntil(_ condition: @escaping @Sendable () -> Bool) async throws {
-        for _ in 0..<200 {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        Issue.record("Timed out waiting")
     }
 }

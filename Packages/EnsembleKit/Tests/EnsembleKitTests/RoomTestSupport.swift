@@ -59,6 +59,9 @@ final class FakeEngine: OpenCodeAPI, EngineWorktreeAccess, EngineFolderModels {
         var cost: [String: Double] = [:]
         var transcripts: [String: [TranscriptItem]] = [:]
         var continuations: [UUID: AsyncStream<EngineEvent>.Continuation] = [:]
+        /// Per listener: events sent but not yet taken, and whether the last one taken is still being handled.
+        var unhandled: [UUID: Int] = [:]
+        var handling: Set<UUID> = []
         var changedFiles: [String: [String]] = [:]
         var worktreeGrants: [(sessionID: String, path: String, sentCount: Int)] = []
         var models: [ModelInfo] = []
@@ -126,7 +129,10 @@ final class FakeEngine: OpenCodeAPI, EngineWorktreeAccess, EngineFolderModels {
 
     /// Sends a raw event to every listener.
     func emit(_ event: EngineEvent) {
-        let continuations = state.withLock { Array($0.continuations.values) }
+        let continuations = state.withLock { s in
+            for id in s.continuations.keys { s.unhandled[id, default: 0] += 1 }
+            return Array(s.continuations.values)
+        }
         for c in continuations { c.yield(event) }
     }
 
@@ -160,6 +166,14 @@ final class FakeEngine: OpenCodeAPI, EngineWorktreeAccess, EngineFolderModels {
 
     func isBusy(_ agent: String) -> Bool {
         state.withLock { s in s.session(of: agent).map { s.busy.contains($0) } ?? false }
+    }
+
+    /// No turn is running or queued here, and every listener has handled every event sent so far: whatever a listener
+    /// does in response has been done (a listener handles one event at a time and asks for the next when it is done).
+    var isQuiet: Bool {
+        state.withLock { s in
+            s.busy.isEmpty && s.handling.isEmpty && s.unhandled.values.allSatisfy { $0 == 0 }
+        }
     }
 
     // MARK: OpenCodeAPI
@@ -266,13 +280,32 @@ final class FakeEngine: OpenCodeAPI, EngineWorktreeAccess, EngineFolderModels {
     func deleteSchedule(_ scheduleID: String) async throws {}
 
     func events() -> AsyncStream<EngineEvent> {
-        let (stream, continuation) = AsyncStream<EngineEvent>.makeStream()
+        let (inner, continuation) = AsyncStream<EngineEvent>.makeStream()
         let id = UUID()
-        state.withLock { $0.continuations[id] = continuation }
-        continuation.onTermination = { [weak self] _ in
-            self?.state.withLock { _ = $0.continuations.removeValue(forKey: id) }
+        state.withLock {
+            $0.continuations[id] = continuation
+            $0.unhandled[id] = 0
         }
-        return stream
+        continuation.onTermination = { [weak self] _ in
+            self?.state.withLock { s in
+                s.continuations[id] = nil
+                s.unhandled[id] = nil
+                s.handling.remove(id)
+            }
+        }
+        // The listener asks for the next event only after it has handled the previous one, so each request marks
+        // the previous event as handled.
+        let source = EventSource(inner)
+        return AsyncStream(unfolding: { [weak self] in
+            self?.state.withLock { _ = $0.handling.remove(id) }
+            guard let event = await source.next() else { return nil }
+            self?.state.withLock { s in
+                guard let count = s.unhandled[id] else { return }
+                s.unhandled[id] = count - 1
+                s.handling.insert(id)
+            }
+            return event
+        })
     }
 
     // MARK: Executions
@@ -343,6 +376,22 @@ final class FakeEngine: OpenCodeAPI, EngineWorktreeAccess, EngineFolderModels {
         if reportCost { emit(.usageUpdated(sessionID: sessionID, Usage(outputTokens: 10, costUSD: total))) }
         emit(.executionEnded(sessionID: sessionID, outcome: "succeeded", error: nil))
         if let next { await execute(sessionID, next) }
+    }
+}
+
+/// The fake's own event stream, read by one listener at a time.
+private final class EventSource: @unchecked Sendable {
+    private var iterator: AsyncStream<EngineEvent>.Iterator
+
+    init(_ stream: AsyncStream<EngineEvent>) {
+        iterator = stream.makeAsyncIterator()
+    }
+
+    func next() async -> EngineEvent? {
+        var it = iterator
+        let event = await it.next()
+        iterator = it
+        return event
     }
 }
 
@@ -433,10 +482,6 @@ enum RoomFixtures {
     }
 }
 
-struct RoomWaitTimeout: Error, CustomStringConvertible {
-    var description: String
-}
-
 extension RoomEngine {
     func id(of name: String) -> UUID {
         agents.first { $0.name == name }!.id
@@ -455,26 +500,31 @@ extension RoomEngine {
         }.joined(separator: "\n")
     }
 
-    /// Polls until `condition` holds, or fails with the board and phase.
-    func waitFor(_ what: String, timeout: Duration = .seconds(5), fake: FakeEngine? = nil,
-                 _ condition: (RoomEngine) -> Bool) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: timeout)
-        while !condition(self) {
-            if clock.now >= deadline {
-                let extra = fake.map { "\nUnmatched inputs:\n" + $0.unmatched.joined(separator: "\n") } ?? ""
-                throw RoomWaitTimeout(description: "Timed out waiting for \(what). Phase: \(state.phase), paused: \(state.isPaused), decision: \(String(describing: state.pendingDecision))\nBoard:\n\(boardDump)\(extra)")
-            }
-            try await Task.sleep(for: .milliseconds(2))
+    /// Waits until `condition` holds (see `waitUntil`), or fails with the board and phase.
+    func waitFor(_ what: String, timeout: Duration = TestWait.ceiling, fake: FakeEngine? = nil,
+                 sourceLocation: SourceLocation = #_sourceLocation, _ condition: (RoomEngine) -> Bool) async throws {
+        try await waitUntil(what, timeout: timeout, sourceLocation: sourceLocation, details: {
+            let extra = fake.map { "\nUnmatched inputs:\n" + $0.unmatched.joined(separator: "\n") } ?? ""
+            return "Phase: \(state.phase), paused: \(state.isPaused), decision: \(String(describing: state.pendingDecision))\nBoard:\n\(boardDump)\(extra)"
+        }) {
+            condition(self)
         }
     }
 
-    /// Waits until no agent is busy and nothing is queued (the engine has settled).
-    func waitForSettled(fake: FakeEngine, timeout: Duration = .seconds(5)) async throws {
-        try await waitFor("the room to settle", timeout: timeout, fake: fake) { engine in
-            engine.busy.isEmpty && engine.state.outbox.values.allSatisfy(\.isEmpty)
+    /// Waits until no turn runs and the room has handled every event the fake sent: whatever the room does in
+    /// response to what has happened so far has happened. Messages may still wait in outboxes (for a paused room or an
+    /// agent whose subagents work).
+    func waitForQuiet(fake: FakeEngine, sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        try await waitFor("the room to go quiet", fake: fake, sourceLocation: sourceLocation) { engine in
+            engine.busy.isEmpty && fake.isQuiet
         }
-        try await Task.sleep(for: .milliseconds(20))
+    }
+
+    /// Quiet, and nothing waits in an outbox: the room has settled.
+    func waitForSettled(fake: FakeEngine, sourceLocation: SourceLocation = #_sourceLocation) async throws {
+        try await waitFor("the room to settle", fake: fake, sourceLocation: sourceLocation) { engine in
+            engine.busy.isEmpty && engine.state.outbox.values.allSatisfy(\.isEmpty) && fake.isQuiet
+        }
     }
 
     func messages(from name: String) -> [BoardMessage] {

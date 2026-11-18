@@ -29,10 +29,11 @@ struct LaunchConfigRunnerTests {
             if trusted { try trust.trust(site.path) }
             approvals = LaunchApprovals(fileURL: root.appendingPathComponent("approvals.json"))
             servers = DevServers(trust: trust, approvals: approvals)
-            servers.portTimeout = .seconds(20)
+            servers.portTimeout = TestWait.ceiling
             python = LaunchCommand.resolveExecutable("python3", folder: site.path, searchPath: LaunchCommand.searchPath())?.path
-            servers.onOutput = { [unowned self] _, line in output.append(line.text) }
-            servers.onReady = { [unowned self] _, url in ready.append(url) }
+            // Weak: output can still arrive after a test has ended, and must not crash the whole test run then.
+            servers.onOutput = { [weak self] _, line in self?.output.append(line.text) }
+            servers.onReady = { [weak self] _, url in self?.ready.append(url) }
         }
 
         deinit { try? FileManager.default.removeItem(at: root) }
@@ -57,16 +58,6 @@ struct LaunchConfigRunnerTests {
         var length = socklen_t(MemoryLayout<sockaddr_in>.size)
         _ = withUnsafeMutablePointer(to: &address) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(fd, $0, &length) } }
         return Int(UInt16(bigEndian: address.sin_port))
-    }
-
-    /// Waits up to `seconds` for `condition`, letting main-actor work run.
-    func until(_ seconds: Double = 15, _ condition: () -> Bool) async -> Bool {
-        let deadline = Date().addingTimeInterval(seconds)
-        while !condition() {
-            if Date() > deadline { return false }
-            try? await Task.sleep(for: .milliseconds(50))
-        }
-        return true
     }
 
     @Test func untrustedFoldersRunNothing() async throws {
@@ -94,21 +85,21 @@ struct LaunchConfigRunnerTests {
 
         #expect(box.servers.start(entry, folder: box.site.path, owner: "ses_1", confirmed: true) == .started)
         #expect(box.servers.status(box.key(entry)) == .starting || box.servers.status(box.key(entry)) == .running(entry.url))
-        #expect(await until { box.servers.status(box.key(entry)) == .running(entry.url) })
+        try await waitUntil("the server to run") { box.servers.status(box.key(entry)) == .running(entry.url) }
         #expect(box.ready == [entry.url])
         #expect(PortProbe.isListening(port))
-        #expect(await until { box.output.contains { $0.contains("Serving HTTP") } })
+        try await waitUntil("the server output") { box.output.contains { $0.contains("Serving HTTP") } }
         #expect(box.servers.start(entry, folder: box.site.path, owner: "ses_1") == .alreadyRunning)
 
         await box.servers.stop(box.key(entry))
         #expect(box.servers.status(box.key(entry)) == .stopped)
-        #expect(await until(5) { !PortProbe.isListening(port) })
+        try await waitUntil("the port to close") { !PortProbe.isListening(port) }
 
         // Confirmed once: the same command in the same folder starts without asking.
         #expect(box.servers.start(entry, folder: box.site.path, owner: "ses_1") == .started)
-        #expect(await until { box.servers.status(box.key(entry)) == .running(entry.url) })
+        try await waitUntil("the server to run") { box.servers.status(box.key(entry)) == .running(entry.url) }
         await box.servers.stop(box.key(entry))
-        #expect(await until(5) { !PortProbe.isListening(port) })
+        try await waitUntil("the port to close") { !PortProbe.isListening(port) }
 
         // A changed command is asked about again.
         var changed = entry
@@ -125,7 +116,7 @@ struct LaunchConfigRunnerTests {
             + "'--bind', '127.0.0.1'], start_new_session=True); time.sleep(600)"
         let entry = LaunchEntry(name: "tree", arguments: ["python3", "-c", script], port: port)
         #expect(box.servers.start(entry, folder: box.site.path, owner: "ses_1", confirmed: true) == .started)
-        #expect(await until { box.servers.status(box.key(entry)) == .running(entry.url) })
+        try await waitUntil("the server to run") { box.servers.status(box.key(entry)) == .running(entry.url) }
 
         let root = try #require(box.servers.processID(box.key(entry)))
         let children = [root] + ProcessTree.descendants(of: root)
@@ -133,8 +124,8 @@ struct LaunchConfigRunnerTests {
         #expect(ProcessTree.ownGroup(of: root) == root)
 
         await box.servers.stop(box.key(entry))
-        #expect(await until(5) { !PortProbe.isListening(port) })
-        #expect(await until(5) { !children.contains(where: ProcessTree.isAlive) })
+        try await waitUntil("the port to close") { !PortProbe.isListening(port) }
+        try await waitUntil("every process in the tree to end") { !children.contains(where: ProcessTree.isAlive) }
     }
 
     @Test func somethingAlreadyOnThePortIsOpenedNotStarted() async throws {
@@ -162,7 +153,7 @@ struct LaunchConfigRunnerTests {
         _ = try #require(box.python, "python3 is not installed")
         let entry = LaunchEntry(name: "boom", arguments: ["python3", "-u", "-c", "import sys; print('boom'); sys.exit(3)"], port: Self.freePort())
         #expect(box.servers.start(entry, folder: box.site.path, owner: "ses_1", confirmed: true) == .started)
-        #expect(await until { box.servers.status(box.key(entry)) == .ended("Exited with code 3.") })
+        try await waitUntil("the exit to be reported") { box.servers.status(box.key(entry)) == .ended("Exited with code 3.") }
         #expect(box.output.contains("boom"))
     }
 
@@ -186,11 +177,11 @@ struct LaunchConfigRunnerTests {
         #expect(box.servers.start(first, folder: box.site.path, owner: "ses_1", confirmed: true) == .started)
         #expect(box.servers.start(second, folder: box.site.path, owner: "ses_1", confirmed: true) == .started)
         #expect(box.servers.start(third, folder: box.site.path, owner: "ses_2", confirmed: true) == .started)
-        #expect(await until { [first, second, third].allSatisfy { PortProbe.isListening($0.port) } })
+        try await waitUntil("all three servers to listen") { [first, second, third].allSatisfy { PortProbe.isListening($0.port) } }
         #expect(box.servers.activeOwners == ["ses_1", "ses_2"])
 
         await box.servers.stopAll(owner: "ses_1")
-        #expect(await until(5) { !PortProbe.isListening(first.port) && !PortProbe.isListening(second.port) })
+        try await waitUntil("the first two servers to stop") { !PortProbe.isListening(first.port) && !PortProbe.isListening(second.port) }
         #expect(PortProbe.isListening(third.port))
         #expect(box.servers.activeOwners == ["ses_2"])
 

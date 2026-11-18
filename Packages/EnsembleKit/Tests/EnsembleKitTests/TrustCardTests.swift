@@ -243,7 +243,7 @@ struct TrustCardTests {
         let acp = ACPEngine(configuration: .init(agent: FakeACPHarness.definition(script: script), executablePath: "/usr/bin/python3",
                                                  storeURL: box.root.appendingPathComponent("acp.json"),
                                                  workDirectory: box.root.appendingPathComponent("work"),
-                                                 baseEnvironment: env, trust: box.trust, requestTimeout: .seconds(20),
+                                                 baseEnvironment: env, trust: box.trust, requestTimeout: TestWait.ceiling,
                                                  interruptGrace: .seconds(5)))
         defer { Task { await acp.shutdown() } }
         let router = EngineRouter(fallback: RouterFakeEngine(name: "shared"), trust: box.trust)

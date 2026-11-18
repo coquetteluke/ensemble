@@ -477,7 +477,7 @@ import Testing
     // MARK: Fix failing checks goes through the session's queue
 
     @Test func fixFailingChecksQueuesWhileTheAgentWorks() async throws {
-        let engine = PreviewEngine(delayScale: 0.5)
+        let engine = PreviewEngine(delayScale: TestWait.longTurnScale)  // still working when the hook sends
         let store = SessionStore(engine: engine)
         await store.start()
         let session = try await store.newSession(directory: "/tmp/github-demo", model: nil, permissionMode: .bypass)
@@ -501,8 +501,7 @@ import Testing
         await store.start()
         let session = try await store.newSession(directory: "/tmp/github-demo", model: nil, permissionMode: .bypass)
         await store.send("Build the bar", to: session.id)
-        let deadline = ContinuousClock.now + .seconds(15)
-        while session.isWorking, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+        try await waitUntil("the turn to end") { !session.isWorking }
         let itemsBefore = session.items
         let sidebarBefore = store.sidebarOrder.map(\.id)
         let context = GitHubPullRequestContext(branch: "ensemble/x", base: "main", commits: ["Add the bar"], files: [])
@@ -510,9 +509,7 @@ import Testing
         #expect(!text.title.isEmpty && !text.title.contains("\n"))
         #expect(session.items == itemsBefore, "nothing was added to the session")
         #expect(store.sidebarOrder.map(\.id) == sidebarBefore, "the copy never showed in the sidebar")
-        let gone = ContinuousClock.now + .seconds(15)
-        while !store.hiddenSessionIDs.isEmpty, ContinuousClock.now < gone { try? await Task.sleep(for: .milliseconds(20)) }
-        #expect(store.hiddenSessionIDs.isEmpty)
+        try await waitUntil("the copy to be deleted") { store.hiddenSessionIDs.isEmpty }
         store.stopListening()
     }
 }
