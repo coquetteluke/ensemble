@@ -175,6 +175,21 @@ import Testing
         #expect(ModelCatalog.search("  ", in: folders).isEmpty)
     }
 
+    @Test func freeAndLocalModelsStayInTheirFolders() throws {
+        let folders = ModelCatalog.folders(Self.everything, billing: Self.billing)
+        // A maker's model opens its own folder at the top.
+        #expect(ModelCatalog.topFolder(for: ModelRef(providerID: "claude-code", id: "sonnet"), in: folders)?.id == "claude")
+        // A free or local model keeps its folder closed; the first maker's folder is on top instead.
+        #expect(ModelCatalog.folder(for: ModelRef(providerID: "opencode", id: "big-pickle"), in: folders)?.id == "free")
+        #expect(ModelCatalog.topFolder(for: ModelRef(providerID: "opencode", id: "big-pickle"), in: folders)?.id == "claude")
+        #expect(ModelCatalog.topFolder(for: ModelRef(providerID: "ollama", id: "llama3.3:70b"), in: folders)?.id == "claude")
+        #expect(ModelCatalog.topFolder(for: nil, in: folders)?.id == "claude")
+        // With only free models there is nothing else to show, so the Free folder is on top.
+        let onlyFree = ModelCatalog.folders(Array(Self.openCodeFree.prefix(1)), billing: Self.billing)
+        #expect(onlyFree.map(\.id) == ["free"])
+        #expect(ModelCatalog.topFolder(for: nil, in: onlyFree)?.id == "free")
+    }
+
     @Test func withoutBillingClaudeAndGoogleAreSubscriptions() throws {
         let folders = ModelCatalog.folders(Self.claudeCLI + [Self.info("claude-code-api", "opus", "Opus 5.5")], billing: nil)
         let opus = try #require(folders.first?.current.first { $0.tier == "opus" })

@@ -64,6 +64,11 @@ enum ModelPickerSnapshots {
                                     initialOptionsFor: carbon?.id, initialKeyEntry: carbonKey) { _ in }
                 }
             }
+            // A free model is current: its folder stays closed with a check, and Claude is on top.
+            written += save("model-picker-free-current-\(tone)\(suffix)", to: directory, width: 360, zoom: zoom, scheme: scheme) {
+                card { ModelPickerView(models: models, billing: billing, current: ModelRef(providerID: "opencode", id: "big-pickle"),
+                                       context: context) { _ in } }
+            }
             written += save("model-picker-search-\(tone)\(suffix)", to: directory, width: 360, zoom: zoom, scheme: scheme) {
                 card {
                     ModelPickerView(models: models, billing: billing, current: opus, context: context, initialQuery: "sonnet") { _ in }

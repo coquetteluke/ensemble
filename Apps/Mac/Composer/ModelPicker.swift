@@ -88,7 +88,7 @@ struct ModelPickerView: View {
 
     var body: some View {
         let folders = ModelCatalog.folders(models, billing: billing)
-        let top = ModelCatalog.folder(for: current, in: folders) ?? folders.first
+        let top = ModelCatalog.topFolder(for: current, in: folders)
         VStack(alignment: .leading, spacing: 0) {
             InputField("Search models", text: $query, icon: "magnifyingglass", height: theme.z(28))
                 .padding(theme.z(8))
@@ -175,7 +175,9 @@ struct ModelPickerView: View {
     /// A maker's folder: its newest models, then its Older models, shown when open.
     @ViewBuilder private func folderRow(_ folder: ModelFolder) -> some View {
         let isOpen = open.contains(folder.id)
-        disclosureRow(title: folder.maker.name, symbol: "folder", count: folder.all.count, isOpen: isOpen, indent: 0) {
+        let holdsCurrent = current.map { ref in folder.all.contains { $0.contains(ref) } } ?? false
+        disclosureRow(title: folder.maker.name, symbol: "folder", count: folder.all.count, isOpen: isOpen, indent: 0,
+                      holdsCurrent: holdsCurrent && !isOpen) {
             toggle(folder.id)
         }
         if isOpen {
@@ -207,8 +209,9 @@ struct ModelPickerView: View {
         }
     }
 
+    /// `holdsCurrent` marks a closed folder that has the current model inside, so it can be found.
     private func disclosureRow(title: String, symbol: String?, count: Int, isOpen: Bool, indent: Int,
-                               action: @escaping () -> Void) -> some View {
+                               holdsCurrent: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: theme.z(8)) {
                 Image(systemName: "chevron.right")
@@ -225,6 +228,11 @@ struct ModelPickerView: View {
                     .font(theme.font(size: 13))
                     .foregroundStyle(theme.textPrimary)
                 Spacer(minLength: theme.z(8))
+                if holdsCurrent {
+                    Image(systemName: "checkmark")
+                        .font(theme.font(size: 11, weight: .semibold))
+                        .foregroundStyle(theme.accent)
+                }
                 Text("\(count)")
                     .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textTertiary)
@@ -236,7 +244,7 @@ struct ModelPickerView: View {
         }
         .buttonStyle(RowButtonStyle())
         .accessibilityLabel(title)
-        .accessibilityValue(isOpen ? "Open, \(count) models" : "Closed, \(count) models")
+        .accessibilityValue((isOpen ? "Open, \(count) models" : "Closed, \(count) models") + (holdsCurrent ? ", has the current model" : ""))
     }
 
     private func toggle(_ key: String) {

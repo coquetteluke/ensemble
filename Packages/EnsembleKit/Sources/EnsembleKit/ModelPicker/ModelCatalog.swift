@@ -470,6 +470,14 @@ public enum ModelCatalog {
         return folders.first { $0.all.contains { $0.contains(ref) } }
     }
 
+    /// The folder shown open at the top of the picker: the current model's maker. Free, On this Mac and Other always
+    /// stay folders, so with one of those models the first maker's folder is on top instead.
+    public static func topFolder(for ref: ModelRef?, in folders: [ModelFolder]) -> ModelFolder? {
+        let staysFolded: Set<String> = [ModelMaker.free.id, ModelMaker.local.id, ModelMaker.other.id]
+        if let current = folder(for: ref, in: folders), !staysFolded.contains(current.maker.id) { return current }
+        return folders.first { !staysFolded.contains($0.maker.id) } ?? folders.first
+    }
+
     /// Choices whose name, tier, maker, provider or id contain every word of `query`, newest models first within each
     /// folder.
     public static func search(_ query: String, in folders: [ModelFolder]) -> [ModelChoice] {
