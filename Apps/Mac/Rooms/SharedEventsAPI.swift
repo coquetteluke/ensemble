@@ -9,7 +9,7 @@ import EnsembleKit
 /// session store, the remote host, the rooms controller and every open `RoomEngine` each call `events()`, so the
 /// fourth or fifth open room would silently get no events. Here one upstream stream fans out to any number of
 /// subscribers. Every other call goes straight to the wrapped engine, including the optional abilities (history,
-/// effort, commands, billing, steering, session rules, folder models, worktree access): a call the wrapped engine
+/// rewind with choices, effort, commands, billing, steering, session rules, folder models, worktree access): a call the wrapped engine
 /// cannot serve fails as it would on an engine router without that ability.
 final class SharedEventsAPI: OpenCodeAPI, Sendable {
     let base: any OpenCodeAPI
@@ -147,6 +147,28 @@ extension SharedEventsAPI: EngineHistoryControl, EngineForkAvailability {
     func canFork(_ sessionID: String) -> Bool {
         if let availability = base as? any EngineForkAvailability { return availability.canFork(sessionID) }
         return base is any EngineHistoryControl
+    }
+}
+
+/// Rewind with choices (`Store/RewindModels.swift`), so room sessions get the full rewind sheet. The wrapped engine router
+/// answers for engines without it (one choice, or none with the reason).
+extension SharedEventsAPI: EngineRewindControl {
+    func rewindPlan(_ sessionID: String, toBeforeMessageID messageID: String) async throws -> RewindPlan {
+        if let control = base as? any EngineRewindControl {
+            return try await control.rewindPlan(sessionID, toBeforeMessageID: messageID)
+        }
+        if let history = base as? any EngineHistoryControl {
+            return .basic(restoresFiles: history.rewindRestoresFiles, messagesRemoved: 0)
+        }
+        return .unavailable("This engine cannot rewind")
+    }
+
+    func rewind(_ sessionID: String, toBeforeMessageID messageID: String, scope: RewindScope) async throws -> RewindOutcome {
+        try await ability((any EngineRewindControl).self, "be rewound").rewind(sessionID, toBeforeMessageID: messageID, scope: scope)
+    }
+
+    func redoRewind(_ sessionID: String) async throws {
+        try await ability((any EngineRewindControl).self, "undo a rewind").redoRewind(sessionID)
     }
 }
 

@@ -56,6 +56,8 @@ actor ClaudeEngineCore {
     private var skillsByDirectory: [String: Set<String>] = [:]
     private var terminalCommands: Set<String> = ["doctor", "color", "focus", "reload-plugins"]
     private var authCache: (date: Date, state: ClaudeAuthState)?
+    /// What Redo needs to undo each session's last rewind, until its next prompt.
+    private var rewindUndo: [String: ClaudeRewindUndo] = [:]
 
     init(configuration: ClaudeCodeEngine.Configuration, broadcaster: ClaudeEventBroadcaster) {
         self.configuration = configuration
@@ -786,6 +788,8 @@ actor ClaudeEngineCore {
 
     func send(_ id: String, text: String, files attachments: [URL], synthetic: Bool) async throws {
         var record = try rootRecord(id, action: "be messaged directly")
+        // The conversation moves on: the last rewind can no longer be undone.
+        clearRewindUndo(id)
         let queued = record.queuedSynthetic
         let blocks = try ClaudeCLI.contentBlocks(synthetic: queued, text: text, files: attachments)
         for text in queued { record.rememberSynthetic(text) }
@@ -1172,6 +1176,7 @@ actor ClaudeEngineCore {
         guard (live[id]?.turnsInFlight ?? 0) == 0 else {
             throw ClaudeCodeError.invalidArgument("Stop the agent before rewinding.")
         }
+        clearRewindUndo(id)
         // Files first, while a process can still read the session's checkpoints. Best effort: the conversation
         // rewinds even when files cannot be restored (for example a session started before checkpoints were on).
         if configuration.fileCheckpointing, record.started, let prompt = cut.restorePrompt {
@@ -1201,6 +1206,116 @@ actor ClaudeEngineCore {
         store[id] = record
         save()
         emit(.sessionUpdated(record.engineSession))
+    }
+
+    // MARK: Rewind with choices
+
+    /// The CLI's dry run of `rewind_files` for the prompt a cut restores to. Starts the session's process when needed
+    /// (no turn runs). `canRewind` false comes with the reason in `error`.
+    func fileRewindCheck(_ id: String, cut: ClaudeHistory.Cut) async throws -> ClaudeFileRewindCheck {
+        let record = try rootRecord(id, action: "be rewound")
+        guard configuration.fileCheckpointing else {
+            return ClaudeFileRewindCheck(canRewind: false, files: [], error: ClaudeFileRewindCheck.checkpointsOff)
+        }
+        guard record.started, let prompt = cut.restorePrompt else {
+            return ClaudeFileRewindCheck(canRewind: false, files: [], error: ClaudeFileRewindCheck.noSnapshot)
+        }
+        guard (live[id]?.turnsInFlight ?? 0) == 0 else {
+            throw ClaudeCodeError.invalidArgument("Stop the agent before rewinding.")
+        }
+        try ensureProcess(id)
+        let check = try await control(id, ["subtype": "rewind_files", "user_message_id": .string(prompt), "dry_run": true])
+        let error = check["error"]?.stringValue
+        return ClaudeFileRewindCheck(canRewind: check["canRewind"]?.boolValue == true,
+                                     files: (check["filesChanged"]?.arrayValue ?? []).compactMap(\.stringValue),
+                                     error: error?.isEmpty == false ? error : nil)
+    }
+
+    /// Rewinds to `cut`: files with the CLI's `rewind_files` (dry run first) for the code scopes, the conversation by
+    /// resuming at the kept entry for the conversation scopes. Unlike `applyRewind`, a code scope fails rather than
+    /// rewinding only the conversation. Keeps what Redo needs: the record from before, and a private copy of each file
+    /// the CLI is about to put back. Returns the paths the CLI put back.
+    func applyRewind(_ id: String, cut: ClaudeHistory.Cut, scope: RewindScope) async throws -> [String] {
+        _ = try rootRecord(id, action: "be rewound")
+        guard scope != .summarizeFromHere else { throw ClaudeCodeError.notSupported(ClaudeFileRewindCheck.noSummary) }
+        guard (live[id]?.turnsInFlight ?? 0) == 0 else {
+            throw ClaudeCodeError.invalidArgument("Stop the agent before rewinding.")
+        }
+        clearRewindUndo(id)
+        var undo = ClaudeRewindUndo()
+        var restored: [String] = []
+        if scope.restoresFiles {
+            let check = try await fileRewindCheck(id, cut: cut)
+            guard check.canRewind, let prompt = cut.restorePrompt else {
+                throw ClaudeCodeError.notSupported(check.error ?? ClaudeFileRewindCheck.noSnapshot)
+            }
+            if !check.files.isEmpty {
+                let directory = try record(id).directory
+                undo.files = try ClaudeRewindUndo.FileCopy.save(check.files.map { ClaudeRewindUndo.absolute($0, directory: directory) })
+                _ = try await control(id, ["subtype": "rewind_files", "user_message_id": .string(prompt)], timeout: .seconds(60))
+                restored = check.files
+                emit(.filesChanged(paths: restored))
+            }
+        }
+        if scope.removesMessages {
+            stopProcess(id)
+            var record = try self.record(id)
+            undo.record = record
+            if let keep = cut.keep {
+                record.resumeAt = keep
+            } else {
+                record.cliSessionID = UUID().uuidString.lowercased()
+                record.started = false
+                record.forkFrom = nil
+                record.resumeAt = nil
+                record.transcriptPath = nil
+            }
+            record.lastContextTokens = nil
+            record.updated = Date()
+            store[id] = record
+            save()
+            emit(.sessionUpdated(record.engineSession))
+        }
+        if undo.record != nil || undo.files != nil { rewindUndo[id] = undo }
+        return restored
+    }
+
+    /// True when the session's last rewind can still be undone.
+    func canRedoRewind(_ id: String) -> Bool { rewindUndo[id] != nil }
+
+    /// Undoes the session's last rewind: the conversation resumes where it was, and the files the CLI put back get
+    /// the contents they had just before.
+    func redoRewind(_ id: String) async throws {
+        _ = try rootRecord(id, action: "be rewound")
+        guard let undo = rewindUndo[id] else { throw ClaudeCodeError.invalidArgument("There is no rewind to undo in this session.") }
+        guard (live[id]?.turnsInFlight ?? 0) == 0 else {
+            throw ClaudeCodeError.invalidArgument("Stop the agent before undoing the rewind.")
+        }
+        rewindUndo[id] = nil
+        defer { undo.files?.discard() }
+        if let files = undo.files {
+            try files.restore()
+            emit(.filesChanged(paths: files.entries.map(\.path)))
+        }
+        if let before = undo.record {
+            // Only where the conversation resumes goes back; title, mode, model and usage stay as they are now.
+            stopProcess(id)
+            var record = try record(id)
+            record.cliSessionID = before.cliSessionID
+            record.started = before.started
+            record.forkFrom = before.forkFrom
+            record.resumeAt = before.resumeAt
+            record.transcriptPath = before.transcriptPath
+            record.lastContextTokens = before.lastContextTokens
+            record.updated = Date()
+            store[id] = record
+            save()
+            emit(.sessionUpdated(record.engineSession))
+        }
+    }
+
+    private func clearRewindUndo(_ id: String) {
+        rewindUndo.removeValue(forKey: id)?.files?.discard()
     }
 
     // MARK: Commands

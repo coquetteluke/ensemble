@@ -323,8 +323,14 @@ public struct TranscriptItemView: View {
             } else {
                 ErrorRow(message: message)
             }
-        case .notice(_, let text):
-            NoticeRow(text: text)
+        case .notice(let id, let text):
+            if let store, let notice = store.rewindNotice(forItem: id) {
+                RewindNoticeRow(notice: notice, redoUnavailableReason: store.redoUnavailableReason(notice)) {
+                    Task { await store.redoRewind(noticeID: id) }
+                }
+            } else {
+                NoticeRow(text: text)
+            }
         }
     }
 

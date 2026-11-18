@@ -148,7 +148,8 @@ final class StubURLProtocol: URLProtocol, @unchecked Sendable {
         let items = try await client.transcript("ses_1")
         #expect(items.count == 201)
         #expect(items.last == .user(id: "msg_last", text: "last", date: Date(timeIntervalSince1970: 0.001)))
-        let requests = StubURLProtocol.requests(host: host)
+        // (The transcript also reads the session, for a staged revert to hide.)
+        let requests = StubURLProtocol.requests(host: host).filter { $0.url.path.hasSuffix("/message") }
         #expect(requests.count == 2)
         #expect(requests[0].url.query?.contains("order=asc") == true)
         #expect(requests[1].url.query?.contains("order=") == false)

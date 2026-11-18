@@ -173,6 +173,7 @@ struct GeneralSettingsView: View {
                 }
             }
             TrustedFoldersSection()
+            WorktreesSettingsSection(store: store)
         }
         .formStyle(.grouped)
         .zoomedForm()

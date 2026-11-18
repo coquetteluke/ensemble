@@ -73,12 +73,17 @@ public final class SessionStore {
     @ObservationIgnored var sideQuestionCleanupTask: Task<Void, Never>?
     /// Trust cards put away, messages refused in untrusted folders, trust errors (`SessionStore+Trust.swift`).
     public let trustNotes = SessionTrustNotes()
+    /// The rewind sheet and the notices left after rewinds (`Rewind+Store.swift`).
+    public let rewinds = SessionRewindState()
+    /// Sessions that work in their own git worktree (`SessionWorktree+Store.swift`).
+    public let worktrees = SessionWorktrees()
 
     private enum EditableField: Hashable { case title, archived, model }
 
     public init(engine: any OpenCodeAPI) {
         self.engine = engine
         self.sideQuestionRecordURL = Self.defaultSideQuestionRecordURL(isPreview: engine is PreviewEngine)
+        worktrees.configure(fileURL: SessionWorktrees.defaultURL(isPreview: engine is PreviewEngine))
     }
 
     /// True when the store runs on sample data instead of a real engine.
@@ -187,10 +192,11 @@ public final class SessionStore {
 
     public var selected: SessionModel? { selectedSessionID.flatMap { byID[$0] } }
 
-    /// Top-level, non-archived sessions grouped by folder, most recent project first.
+    /// Top-level, non-archived sessions grouped by folder, most recent project first. A session in its own copy
+    /// (`SessionWorktree+Store.swift`) is listed under the project folder the copy was made from.
     public var projects: [ProjectGroup] {
         let visible = sessions.filter { $0.info.parentID == nil && !$0.info.archived && !hiddenSessionIDs.contains($0.id) }
-        let grouped = Dictionary(grouping: visible, by: \.info.directory)
+        let grouped = Dictionary(grouping: visible, by: { projectFolder(for: $0) })
         return grouped.map { directory, list in
             ProjectGroup(id: directory, directory: directory, name: Format.folderName(directory),
                          sessions: list.sorted { $0.info.updated > $1.info.updated })
@@ -419,6 +425,9 @@ public final class SessionStore {
 
     /// Shows the message in the transcript and hands it to the engine now.
     func deliver(_ text: String, files: [URL] = [], to sessionID: String) async {
+        // Over its provider's daily spending cap (`UsageCaps.swift`): shown as not sent, nothing reaches the engine.
+        // Every send goes through here, queued messages and auto-continue included.
+        if refuseOverSpendingCap(text, files: files, to: sessionID) { return }
         guard let session = byID[sessionID] else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !files.isEmpty else { return }

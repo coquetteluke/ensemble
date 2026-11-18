@@ -1,8 +1,8 @@
 import SwiftUI
 import EnsembleKit
 
-/// The main window: sidebar, centre (transcript and composer, a room, or Hub / Scheduled), and the right-hand pane
-/// (context panel, file or review).
+/// The main window: sidebar, centre (transcript and composer, two to four sessions side by side, a room, or Hub /
+/// Scheduled), and the right-hand pane (context panel, file or review), which follows the focused split pane.
 struct MainView: View {
     let store: SessionStore
     @Bindable var window: WindowState
@@ -17,14 +17,15 @@ struct MainView: View {
     @AppStorage(Zoom.storageKey) private var zoom = 1.0
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
+    @Environment(\.openSettings) private var openSettings
 
     static let sidebarWidth: CGFloat = 260
     static let panelWidth: CGFloat = 303
     /// The narrowest the centre gets when a wide pane (file viewer, review) opens on the right.
     static let centreMinWidth: CGFloat = 400
-    /// Room the window's three toolbar buttons (background, changes, context panel) take at the top right, when no pane
-    /// is open.
-    static let toolbarButtonsWidth: CGFloat = 128
+    /// Room the window's four toolbar buttons (background, changes, customizations, context panel) take at the top
+    /// right, when no pane is open.
+    static let toolbarButtonsWidth: CGFloat = 170
 
     /// Snapshots pass a fixed zoom; the app uses the stored View > Zoom setting.
     var zoomOverride: CGFloat?
@@ -76,6 +77,7 @@ struct MainView: View {
         // Snapshots of each session's folder as its turns start, for the review pane's per-turn filter.
         .task(id: ObjectIdentifier(store)) { if !isSnapshot { ReviewCenter.shared.follow(store) } }
         .modifier(RoomsWindowSync(store: store, window: window, rooms: rooms))
+        .modifier(SplitWindowSync(store: store, window: window))
         .navigationTitle(windowTitle)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -89,6 +91,13 @@ struct MainView: View {
             ToolbarItem(placement: .navigation) {
                 IconButton("sidebar.left", help: window.showSidebar ? "Hide sidebar" : "Show sidebar", size: 28) {
                     window.toggleSidebar()
+                }
+            }
+            .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .primaryAction) {
+                IconButton("puzzlepiece.extension", help: "Customizations: what each agent loads in this folder", size: 28) {
+                    CustomizationsFocus.shared.show(folder: currentFolder)
+                    openSettings()
                 }
             }
             .sharedBackgroundVisibility(.hidden)
@@ -146,6 +155,12 @@ struct MainView: View {
         }
     }
 
+    /// The folder on screen, for Customizations: the room's in a room, else the selected (focused) session's.
+    private var currentFolder: String? {
+        if window.route == .room, let room = rooms?.selectedEngine { return room.state.spec.directory }
+        return store.selected?.directory
+    }
+
     /// The folder file paths in the pane are shown relative to: the room's folder in a room, else the session's.
     private var paneBaseDirectory: String {
         if window.route == .room, let room = rooms?.selectedEngine { return room.state.spec.directory }
@@ -176,40 +191,44 @@ struct MainView: View {
     }
 
     private var actions: TranscriptActions {
-        let store = store
-        let window = window
-        let session = store.selected
-        let sessionID = session?.id
+        guard let session = store.selected else { return TranscriptActions(openSession: { [window, store] id in window.open(id, store: store) },
+                                                                          historySupported: store.supportsHistory) }
+        return Self.transcriptActions(store: store, session: session, window: window, paneWindow: window, ownsShortcuts: true)
+    }
+
+    /// What a transcript's buttons do for `session`. `paneWindow` is the state of the composer showing it (a split
+    /// pane's own state, else the window's); subagent links open in that pane. Only the session that `ownsShortcuts`
+    /// answers Command-Y, Option-Command-Y and Command-period, so two panes never share a prompt's keys.
+    static func transcriptActions(store: SessionStore, session: SessionModel, window: WindowState, paneWindow: WindowState,
+                                  ownsShortcuts: Bool) -> TranscriptActions {
+        let sessionID = session.id
         return TranscriptActions(
-            openSession: { id in window.open(id, store: store) },
+            openSession: { id in paneWindow.open(id, store: store) },
             replyPermission: { request, decision in Task { await store.reply(to: request, decision: decision) } },
             fork: { messageID in
-                guard let sessionID else { return }
                 Task {
                     if await store.fork(sessionID, atMessageID: messageID) != nil { window.composerFocusToken &+= 1 }
                 }
             },
             rewind: { messageID in
-                guard let sessionID else { return }
-                Task { await store.rewind(sessionID, toBeforeMessageID: messageID) }
+                store.beginRewind(sessionID, messageID: messageID)
             },
             edit: { messageID in
-                guard let sessionID else { return }
                 Task {
                     if let text = await store.editMessage(sessionID, messageID: messageID) {
-                        window.drafts[sessionID] = text
-                        window.composerFocusToken &+= 1
+                        paneWindow.drafts[sessionID] = text
+                        paneWindow.composerFocusToken &+= 1
                     }
                 }
             },
             historySupported: store.supportsHistory,
-            workingAgentName: session.flatMap { $0.isWorking ? agentName(for: $0) : nil },
-            shortcutPermissionID: session?.pendingPermissions.last?.id
+            workingAgentName: session.isWorking ? agentName(for: session, store: store) : nil,
+            shortcutPermissionID: ownsShortcuts ? session.pendingPermissions.last?.id : nil
         )
     }
 
     /// The working agent's name: the room agent, or the model.
-    private func agentName(for session: SessionModel) -> String {
+    private static func agentName(for session: SessionModel, store: SessionStore) -> String {
         if let id = session.agentID, let agent = store.agents[id] { return agent.name }
         return store.modelName(session.info.model)
     }
@@ -224,19 +243,23 @@ struct CenterColumn: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // A room draws its own header (title, mode, phase, Pause, Stop, Take over).
-            if window.route != .room { CenterHeader(store: store, window: window) }
+            // A room draws its own header (title, mode, phase, Pause, Stop, Take over); split panes draw one each.
+            if window.route != .room && !showsSplit { CenterHeader(store: store, window: window) }
             switch window.route {
             case .session:
-                if let session = store.selected {
+                if showsSplit {
+                    SplitSessionsView(store: store, window: window)
+                } else if let session = store.selected {
                     ConversationView(store: store, session: session, window: window)
                 } else {
                     EmptySessionView(store: store, window: window)
                 }
             case .hub:
-                HubPlaceholderView(store: store, window: window)
+                HubView(store: store, window: window, rooms: rooms)
             case .scheduled:
-                ScheduledPlaceholderView(store: store)
+                ScheduledView(store: store, window: window)
+            case .usage:
+                UsageScreen(store: store)
             case .room:
                 if let rooms, let engine = rooms.selectedEngine {
                     RoomView(controller: rooms, engine: engine,
@@ -253,6 +276,8 @@ struct CenterColumn: View {
         }
         .background(theme.background)
     }
+
+    private var showsSplit: Bool { window.route == .session && window.split.isActive }
 }
 
 /// Shown for the room route when no room is open (it was deleted, or rooms are still loading).
@@ -318,6 +343,29 @@ struct SidePanePlaceholder: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .background(theme.panel)
+    }
+}
+
+/// Split view upkeep: restores the window's saved layout once sessions load, keeps the focused pane on the selected
+/// session, and drops panes whose sessions were deleted or archived.
+private struct SplitWindowSync: ViewModifier {
+    let store: SessionStore
+    @Bindable var window: WindowState
+    @Environment(\.isSnapshot) private var isSnapshot
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: store.isLoaded, initial: true) { _, loaded in
+                // Sample data keeps its own layout, so its sessions never land in the real one.
+                if loaded && !isSnapshot { window.restoreSplit(store: store, key: AppEngine.usePreview ? "preview" : "main") }
+            }
+            .onChange(of: store.selectedSessionID) { _, id in window.followSelection(id) }
+            .onChange(of: paneSessionsValid) { _, _ in window.pruneSplit(store: store) }
+    }
+
+    /// One flag per pane: its session still exists and is not archived.
+    private var paneSessionsValid: [Bool] {
+        window.split.panes.map { pane in store.session(pane.sessionID).map { !$0.info.archived } ?? false }
     }
 }
 
@@ -404,6 +452,8 @@ struct CenterHeader: View {
                 Text("Session Hub").font(theme.font(size: 13, weight: .semibold)).foregroundStyle(theme.textPrimary)
             case .scheduled:
                 Text("Scheduled").font(theme.font(size: 13, weight: .semibold)).foregroundStyle(theme.textPrimary)
+            case .usage:
+                Text("Usage").font(theme.font(size: 13, weight: .semibold)).foregroundStyle(theme.textPrimary)
             case .room:
                 EmptyView()
             }
@@ -468,6 +518,9 @@ struct SnapshotWindowChrome: View {
                 Image(systemName: "plus.forwardslash.minus")
                     .font(.system(size: 14))
                     .foregroundStyle(window.reviewOpen ? theme.textPrimary : theme.textSecondary)
+                Image(systemName: "puzzlepiece.extension")
+                    .font(.system(size: 14))
+                    .foregroundStyle(theme.textSecondary)
                 Image(systemName: "sidebar.right")
                     .font(.system(size: 14))
                     .foregroundStyle(window.contextPanelVisible ? theme.textPrimary : theme.textSecondary)

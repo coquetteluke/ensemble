@@ -272,6 +272,10 @@ enum SnapshotRenderer {
         written += ImportSnapshots.render(to: outputDirectory, zoom: zoom)
         written += TrustSnapshots.render(to: outputDirectory, zoom: zoom)
         written += BackgroundSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += RewindSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += ScheduleSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += CustomizationsSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += HubSplitSnapshots.render(to: outputDirectory, zoom: zoom)
 
         print("Rendered \(written.count) snapshots:")
         for path in written { print(path) }

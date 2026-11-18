@@ -6,8 +6,12 @@ struct ConversationView: View {
     let store: SessionStore
     let session: SessionModel
     @Bindable var window: WindowState
+    /// A split pane narrower than the composer's row passes a smaller zoom for the composer, its cards and the status
+    /// line, so every control stays on screen; nil uses the window's zoom.
+    var composerZoom: CGFloat?
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
+    @Environment(\.zoom) private var zoom
     @State private var pinnedToBottom = true
     @State private var position = ScrollPosition(edge: .bottom)
 
@@ -16,15 +20,17 @@ struct ConversationView: View {
     var body: some View {
         VStack(spacing: 0) {
             transcript
-            VStack(spacing: 0) {
+            ComposerColumn {
                 // "Trust this folder?" when the session's engine skips or refuses the folder's own settings.
                 SessionTrustCard(store: store, session: session)
                 PullRequestBarHost(store: store, session: session)
                 ComposerView(store: store, session: session, window: window)
                 StatusLine(store: store, session: session, window: window)
             }
-            .frame(maxWidth: theme.z(Self.columnWidth + 24))
-            .padding(.horizontal, theme.z(20))
+            // Always applied (at the window's zoom when there is no override) so the composer keeps its identity, and
+            // its focus, while a split pane is resized.
+            .ensembleTheme()
+            .environment(\.zoom, composerZoom ?? zoom)
         }
         .environment(\.sessionDirectory, session.directory)
         // Plan cards in the transcript answer through the store (`PlanCardView`).
@@ -94,6 +100,18 @@ struct ConversationView: View {
             .clipped()
             .id(session.id)
         }
+    }
+}
+
+/// The composer's column under the transcript, sized with its own theme (the composer's zoom).
+private struct ComposerColumn<Content: View>: View {
+    @ViewBuilder let content: Content
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        VStack(spacing: 0) { content }
+            .frame(maxWidth: theme.z(ConversationView.columnWidth + 24))
+            .padding(.horizontal, theme.z(20))
     }
 }
 

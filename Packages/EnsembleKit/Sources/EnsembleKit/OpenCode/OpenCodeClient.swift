@@ -169,8 +169,12 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
         try await sendIgnoringBody("POST", "/api/session/\(sessionID)/model", body: ["model": try JSONValue(encoding: model.wire)])
     }
 
+    /// A staged revert (a rewind Redo can still undo) hides its message and everything after it, as OpenCode's own
+    /// views do (`OpenCodeClient+Rewind.swift`).
     public func transcript(_ sessionID: String) async throws -> [TranscriptItem] {
-        TranscriptMapper.items(from: try await messages(sessionID))
+        async let boundary = try? stagedRevertMessageID(sessionID)
+        let all = try await messages(sessionID)
+        return TranscriptMapper.items(from: Self.hidingStagedRevert(all, boundary: await boundary ?? nil))
     }
 
     /// Raw engine messages, oldest first (the endpoint defaults to newest first, so `order=asc` is set).

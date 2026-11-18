@@ -1,8 +1,8 @@
 import SwiftUI
 import EnsembleKit
 
-/// Under the composer: session cost and tokens (opens the usage popover), the Claude plan limit ring and a small context
-/// meter.
+/// Under the composer: session cost and tokens (opens the usage popover), "Work in a copy" and the branch chip
+/// (`WorktreeControls.swift`), the Claude plan limit ring and a small context meter.
 struct StatusLine: View {
     let store: SessionStore
     let session: SessionModel
@@ -36,11 +36,16 @@ struct StatusLine: View {
                 }
             }
             .popover(isPresented: $showUsage, arrowEdge: .top) {
-                UsagePopover(usage: usage, title: session.title, store: store)
-                    .ensembleTheme()
+                UsagePopover(usage: usage, title: session.title, store: store) {
+                    showUsage = false
+                    window.route = .usage
+                }
+                .ensembleTheme()
             }
 
             PowerStatusChip(store: store)
+
+            WorktreeStatusControls(store: store, session: session, window: window)
 
             Spacer(minLength: theme.z(8))
 
@@ -87,11 +92,13 @@ struct ContextRing: View {
     }
 }
 
-/// Session usage numbers. The full usage screen (per agent and provider) comes with the Usage work package.
+/// Session usage numbers, the Claude plan limits, and "Show all usage" (the Usage screen: per agent and provider).
 struct UsagePopover: View {
     let usage: Usage
     let title: String
     let store: SessionStore
+    /// Opens the Usage screen; nil hides the button.
+    var onShowAll: (() -> Void)?
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -110,6 +117,21 @@ struct UsagePopover: View {
                 row("Cache write", usage.cacheWriteTokens)
             }
             ClaudePlanLimitsSection(store: store)
+            if let onShowAll {
+                Button(action: onShowAll) {
+                    HStack(spacing: theme.z(5)) {
+                        Text("Show all usage")
+                        Image(systemName: "arrow.right")
+                            .font(theme.font(size: 10, weight: .semibold))
+                    }
+                    .font(theme.font(size: 12.5, weight: .medium))
+                    .foregroundStyle(theme.accent)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, theme.z(2))
+                .help("Usage per agent and provider, with daily spending caps")
+            }
         }
         .padding(theme.z(16))
         .frame(width: theme.z(240), alignment: .leading)

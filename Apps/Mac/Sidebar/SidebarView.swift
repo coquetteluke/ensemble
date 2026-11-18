@@ -3,7 +3,7 @@ import EnsembleKit
 
 /// Left sidebar: New session, Session Hub, Scheduled, search, pinned sessions, rooms, the session list (grouped by
 /// project, state or date), Settings. Rows show a needs-you badge, a working spinner, or a failed, unread or
-/// completed mark.
+/// completed mark. Option-click or Open in Split shows a session beside the one on screen.
 struct SidebarView: View {
     let store: SessionStore
     @Bindable var window: WindowState
@@ -43,14 +43,14 @@ struct SidebarView: View {
                 SidebarNavRow(symbol: "plus", title: "New session", accentIcon: true, shortcut: "\u{2318}N") {
                     window.beginNewSession()
                 }
-                // Prompts from room agents are in `store.needsYouTotal` (their sessions are in the list); rooms add the
-                // decisions they wait on.
+                // The Hub's Needs you count: open prompts, plans and questions, failed turns and closing questions,
+                // and rooms waiting on a decision (room agents' sessions count inside their room).
                 SidebarNavRow(symbol: "square.grid.2x2", title: "Session Hub", selected: window.route == .hub,
-                              badge: store.needsYouTotal + (rooms?.decisionsWaiting ?? 0)) {
+                              badge: HubBoardSource(store: store, marks: attention.marks, rooms: rooms).needsYouCount()) {
                     window.route = .hub
                 }
                 SidebarNavRow(symbol: "clock", title: "Scheduled", selected: window.route == .scheduled,
-                              trailing: store.schedules.isEmpty ? nil : "\(store.schedules.filter { !$0.paused }.count)") {
+                              trailing: (ScheduleCenter.shared.scheduler?.activeTaskCount).flatMap { $0 > 0 ? "\($0)" : nil }) {
                     window.route = .scheduled
                 }
             }
@@ -211,7 +211,12 @@ struct SidebarView: View {
                        needsYou: prompts,
                        folder: showsFolder ? Format.folderName(session.directory) : nil,
                        agentColors: colors) {
-                window.open(session.id, store: store)
+                // Option-click opens it beside the session on screen (split view).
+                if NSEvent.modifierFlags.contains(.option), window.canOpenBeside(session.id, store: store) {
+                    window.openBeside(session.id, store: store)
+                } else {
+                    window.open(session.id, store: store)
+                }
             }
             .contextMenu { rowMenu(session, entry: entry) }
         }
@@ -220,6 +225,9 @@ struct SidebarView: View {
     @ViewBuilder
     private func rowMenu(_ session: SessionModel, entry: SidebarEntry) -> some View {
         let id = session.id
+        Button(window.split.contains(sessionID: id) ? "Show in Split" : "Open in Split") { window.openBeside(id, store: store) }
+            .disabled(!window.canOpenBeside(id, store: store))
+        Divider()
         Button(entry.pinned ? "Unpin" : "Pin") { attention.setPinned(id, !entry.pinned) }
         Button("Rename") {
             renameText = session.title

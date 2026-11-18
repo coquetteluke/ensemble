@@ -321,11 +321,18 @@ struct ClaudeStreamDecoder {
         let base = assistantCounters[messageID] ?? 0
         assistantCounters[messageID] = base + content.count
         var out: [Output] = []
+        let limitMessage = Self.isPlanLimitMessage(json)
         for (offset, block) in content.enumerated() {
             let itemID = ClaudeSessionIDs.block(messageID: messageID, index: base + offset)
             switch block["type"]?.stringValue {
             case "text":
                 guard let text = block["text"]?.stringValue, !text.isEmpty, !endedItems.contains(itemID) else { continue }
+                // The CLI's own "You've hit your 5-hour limit" message: the turn's result says the same, and the
+                // transcript shows it once, as the plan limit card that replaces the error row.
+                if limitMessage, UsageLimitText.isUsageLimit(text) || json["error"]?.stringValue == "rate_limit" {
+                    endedItems.insert(itemID)
+                    continue
+                }
                 endedItems.insert(itemID)
                 out.append(.event(.textEnded(sessionID: session, itemID: itemID, text: text)))
             case "thinking":
@@ -362,6 +369,16 @@ struct ClaudeStreamDecoder {
             }
         }
         return out
+    }
+
+    /// An assistant line the CLI wrote itself for a failed API call on a plan limit (`"error": "rate_limit"` with
+    /// `is_api_error_message`, or its synthetic model with a limit text), not something the model said.
+    static func isPlanLimitMessage(_ json: JSONValue) -> Bool {
+        guard json["is_api_error_message"]?.boolValue == true || json["isApiErrorMessage"]?.boolValue == true
+            || json["message"]?["model"]?.stringValue == "<synthetic>" else { return false }
+        if json["error"]?.stringValue == "rate_limit" { return true }
+        let texts = (json["message"]?["content"]?.arrayValue ?? []).compactMap { $0["text"]?.stringValue }
+        return texts.contains(where: UsageLimitText.isUsageLimit)
     }
 
     private mutating func user(_ json: JSONValue) -> [Output] {

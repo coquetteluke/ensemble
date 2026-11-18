@@ -82,6 +82,8 @@ struct ComposerView: View {
             case .effort: showEffortMenu = true
             }
         }
+        // The rewind sheet for this session (opened from a message's Rewind or `/rewind`).
+        .modifier(RewindSheetPresenter(store: store, sessionID: session.id))
         .onChange(of: draft.wrappedValue) { slashSelection = 0 }
         .onChange(of: session.id) { liveDictation.cancel() }
         .onDisappear { liveDictation.cancel() }

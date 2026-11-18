@@ -13,6 +13,7 @@ enum CommandArea: String, CaseIterable, Identifiable {
     case permissions = "Permission prompts"
     case transcript = "Transcript"
     case view = "View"
+    case split = "Split view"
     case search = "Search"
 
     var id: String { rawValue }
@@ -22,7 +23,7 @@ enum CommandArea: String, CaseIterable, Identifiable {
 struct AppShortcut: Hashable {
     enum Key: Hashable {
         case character(Character)
-        case `return`, escape, tab, upArrow, downArrow
+        case `return`, escape, tab, upArrow, downArrow, leftArrow, rightArrow
     }
 
     let key: Key
@@ -46,6 +47,8 @@ struct AppShortcut: Hashable {
         case .tab: .tab
         case .upArrow: .upArrow
         case .downArrow: .downArrow
+        case .leftArrow: .leftArrow
+        case .rightArrow: .rightArrow
         }
     }
 
@@ -64,6 +67,8 @@ struct AppShortcut: Hashable {
         case .tab: caps.append("\u{21E5}")
         case .upArrow: caps.append("\u{2191}")
         case .downArrow: caps.append("\u{2193}")
+        case .leftArrow: caps.append("\u{2190}")
+        case .rightArrow: caps.append("\u{2192}")
         }
         return caps
     }
@@ -80,12 +85,13 @@ struct AppShortcut: Hashable {
 
 /// Every command the app has. The order is the palette's order when nothing is typed.
 enum AppCommandID: String, CaseIterable, Identifiable {
-    case newSession, newRoom, searchTranscripts, keyboardShortcuts, commandPalette, settings, pairIPhone
+    case newSession, newRoom, searchTranscripts, keyboardShortcuts, commandPalette, settings, customizations, pairIPhone
     case sendMessage, stopAgent, openHub, openScheduled, archiveSession, forkSession, compactConversation, revealFolder
     case switchModel, switchMode, modeAsk, modeAcceptEdits, modeAuto, modePlan, modeBypass, changeEffort, toggleFastMode, sideQuestion, focusComposer
     case allowOnce, alwaysAllow, reject
     case nextTranscriptView, viewNormal, viewThinking, viewVerbose
     case toggleSidebar, toggleContextPanel, closeFileViewer, zoomIn, zoomOut, actualSize
+    case openInSplit, closePane, nextPane, previousPane, equalizePanes, closeSplit
     case appearanceDark, appearanceLight, appearanceSystem
 
     var id: String { rawValue }
@@ -99,6 +105,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .keyboardShortcuts: "Show keyboard shortcuts"
         case .commandPalette: "Command palette"
         case .settings: "Open Settings"
+        case .customizations: "Open Customizations"
         case .pairIPhone: "Pair iPhone"
         case .sendMessage: "Send message"
         case .stopAgent: "Stop the agent"
@@ -132,6 +139,12 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .zoomIn: "Zoom in"
         case .zoomOut: "Zoom out"
         case .actualSize: "Actual size"
+        case .openInSplit: "Open in Split"
+        case .closePane: "Close split pane"
+        case .nextPane: "Next split pane"
+        case .previousPane: "Previous split pane"
+        case .equalizePanes: "Make split panes equal"
+        case .closeSplit: "Close split view"
         case .appearanceDark: "Appearance: Dark"
         case .appearanceLight: "Appearance: Light"
         case .appearanceSystem: "Appearance: Match system"
@@ -140,7 +153,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
 
     var area: CommandArea {
         switch self {
-        case .newSession, .newRoom, .settings, .pairIPhone: .general
+        case .newSession, .newRoom, .settings, .customizations, .pairIPhone: .general
         case .searchTranscripts, .keyboardShortcuts, .commandPalette: .search
         case .sendMessage, .stopAgent, .openHub, .openScheduled, .archiveSession, .forkSession, .compactConversation, .revealFolder: .sessions
         case .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass, .changeEffort, .toggleFastMode, .sideQuestion,
@@ -149,6 +162,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .nextTranscriptView, .viewNormal, .viewThinking, .viewVerbose: .transcript
         case .toggleSidebar, .toggleContextPanel, .closeFileViewer, .zoomIn, .zoomOut, .actualSize,
              .appearanceDark, .appearanceLight, .appearanceSystem: .view
+        case .openInSplit, .closePane, .nextPane, .previousPane, .equalizePanes, .closeSplit: .split
         }
     }
 
@@ -160,6 +174,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .keyboardShortcuts: "keyboard"
         case .commandPalette: "command"
         case .settings: "gearshape"
+        case .customizations: "puzzlepiece.extension"
         case .pairIPhone: "iphone"
         case .sendMessage: "arrow.up"
         case .stopAgent: "stop.circle"
@@ -193,6 +208,12 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .zoomIn: "plus.magnifyingglass"
         case .zoomOut: "minus.magnifyingglass"
         case .actualSize: "1.magnifyingglass"
+        case .openInSplit: "rectangle.split.2x1"
+        case .closePane: "xmark.square"
+        case .nextPane: "arrow.right.square"
+        case .previousPane: "arrow.left.square"
+        case .equalizePanes: "equal.square"
+        case .closeSplit: "rectangle"
         case .appearanceDark: "moon"
         case .appearanceLight: "sun.max"
         case .appearanceSystem: "circle.lefthalf.filled"
@@ -221,6 +242,9 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .zoomIn: AppShortcut("+")
         case .zoomOut: AppShortcut("-")
         case .actualSize: AppShortcut("0")
+        case .closePane: AppShortcut("w", [.command, .control])
+        case .nextPane: AppShortcut(.rightArrow, [.command, .option])
+        case .previousPane: AppShortcut(.leftArrow, [.command, .option])
         default: nil
         }
     }
@@ -233,6 +257,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .searchTranscripts: ["find", "transcripts", "messages", "history"]
         case .keyboardShortcuts: ["keys", "help", "hotkeys"]
         case .settings: ["preferences", "options", "api keys", "accounts"]
+        case .customizations: ["rules", "memory", "skills", "mcp", "hooks", "plugins", "agents", "claude.md"]
         case .pairIPhone: ["phone", "remote", "qr"]
         case .stopAgent: ["interrupt", "cancel"]
         case .openHub: ["needs you", "inbox"]
@@ -246,6 +271,8 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .toggleContextPanel: ["context", "usage", "connectors"]
         case .zoomIn, .zoomOut, .actualSize: ["text size", "font size", "scale"]
         case .appearanceDark, .appearanceLight, .appearanceSystem: ["theme", "dark mode", "light mode"]
+        case .openInSplit: ["split view", "side by side", "beside", "pane"]
+        case .closePane, .nextPane, .previousPane, .equalizePanes, .closeSplit: ["split view", "pane", "side by side"]
         default: []
         }
     }
@@ -302,6 +329,9 @@ enum CommandRegistry {
     /// Shortcuts that live outside the menus, listed in the overlay with the menu ones.
     static let notes: [ShortcutNote] = [
         ShortcutNote(title: "Switch to session 1 to 9", area: .sessions, caps: ["\u{2318}", "1\u{2026}9"]),
+        ShortcutNote(title: "Open beside (split view)", area: .split, caps: ["\u{2325}", "Click"]),
+        ShortcutNote(title: "Move between Session Hub cards", area: .sessions, caps: ["\u{2191}", "\u{2193}"]),
+        ShortcutNote(title: "Send a Session Hub reply", area: .sessions, caps: ["\u{2318}", "\u{21A9}"]),
         ShortcutNote(title: "Send", area: .composer, caps: ["\u{21A9}"]),
         ShortcutNote(title: "New line", area: .composer, caps: ["\u{21E7}", "\u{21A9}"]),
         ShortcutNote(title: "Next permission mode", area: .composer, caps: ["\u{21E7}", "\u{21E5}"]),
@@ -359,7 +389,11 @@ enum CommandRegistry {
         case .alwaysAllow: return false
         case .closeFileViewer: return context.search.filePreview != nil
         case .openHub, .openScheduled: return store != nil
-        case .settings: return context.openSettings != nil
+        case .openInSplit:
+            guard let store, store.selected != nil else { return false }
+            return context.window.split.isActive ? !context.window.split.isFull : store.sessions.contains { !$0.isSubagent && !$0.info.archived && $0.id != store.selectedSessionID }
+        case .closePane, .nextPane, .previousPane, .equalizePanes, .closeSplit: return context.window.split.isActive
+        case .settings, .customizations: return context.openSettings != nil
         case .pairIPhone: return context.openWindow != nil
         default: return true
         }
@@ -377,6 +411,11 @@ enum CommandRegistry {
         case .keyboardShortcuts: search.show(.shortcuts)
         case .commandPalette: search.show(.palette)
         case .settings: context.openSettings?()
+        case .customizations:
+            // The folder on screen: the room's in a room, else the selected (focused) session's.
+            let folder = window.route == .room ? search.rooms?.selectedEngine?.state.spec.directory : store?.selected?.directory
+            CustomizationsFocus.shared.show(folder: folder)
+            context.openSettings?()
         case .pairIPhone: context.openWindow?(id: "pair-iphone")
         case .sendMessage: if let store { window.sendDraft(store: store) }
         case .stopAgent: if let store { Task { await store.stop() } }
@@ -423,6 +462,12 @@ enum CommandRegistry {
         case .zoomIn: window.zoomIn()
         case .zoomOut: window.zoomOut()
         case .actualSize: window.resetZoom()
+        case .openInSplit: if let store { window.openNextBeside(store: store) }
+        case .closePane: if let store, let focused = window.split.focusedID { window.closePane(focused, store: store) }
+        case .nextPane: if let store { window.focusNeighbourPane(1, store: store) }
+        case .previousPane: if let store { window.focusNeighbourPane(-1, store: store) }
+        case .equalizePanes: window.equalizePanes()
+        case .closeSplit: if let store { window.closeSplit(store: store) }
         case .appearanceDark: UserDefaults.standard.set(AppearanceSetting.dark.rawValue, forKey: "appearance")
         case .appearanceLight: UserDefaults.standard.set(AppearanceSetting.light.rawValue, forKey: "appearance")
         case .appearanceSystem: UserDefaults.standard.set(AppearanceSetting.system.rawValue, forKey: "appearance")
