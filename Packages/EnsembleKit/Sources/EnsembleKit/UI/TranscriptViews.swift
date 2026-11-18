@@ -12,6 +12,9 @@ public struct TranscriptActions: Sendable {
     public var historySupported: Bool
     /// The agent's name while it is working; rewind and edit wait until it stops.
     public var workingAgentName: String?
+    /// The prompt that answers to Command-Y (Allow once), Option-Command-Y (Always allow) and
+    /// Command-period (Reject): the newest open one in the session on screen.
+    public var shortcutPermissionID: String?
 
     public init(openSession: @escaping @MainActor @Sendable (String) -> Void = { _ in },
                 replyPermission: @escaping @MainActor @Sendable (PermissionRequest, PermissionDecision) -> Void = { _, _ in },
@@ -19,7 +22,8 @@ public struct TranscriptActions: Sendable {
                 rewind: @escaping @MainActor @Sendable (String) -> Void = { _ in },
                 edit: @escaping @MainActor @Sendable (String) -> Void = { _ in },
                 historySupported: Bool = false,
-                workingAgentName: String? = nil) {
+                workingAgentName: String? = nil,
+                shortcutPermissionID: String? = nil) {
         self.openSession = openSession
         self.replyPermission = replyPermission
         self.fork = fork
@@ -27,6 +31,7 @@ public struct TranscriptActions: Sendable {
         self.edit = edit
         self.historySupported = historySupported
         self.workingAgentName = workingAgentName
+        self.shortcutPermissionID = shortcutPermissionID
     }
 
     public static let none = TranscriptActions()

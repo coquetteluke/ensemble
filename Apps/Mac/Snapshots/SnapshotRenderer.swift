@@ -23,6 +23,9 @@ enum SnapshotRenderer {
         return URL(fileURLWithPath: (path as NSString).expandingTildeInPath, isDirectory: true)
     }
 
+    /// A power controller that is never started, so the Keep awake button draws in its off state.
+    static let power = PowerController(backend: MacPowerBackend(), defaults: UserDefaults(suiteName: "ensemble-snapshots") ?? .standard)
+
     static func run(outputDirectory: URL) {
         let zoom = requestedZoom
         _ = NSApplication.shared
@@ -42,6 +45,12 @@ enum SnapshotRenderer {
             print("No sample session to render")
             return
         }
+        // Effort, fast mode and the engine's slash commands come from the preview engine asynchronously.
+        Task { @MainActor in
+            await store.loadModelOptions(for: main.info.model)
+            await store.loadCommands(directory: main.directory)
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
 
         var written: [String] = []
         func save<V: View>(_ name: String, width baseWidth: CGFloat, height baseHeight: CGFloat?, scheme: ColorScheme = .dark,
@@ -55,6 +64,7 @@ enum SnapshotRenderer {
                 .environment(\.colorScheme, scheme)
                 .environment(\.isSnapshot, true)
                 .environment(\.zoom, zoom)
+                .environment(power)
             let renderer = ImageRenderer(content: content)
             renderer.scale = 2
             renderer.proposedSize = ProposedViewSize(width: width, height: height)
@@ -139,6 +149,32 @@ enum SnapshotRenderer {
             }
         }
 
+        // Activity groups, inline visuals, an SVG image, the task list and the working row.
+        save("transcript-polish", width: 800, height: nil) {
+            PolishSnapshot(main: main)
+                .environment(\.sessionDirectory, main.directory)
+                .padding(28)
+        }
+
+        // Hover actions under your messages: idle, while the agent works, and on an engine without history.
+        save("message-actions", width: 800, height: nil) {
+            MessageActionsSnapshot()
+                .padding(28)
+        }
+
+        // The / menu above the composer (Ensemble's commands, the engine's commands and skills), and the effort menu.
+        save("composer-slash-menu", width: 820, height: nil) {
+            ComposerSlashSnapshot(store: store, session: main, window: window, draft: "/")
+        }
+        save("composer-slash-filtered", width: 820, height: nil) {
+            ComposerSlashSnapshot(store: store, session: main, window: window, draft: "/re")
+        }
+        if let options = store.options(for: main.info.model) {
+            save("composer-effort-menu", width: 820, height: nil) {
+                ComposerEffortSnapshot(store: store, session: main, window: window, options: options)
+            }
+        }
+
         // A subagent's own transcript, opened from its card.
         store.select(PreviewData.childSessionID)
         save("subagent-session", width: 1440, height: 900) {
@@ -159,6 +195,13 @@ enum SnapshotRenderer {
         var paths: [String] = []
         let live = LiveWindow(store: seededStore)
         if let path = live.capture(to: outputDirectory.appendingPathComponent("main-window-live.png")) { paths.append(path) }
+        // The real / menu (scroll view and all) above the real composer.
+        if let sessionID = seededStore.selectedSessionID {
+            live.window.drafts[sessionID] = "/"
+            live.spin(0.5)
+            if let path = live.capture(to: outputDirectory.appendingPathComponent("main-window-live-slash.png")) { paths.append(path) }
+            live.window.drafts[sessionID] = ""
+        }
         live.close()
 
         let engine = PreviewEngine(delayScale: 0.5)
@@ -223,6 +266,7 @@ private final class LiveWindow {
         let root = MainView(store: store, window: window, remoteControlOverride: true, zoomOverride: SnapshotRenderer.requestedZoom)
             .ensembleTheme()
             .environment(\.colorScheme, .dark)
+            .environment(SnapshotRenderer.power)
         hosting = NSHostingView(rootView: AnyView(root))
         let frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
         offscreen = NSWindow(contentRect: frame, styleMask: [.titled, .fullSizeContentView, .resizable],
@@ -334,5 +378,112 @@ private struct SettingsTabStrip: View {
         .padding(.vertical, 8)
         .background(theme.sidebar)
         .overlay(alignment: .bottom) { HLine() }
+    }
+}
+
+/// The transcript pieces added for the Claude Code look, each in its main states.
+private struct PolishSnapshot: View {
+    let main: SessionModel
+
+    var body: some View {
+        let steps = main.items.filter { item in
+            if case .tool(let tool) = item { return !TodoParser.isTodoTool(tool.name) }
+            return false
+        }
+        var running = steps
+        running.append(.tool(ToolCallInfo(id: "w_test", name: "bash", title: "swift test --filter RemoteProtocolTests",
+                                          inputJSON: #"{"command": "swift test --filter RemoteProtocolTests"}"#, status: .running)))
+        let turn: [TranscriptItem] = [.user(id: "w_u", text: "Check the remote protocol", date: Date())] + running
+        return VStack(alignment: .leading, spacing: 18) {
+            ActivityGroupView(items: steps)
+            ActivityGroupView(items: running, expanded: true)
+            MarkdownView(Self.visualMessage)
+            WidgetBlockView(source: Self.widget, collapsed: true)
+            WidgetBlockView(source: Self.widget, pending: true)
+            TaskListCard(items: TodoParser.latest(in: main.items) ?? [])
+            WorkingRow(items: turn, since: Date().addingTimeInterval(-69), waitingForPermission: false, expanded: true)
+            WorkingRow(items: turn, since: Date().addingTimeInterval(-975), waitingForPermission: true)
+        }
+    }
+
+    static let widget = """
+    <div style="display:flex;gap:8px;align-items:flex-end;height:120px">
+      <div style="flex:1;height:40%;background:var(--accent)"></div>
+      <div style="flex:1;height:75%;background:var(--blue)"></div>
+      <div style="flex:1;height:55%;background:var(--teal)"></div>
+    </div>
+    """
+
+    static let visualMessage = """
+    Here is the context use per category:
+
+    ```widget
+    \(widget)
+    ```
+
+    And the icon as an SVG:
+
+    ```svg
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 96" width="240" height="96">
+      <rect x="4" y="4" width="88" height="88" rx="20" fill="#8B7CF6"/>
+      <circle cx="30" cy="34" r="7" fill="#fff"/><circle cx="66" cy="30" r="5" fill="#fff"/>
+      <circle cx="48" cy="64" r="9" fill="#fff"/>
+      <path d="M30 34 L66 30 L48 64 Z" fill="none" stroke="#fff" stroke-width="2" opacity="0.7"/>
+      <text x="108" y="58" font-family="-apple-system, sans-serif" font-size="26" fill="#A0A0A0">Ensemble</text>
+    </svg>
+    ```
+    """
+}
+
+/// Your messages with their action bar drawn as if hovered.
+private struct MessageActionsSnapshot: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            UserBubble(id: "m1", text: "Run the tests and fix anything that fails", date: Date().addingTimeInterval(-300), alwaysShowActions: true)
+                .environment(\.transcriptActions, TranscriptActions(historySupported: true))
+            UserBubble(id: "m2", text: "Now update the README", date: Date().addingTimeInterval(-20), alwaysShowActions: true)
+                .environment(\.transcriptActions, TranscriptActions(historySupported: true, workingAgentName: "Claude Opus 5.5"))
+            UserBubble(id: "m3", text: "Engine without fork and rewind", date: Date().addingTimeInterval(-7200), alwaysShowActions: true)
+                .environment(\.transcriptActions, TranscriptActions(historySupported: false))
+        }
+    }
+}
+
+/// The composer with a / draft; the command menu draws in the space above it.
+private struct ComposerSlashSnapshot: View {
+    let store: SessionStore
+    let session: SessionModel
+    let window: WindowState
+    let draft: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Color.clear.frame(height: 360)
+            ComposerView(store: store, session: session, window: window, snapshotDraft: draft)
+            StatusLine(store: store, session: session, window: window)
+        }
+        .padding(24)
+    }
+}
+
+/// The effort menu drawn open above its chip.
+private struct ComposerEffortSnapshot: View {
+    let store: SessionStore
+    let session: SessionModel
+    let window: WindowState
+    let options: ModelOptions
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: 10) {
+            EffortMenuContent(levels: options.effortLevels, current: session.effort ?? options.defaultEffort) { _ in }
+                .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(theme.border))
+                .shadow(color: .black.opacity(0.35), radius: 14, y: 6)
+                .padding(.trailing, 90)
+            ComposerView(store: store, session: session, window: window, snapshotDraft: "Make the tests faster")
+            StatusLine(store: store, session: session, window: window)
+        }
+        .padding(24)
     }
 }

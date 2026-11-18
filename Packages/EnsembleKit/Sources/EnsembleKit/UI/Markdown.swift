@@ -229,7 +229,7 @@ public struct MarkdownView: View {
     let text: String
     var fontSize: CGFloat
     var textColor: Color?
-    /// While the text is still streaming, `widget` and `svg` blocks wait instead of rendering half a page.
+    /// While the text is still streaming, a `widget` or `svg` block at the end waits instead of rendering half a page.
     var streaming: Bool
     @Environment(\.theme) private var theme
 
@@ -243,8 +243,8 @@ public struct MarkdownView: View {
     public var body: some View {
         let blocks = MarkdownParser.parse(text)
         VStack(alignment: .leading, spacing: theme.z(10)) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                blockView(block)
+            ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
+                blockView(block, isLast: index == blocks.count - 1)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -252,7 +252,7 @@ public struct MarkdownView: View {
 
     private var color: Color { textColor ?? theme.textPrimary }
 
-    @ViewBuilder private func blockView(_ block: MarkdownBlock) -> some View {
+    @ViewBuilder private func blockView(_ block: MarkdownBlock, isLast: Bool) -> some View {
         switch block {
         case .heading(let level, let text):
             Text(MarkdownInline.attributed(text, theme: theme, size: headingSize(level)))
@@ -296,11 +296,12 @@ public struct MarkdownView: View {
             }
 
         case .code(let language, let code):
+            // Only the last block of a streaming message can still be arriving.
             switch language?.lowercased() {
             case "widget", "html-widget":
-                WidgetBlockView(source: code, kind: .html, pending: streaming)
+                WidgetBlockView(source: code, pending: streaming && isLast)
             case "svg":
-                WidgetBlockView(source: code, kind: .svg, pending: streaming)
+                SVGBlockView(source: code, pending: streaming && isLast)
             default:
                 CodeBlockView(code: code, language: language)
             }

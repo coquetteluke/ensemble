@@ -115,7 +115,8 @@ struct MainView: View {
                 }
             },
             historySupported: store.supportsHistory,
-            workingAgentName: session.flatMap { $0.isWorking ? agentName(for: $0) : nil }
+            workingAgentName: session.flatMap { $0.isWorking ? agentName(for: $0) : nil },
+            shortcutPermissionID: session?.pendingPermissions.last?.id
         )
     }
 

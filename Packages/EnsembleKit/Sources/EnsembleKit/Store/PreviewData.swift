@@ -55,7 +55,7 @@ public enum PreviewData {
         // MARK: Main transcript
         let testsPermission = PermissionRequest(
             id: pendingTestsPermissionID, sessionID: mainSessionID, kind: "bash", title: "swift test --parallel",
-            detail: "Runs the EnsembleKit test suite in ~/Ensemble/Packages/EnsembleKit.", created: ago(110))
+            detail: "Runs the EnsembleKit test suite in ~/Ensemble/Packages/EnsembleKit.\nAlways allows: swift test *", created: ago(110))
 
         let contextBarDiff = """
         --- a/Apps/Mac/ContextPanel/ContextBar.swift

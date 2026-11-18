@@ -55,11 +55,16 @@ struct ComposerView: View {
             window.attachments[session.id, default: []].append(contentsOf: urls.filter(\.isFileURL))
         })
         .overlay(alignment: .top) {
-            if !slashMatches.isEmpty {
-                SlashCommandMenu(commands: slashMatches, selection: min(slashSelection, slashMatches.count - 1),
-                                 onHover: { slashSelection = $0 }, onPick: pick)
-                    .alignmentGuide(.top) { $0[.bottom] + theme.z(8) }
-            }
+            // A zero-height anchor on the composer's top edge; the menu grows upwards from it.
+            Color.clear
+                .frame(height: 0)
+                .overlay(alignment: .bottom) {
+                    if !slashMatches.isEmpty {
+                        SlashCommandMenu(commands: slashMatches, selection: min(slashSelection, slashMatches.count - 1),
+                                         onHover: { slashSelection = $0 }, onPick: pick)
+                            .padding(.bottom, theme.z(8))
+                    }
+                }
         }
         .task(id: session.info.model?.description) { await store.loadModelOptions(for: session.info.model) }
         .task(id: session.directory) { await store.loadCommands(directory: session.directory) }

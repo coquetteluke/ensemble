@@ -49,7 +49,8 @@ public struct PermissionCardView: View {
                 .overlay(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).strokeBorder(theme.separator))
                 .selectableText()
 
-            if let detail = request.detail, !detail.isEmpty {
+            let parts = Self.splitDetail(request.detail)
+            if let detail = parts.detail {
                 Text(detail)
                     .font(theme.font(size: 12.5))
                     .foregroundStyle(theme.textSecondary)
@@ -59,10 +60,29 @@ public struct PermissionCardView: View {
             HStack(spacing: theme.z(8)) {
                 Button("Allow once") { actions.replyPermission(request, .once) }
                     .buttonStyle(PrimaryButtonStyle())
+                    .modifier(PermissionShortcut(key: "y", modifiers: .command, enabled: hasShortcuts))
+                    .help(hasShortcuts ? "Allow once (Command-Y)" : "Allow once")
                 Button("Always allow") { actions.replyPermission(request, .always) }
                     .buttonStyle(SecondaryButtonStyle())
+                    .modifier(PermissionShortcut(key: "y", modifiers: [.command, .option], enabled: hasShortcuts))
+                    .help(alwaysHelp(parts.patterns))
                 Button("Reject") { actions.replyPermission(request, .reject) }
                     .buttonStyle(SecondaryButtonStyle(foreground: theme.danger))
+                    .modifier(PermissionShortcut(key: ".", modifiers: .command, enabled: hasShortcuts))
+                    .help(hasShortcuts ? "Reject (Command-period)" : "Reject")
+                if let patterns = parts.patterns {
+                    HStack(spacing: theme.z(5)) {
+                        Image(systemName: "infinity")
+                            .font(theme.font(size: 10.5, weight: .semibold))
+                        Text(patterns)
+                            .font(theme.font(size: 11.5, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .foregroundStyle(theme.textTertiary)
+                    .padding(.leading, theme.z(4))
+                    .help("Always allow also covers \(patterns) from now on")
+                }
                 Spacer(minLength: 0)
             }
             .padding(.top, theme.z(2))
@@ -92,6 +112,30 @@ public struct PermissionCardView: View {
         .frame(minHeight: theme.z(22))
     }
 
+    private var hasShortcuts: Bool { actions.shortcutPermissionID == request.id }
+
+    private func alwaysHelp(_ patterns: String?) -> String {
+        let base = patterns.map { "Always allow \($0)" } ?? "Always allow"
+        return hasShortcuts ? base + " (Option-Command-Y)" : base
+    }
+
+    /// Separates the engine's "Always allows: ..." line (the patterns Always allow saves) from the rest.
+    static func splitDetail(_ detail: String?) -> (detail: String?, patterns: String?) {
+        guard let detail, !detail.isEmpty else { return (nil, nil) }
+        let prefix = "Always allows: "
+        var rest: [Substring] = []
+        var patterns: String?
+        for line in detail.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.hasPrefix(prefix) {
+                patterns = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            } else {
+                rest.append(line)
+            }
+        }
+        let text = rest.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        return (text.isEmpty ? nil : text, patterns?.isEmpty == true ? nil : patterns)
+    }
+
     private var question: String {
         switch request.kind {
         case "bash", "shell", "command": "Allow this command?"
@@ -110,6 +154,21 @@ public struct PermissionCardView: View {
         case "webfetch", "fetch", "websearch": "globe"
         case "external_directory": "folder"
         default: "exclamationmark.shield"
+        }
+    }
+}
+
+/// A keyboard shortcut only on the prompt that owns the shortcuts, so two open prompts never share one.
+private struct PermissionShortcut: ViewModifier {
+    let key: KeyEquivalent
+    let modifiers: EventModifiers
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.keyboardShortcut(key, modifiers: modifiers)
+        } else {
+            content
         }
     }
 }

@@ -62,7 +62,8 @@ public enum SlashCommands {
         return String(rest)
     }
 
-    /// Commands matching `query`: names starting with it first, then names or summaries containing it.
+    /// Commands matching `query`, kept in their sections (Ensemble, commands, skills) so each heading shows
+    /// once; within a section, names starting with the query come first, then names or summaries containing it.
     public static func matches(_ query: String, in commands: [SlashCommand]) -> [SlashCommand] {
         let q = query.lowercased()
         guard !q.isEmpty else { return commands }
@@ -70,7 +71,9 @@ public enum SlashCommands {
         let contains = commands.filter {
             !$0.name.lowercased().hasPrefix(q) && ($0.name.lowercased().contains(q) || $0.summary.lowercased().contains(q))
         }
-        return prefix + contains
+        let ranked = prefix + contains
+        let sections: [SlashCommand.Source] = [.ensemble, .engineCommand, .engineSkill]
+        return sections.flatMap { section in ranked.filter { $0.source == section } }
     }
 
     /// Splits "/name some arguments" into its parts. Nil when the text is not a command.

@@ -37,13 +37,17 @@ public final class SessionStore {
     public internal(set) var engineCommands: [String: [EngineCommand]] = [:]
 
     @ObservationIgnored var byID: [String: SessionModel] = [:]
-    @ObservationIgnored private var eventTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var eventTask: Task<Void, Never>?
     @ObservationIgnored private var loadTasks: [String: Task<Void, Never>] = [:]
     /// When the user last changed a field of a session here. Events stamped earlier are echoes of older
     /// changes that arrived late through the stream; they must not undo the newer local value.
     @ObservationIgnored private var localEdits: [String: [EditableField: Date]] = [:]
     /// Sessions deleted here or by the engine. Late events for them are dropped so they cannot reappear.
     @ObservationIgnored private var deletedSessionIDs: Set<String> = []
+    /// Sessions whose permission rules were checked against the current rules this launch.
+    @ObservationIgnored var permissionRulesChecked: Set<String> = []
+    /// The launch-time check of every session's permission rules (tests await it).
+    @ObservationIgnored var permissionSyncTask: Task<Void, Never>?
 
     private enum EditableField: Hashable { case title, archived, model }
 
@@ -85,6 +89,7 @@ public final class SessionStore {
         if selectedSessionID == nil, let first = sidebarOrder.first {
             select(first.id)
         }
+        permissionSyncTask = Task { [weak self] in await self?.syncAllPermissionRules() }
     }
 
     /// Stops following live events.
@@ -220,6 +225,10 @@ public final class SessionStore {
             }
         } else {
             Task { [weak self] in await self?.refreshPanels(sessionID) }
+        }
+        if eventTask != nil, !permissionRulesChecked.contains(model.info.parentID ?? sessionID) {
+            let topLevel = model.info.parentID ?? sessionID
+            Task { [weak self] in await self?.syncPermissionRules(topLevel) }
         }
     }
 
@@ -358,6 +367,7 @@ public final class SessionStore {
         let session = upsertSession(info)
         session.permissionMode = permissionMode
         session.transcriptLoaded = true
+        permissionRulesChecked.insert(session.id)
         select(session.id)
         return session
     }
@@ -432,6 +442,7 @@ public final class SessionStore {
         guard let session = sessionID.flatMap({ byID[$0] }) ?? selected else { return }
         let previous = session.permissionMode
         session.permissionMode = mode
+        permissionRulesChecked.insert(session.id)
         do { try await engine.setPermissionMode(session.id, mode: mode) } catch {
             session.permissionMode = previous
             lastError = "Could not change permissions: \(error.localizedDescription)"

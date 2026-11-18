@@ -226,6 +226,7 @@ struct SlashCommandMenu: View {
             }
             .frame(maxHeight: theme.z(320))
             .fixedSize(horizontal: false, vertical: true)
+            .clipped()
             .onChange(of: selection) {
                 if commands.indices.contains(selection) { proxy.scrollTo(commands[selection].id) }
             }

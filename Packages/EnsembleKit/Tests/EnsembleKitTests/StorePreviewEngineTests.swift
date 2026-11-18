@@ -169,6 +169,51 @@ import Testing
         try await until { other.title == marker }
     }
 
+    @Test func sessionsGetTodaysPermissionRulesOncePerLaunch() async throws {
+        let engine = PreviewEngine(seed: PreviewData.seed(), delayScale: 0)
+        // Rules an older Ensemble wrote for Auto: same shape, missing today's newest rule.
+        let old = Array(PermissionRules.ruleset(for: .auto).dropLast())
+        #expect(PermissionRules.outdatedMode(for: old) == .auto)
+        engine.storeRules(old, for: "ses_readme")
+        try await engine.setPermissionMode("ses_astro", mode: .ask)
+
+        let store = SessionStore(engine: engine)
+        await store.start()
+        await store.permissionSyncTask?.value
+
+        #expect(try await engine.permissionRules("ses_readme") == PermissionRules.ruleset(for: .auto), "outdated rules rewritten")
+        #expect(store.session("ses_readme")?.permissionMode == .auto)
+        #expect(store.session("ses_astro")?.permissionMode == .ask, "the mode is read from the engine's rules")
+        #expect(store.session(PreviewData.mainSessionID)?.permissionMode == .ask)
+        #expect(store.session("ses_rate_limit")?.permissionMode == .bypass)
+
+        // Once per launch: rules that go stale later are not rewritten again until the next launch.
+        engine.storeRules(old, for: "ses_readme")
+        store.select("ses_readme")
+        await store.syncPermissionRules("ses_readme")
+        #expect(try await engine.permissionRules("ses_readme") == old)
+
+        // A new store (the next launch) checks again.
+        let next = SessionStore(engine: engine)
+        await next.start()
+        await next.permissionSyncTask?.value
+        #expect(try await engine.permissionRules("ses_readme") == PermissionRules.ruleset(for: .auto))
+        next.stopListening()
+        store.stopListening()
+    }
+
+    @Test func aModePickedDuringTheCheckWins() async throws {
+        let engine = PreviewEngine(seed: PreviewData.seed(), delayScale: 0)
+        try await engine.setPermissionMode("ses_astro", mode: .ask)
+        let store = SessionStore(engine: engine)
+        await store.start()
+        await store.setPermissionMode(.bypass, for: "ses_astro")
+        await store.permissionSyncTask?.value
+        #expect(store.session("ses_astro")?.permissionMode == .bypass)
+        #expect(try await engine.permissionRules("ses_astro") == PermissionRules.ruleset(for: .bypass))
+        store.stopListening()
+    }
+
     @Test func switchModelUpdatesTheSession() async throws {
         let store = await makeStore()
         let ref = ModelRef(providerID: "openai", id: "gpt-5.5")

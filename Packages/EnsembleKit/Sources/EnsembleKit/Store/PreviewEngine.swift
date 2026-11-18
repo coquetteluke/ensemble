@@ -35,6 +35,8 @@ public final class PreviewEngine: OpenCodeAPI, Sendable {
         var counter = 0
         var efforts: [String: EffortLevel] = [:]
         var fastModes: [String: Bool] = [:]
+        /// Rules a session holds when they differ from its mode's current ruleset (an older Ensemble wrote them).
+        var storedRules: [String: [PermissionRule]] = [:]
     }
 
     private let state: Mutex<State>
@@ -107,7 +109,10 @@ public final class PreviewEngine: OpenCodeAPI, Sendable {
 
     public func setPermissionMode(_ sessionID: String, mode: PermissionMode) async throws {
         try requireSession(sessionID)
-        state.withLock { $0.modes[sessionID] = mode }
+        state.withLock { s in
+            s.modes[sessionID] = mode
+            s.storedRules[sessionID] = nil
+        }
     }
 
     public func switchModel(_ sessionID: String, model: ModelRef) async throws {
@@ -298,7 +303,7 @@ public final class PreviewEngine: OpenCodeAPI, Sendable {
 
         if mode == .ask {
             let request = PermissionRequest(id: "perm-\(turn)", sessionID: sessionID, kind: "bash", title: "swift build",
-                                            detail: "Builds the package in the project folder.")
+                                            detail: "Builds the package in the project folder.\nAlways allows: swift build *")
             state.withLock { $0.permissions.append(request) }
             emit(.permissionAsked(request))
             emit(.activity(sessionID: sessionID, .waitingForPermission))
@@ -677,5 +682,20 @@ extension PreviewEngine: EngineCommandsControl {
         guard await stream(text: "One file changed. `Settings.isValidURL` looks right; consider a test for URLs without a scheme.",
                            sessionID: sessionID, itemID: "c2-\(turn)") else { return }
         finishTurn(sessionID, tokens: 2_600)
+    }
+}
+
+extension PreviewEngine: EngineSessionRulesReading {
+    /// The current ruleset for the session's mode, or rules set with `storeRules` (none for sessions without a mode).
+    public func permissionRules(_ sessionID: String) async throws -> [PermissionRule] {
+        try requireSession(sessionID)
+        return state.withLock { s in
+            s.storedRules[sessionID] ?? s.modes[sessionID].map(PermissionRules.ruleset(for:)) ?? []
+        }
+    }
+
+    /// Gives a session rules as an older Ensemble version would have left them (tests).
+    func storeRules(_ rules: [PermissionRule], for sessionID: String) {
+        state.withLock { $0.storedRules[sessionID] = rules }
     }
 }

@@ -27,7 +27,7 @@ public struct ActivityGroupView: View {
                     if running {
                         Spinner(size: 11).frame(width: theme.z(16))
                     } else {
-                        Image(systemName: "square.stack")
+                        Image(systemName: "list.bullet")
                             .font(theme.font(size: 12))
                             .foregroundStyle(theme.textTertiary)
                             .frame(width: theme.z(16))
@@ -133,16 +133,17 @@ public struct WorkingRow: View {
     let items: [TranscriptItem]
     let since: Date?
     let waitingForPermission: Bool
-    @State private var expanded = false
+    @State private var expanded: Bool
     @State private var hovering = false
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
     @Environment(\.sessionDirectory) private var baseDirectory
 
-    public init(items: [TranscriptItem], since: Date?, waitingForPermission: Bool) {
+    public init(items: [TranscriptItem], since: Date?, waitingForPermission: Bool, expanded: Bool = false) {
         self.items = items
         self.since = since
         self.waitingForPermission = waitingForPermission
+        self._expanded = State(initialValue: expanded)
     }
 
     public var body: some View {
@@ -161,7 +162,7 @@ public struct WorkingRow: View {
                     }
                     Text(Self.currentStep(items, waiting: waitingForPermission, baseDirectory: baseDirectory))
                         .font(theme.font(size: 13))
-                        .foregroundStyle(theme.textSecondary)
+                        .foregroundStyle(hovering ? theme.textPrimary : theme.textSecondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     elapsed
@@ -254,12 +255,13 @@ public struct TaskListCard: View {
     public init(items: [TodoItem]) { self.items = items }
 
     public var body: some View {
+        let iconBaseline = theme.z(4.5)
         VStack(alignment: .leading, spacing: theme.z(11)) {
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                 HStack(alignment: .firstTextBaseline, spacing: theme.z(10)) {
                     icon(item.status)
                         .frame(width: theme.z(16), height: theme.z(16))
-                        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + theme.z(4.5) }
+                        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + iconBaseline }
                     Text(item.status == .inProgress ? (item.activeForm ?? item.content) : item.content)
                         .font(theme.font(size: 13.5))
                         .foregroundStyle(color(item.status))
