@@ -410,7 +410,7 @@ public struct ReasoningRow: View {
             if expanded {
                 HStack(alignment: .top, spacing: theme.z(10)) {
                     RoundedRectangle(cornerRadius: theme.z(1)).fill(theme.border).frame(width: theme.z(2))
-                    MarkdownView(text, fontSize: 13, textColor: theme.textSecondary)
+                    MarkdownView(text, fontSize: 13, textColor: theme.textSecondary, serif: false)
                 }
                 .padding(.leading, theme.z(7))
                 .fixedSize(horizontal: false, vertical: true)

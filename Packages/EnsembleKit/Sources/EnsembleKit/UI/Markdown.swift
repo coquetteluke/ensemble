@@ -231,18 +231,21 @@ public struct MarkdownView: View {
     var textColor: Color?
     /// While the text is still streaming, a `widget` or `svg` block at the end waits instead of rendering half a page.
     var streaming: Bool
+    /// Agent writing uses the serif (`MessageType`); false keeps the interface sans, as for thinking text.
+    var serif: Bool
     @Environment(\.theme) private var theme
 
-    public init(_ text: String, fontSize: CGFloat = 14, textColor: Color? = nil, streaming: Bool = false) {
+    public init(_ text: String, fontSize: CGFloat = 14, textColor: Color? = nil, streaming: Bool = false, serif: Bool = true) {
         self.text = text
         self.fontSize = fontSize
         self.textColor = textColor
         self.streaming = streaming
+        self.serif = serif
     }
 
     public var body: some View {
         let blocks = MarkdownParser.parse(text)
-        VStack(alignment: .leading, spacing: theme.z(10)) {
+        VStack(alignment: .leading, spacing: theme.z(serif ? 12 : 10)) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { index, block in
                 blockView(block, isLast: index == blocks.count - 1)
             }
@@ -252,11 +255,20 @@ public struct MarkdownView: View {
 
     private var color: Color { textColor ?? theme.textPrimary }
 
+    private func bodyFont(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        serif ? theme.messageFont(size: size, weight: weight) : theme.font(size: size, weight: weight)
+    }
+
+    private func tracking(_ size: CGFloat) -> CGFloat { serif ? theme.messageTracking(size) : 0 }
+
+    private var lineSpacing: CGFloat { serif ? theme.messageLineSpacing(fontSize) : theme.z(3) }
+
     @ViewBuilder private func blockView(_ block: MarkdownBlock, isLast: Bool) -> some View {
         switch block {
         case .heading(let level, let text):
             Text(MarkdownInline.attributed(text, theme: theme, size: headingSize(level)))
-                .font(theme.font(size: headingSize(level), weight: .semibold))
+                .font(bodyFont(headingSize(level), weight: .semibold))
+                .tracking(tracking(headingSize(level)))
                 .foregroundStyle(color)
                 .padding(.top, theme.z(level <= 2 ? 6 : 2))
                 .fixedSize(horizontal: false, vertical: true)
@@ -264,9 +276,10 @@ public struct MarkdownView: View {
 
         case .paragraph(let text):
             Text(MarkdownInline.attributed(text, theme: theme, size: fontSize))
-                .font(theme.font(size: fontSize))
+                .font(bodyFont(fontSize))
+                .tracking(tracking(fontSize))
                 .foregroundStyle(color)
-                .lineSpacing(theme.z(3))
+                .lineSpacing(lineSpacing)
                 .fixedSize(horizontal: false, vertical: true)
                 .selectableText()
 
@@ -280,14 +293,15 @@ public struct MarkdownView: View {
                                 .foregroundStyle(checked ? theme.accent : theme.textTertiary)
                         } else {
                             Text(item.marker)
-                                .font(theme.font(size: fontSize).monospacedDigit())
+                                .font(bodyFont(fontSize).monospacedDigit())
                                 .foregroundStyle(theme.textSecondary)
                                 .frame(minWidth: theme.z(12), alignment: .trailing)
                         }
                         Text(MarkdownInline.attributed(item.text, theme: theme, size: fontSize))
-                            .font(theme.font(size: fontSize))
+                            .font(bodyFont(fontSize))
+                            .tracking(tracking(fontSize))
                             .foregroundStyle(color)
-                            .lineSpacing(theme.z(3))
+                            .lineSpacing(lineSpacing)
                             .fixedSize(horizontal: false, vertical: true)
                             .selectableText()
                     }
@@ -310,8 +324,10 @@ public struct MarkdownView: View {
             HStack(spacing: theme.z(10)) {
                 RoundedRectangle(cornerRadius: theme.z(1)).fill(theme.border).frame(width: theme.z(3))
                 Text(MarkdownInline.attributed(text, theme: theme, size: fontSize))
-                    .font(theme.font(size: fontSize))
+                    .font(bodyFont(fontSize))
+                    .tracking(tracking(fontSize))
                     .foregroundStyle(theme.textSecondary)
+                    .lineSpacing(lineSpacing)
                     .fixedSize(horizontal: false, vertical: true)
                     .selectableText()
             }
@@ -321,7 +337,7 @@ public struct MarkdownView: View {
             HLine().padding(.vertical, theme.z(4))
 
         case .table(let header, let rows):
-            MarkdownTable(header: header, rows: rows, fontSize: fontSize - 1)
+            MarkdownTable(header: header, rows: rows, fontSize: fontSize - 1, serif: serif)
         }
     }
 
@@ -339,7 +355,12 @@ private struct MarkdownTable: View {
     let header: [String]
     let rows: [[String]]
     let fontSize: CGFloat
+    let serif: Bool
     @Environment(\.theme) private var theme
+
+    private func cellFont(weight: Font.Weight = .regular) -> Font {
+        serif ? theme.messageFont(size: fontSize, weight: weight) : theme.font(size: fontSize, weight: weight)
+    }
 
     var body: some View {
         let columns = max(header.count, rows.map(\.count).max() ?? 0)
@@ -347,7 +368,7 @@ private struct MarkdownTable: View {
             GridRow {
                 ForEach(0..<columns, id: \.self) { c in
                     Text(MarkdownInline.attributed(c < header.count ? header[c] : "", theme: theme, size: fontSize))
-                        .font(theme.font(size: fontSize, weight: .semibold))
+                        .font(cellFont(weight: .semibold))
                         .foregroundStyle(theme.textPrimary)
                 }
             }
@@ -356,7 +377,7 @@ private struct MarkdownTable: View {
                 GridRow {
                     ForEach(0..<columns, id: \.self) { c in
                         Text(MarkdownInline.attributed(c < row.count ? row[c] : "", theme: theme, size: fontSize))
-                            .font(theme.font(size: fontSize))
+                            .font(cellFont())
                             .foregroundStyle(theme.textPrimary)
                     }
                 }

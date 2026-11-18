@@ -155,6 +155,17 @@ public struct Theme: Sendable {
         .system(size: size * scale, weight: weight, design: design)
     }
 
+    /// Font for what an agent writes: New York, the system serif. See `MessageType`.
+    public func messageFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .system(size: MessageType.size(size) * scale, weight: weight, design: .serif)
+    }
+
+    /// Letter spacing for agent text at `size` (the interface size passed to `messageFont`).
+    public func messageTracking(_ size: CGFloat) -> CGFloat { MessageType.tracking(size) * scale }
+
+    /// Extra space between lines of agent text at `size`.
+    public func messageLineSpacing(_ size: CGFloat) -> CGFloat { MessageType.lineSpacing(size) * scale }
+
     /// A length (padding, row height, corner radius, icon size) times the zoom.
     public func z(_ value: CGFloat) -> CGFloat { value * scale }
 
@@ -172,7 +183,22 @@ public struct Theme: Sendable {
     }
 }
 
-/// Type sizes. The app uses the system font (SF Pro) throughout.
+/// How agent text is set. Agents write in New York, the system serif; everything else uses the
+/// system sans. New York looks small and tight next to SF Pro at the same point size, so agent
+/// text is drawn 7% larger, with 2% letter spacing and lines about 1.7 times the type size apart.
+/// Shared by the Mac app and the iPhone remote so both read the same.
+public enum MessageType {
+    public static let scale: CGFloat = 1.07
+    public static let trackingRatio: CGFloat = 0.02
+    public static let lineSpacingRatio: CGFloat = 0.42
+
+    /// The serif size that matches interface text of `size` points.
+    public static func size(_ size: CGFloat) -> CGFloat { size * scale }
+    public static func tracking(_ size: CGFloat) -> CGFloat { size * scale * trackingRatio }
+    public static func lineSpacing(_ size: CGFloat) -> CGFloat { size * scale * lineSpacingRatio }
+}
+
+/// Type sizes for interface text, which uses the system font (SF Pro). Agent text uses `MessageType`.
 public enum EFont {
     public static let body = Font.system(size: 13)
     public static let bodyMedium = Font.system(size: 13, weight: .medium)

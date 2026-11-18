@@ -26,10 +26,7 @@ struct TranscriptRow: View {
                 if let agent = agentID.flatMap({ agents[$0] }) {
                     AgentTag(agent: agent)
                 }
-                Text(Self.markdown(text))
-                    .font(.body)
-                    .foregroundStyle(RemoteTheme.primaryText)
-                    .textSelection(.enabled)
+                AgentMessageText(text: text)
                 if streaming {
                     ProgressView().controlSize(.mini)
                 }
@@ -67,6 +64,26 @@ struct TranscriptRow: View {
     static func markdown(_ text: String) -> AttributedString {
         (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
+    }
+}
+
+/// What an agent wrote, in the same tuned serif as the Mac app (`MessageType`), following Dynamic Type.
+struct AgentMessageText: View {
+    let text: String
+    @ScaledMetric private var size: CGFloat
+
+    init(text: String, size: CGFloat = 17) {
+        self.text = text
+        _size = ScaledMetric(wrappedValue: size, relativeTo: .body)
+    }
+
+    var body: some View {
+        Text(TranscriptRow.markdown(text))
+            .font(.system(size: MessageType.size(size), design: .serif))
+            .tracking(MessageType.tracking(size))
+            .lineSpacing(MessageType.lineSpacing(size))
+            .foregroundStyle(RemoteTheme.primaryText)
+            .textSelection(.enabled)
     }
 }
 
@@ -226,9 +243,7 @@ struct BoardMessage: View {
                             .foregroundStyle(RemoteTheme.secondaryText)
                     }
                 }
-                Text(TranscriptRow.markdown(text))
-                    .font(.callout)
-                    .foregroundStyle(RemoteTheme.primaryText)
+                AgentMessageText(text: text, size: 16)
             }
             .padding(.leading, 10)
             .padding(.vertical, 2)
