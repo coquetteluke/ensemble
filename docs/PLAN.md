@@ -38,6 +38,17 @@ Done when: you can add a key (or use the mock), start a session in a folder, cha
 
 Done when: one room runs a Claude agent on the Claude subscription and a Gemini agent on the Google subscription, and they debate.
 
+## M1.6: Import from Claude Code
+
+- **WP-M Claude Code import** (owns `Packages/EnsembleKit/Sources/EnsembleKit/Import/`, `Apps/Mac/Import/`): a Settings screen and first-run offer that reads Claude Code's own files (works for any user, no app-private data needed):
+  - Projects and sessions from `~/.claude/projects/<project>/*.jsonl` (folder from each transcript's `cwd`, title from the last `custom-title` entry, else the last prompt; skip sidechains; long folder names are cut to 200 characters plus a hash). Imported sessions are linked, not copied, and open in the Claude Code engine, which resumes them with `claude --resume`. Warn when a session is also open in Claude Code (file still being written).
+  - Instructions and memory: `~/.claude/CLAUDE.md`, project `CLAUDE.md`, memory folders, shared live.
+  - MCP servers from `~/.claude.json` (user and project scopes) into the engines' configs, never printing secret values.
+  - Permission allow-lists mapped to the nearest Ensemble mode, with a summary of what did not map.
+  - Claude desktop app sidebar groups, sections and pins: optional JSON import (Luke's exported once by the orchestrator through the app's own tools); otherwise group by folder.
+  - Hooks and SSH/cloud environments are listed as not imported, with the reason.
+- Done when: Luke's 100+ sessions show under their folders in Ensemble, one old session resumes on the Claude subscription, and his MCP servers appear under Connectors.
+
 ## M2: Rooms (multi-agent)
 
 - **WP-C RoomEngine** (owns `Rooms/`, its tests): room model and persistence, Team / Debate / Round table / Solo, board, relay via `session/synthetic`, lead plan and assignments, worktrees per agent in git projects, review step, pause/resume, `@agent` routing, spending caps.
