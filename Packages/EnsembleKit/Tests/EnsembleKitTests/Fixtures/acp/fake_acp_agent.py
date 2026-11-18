@@ -13,6 +13,7 @@ Prompt words pick the behaviour (case-insensitive, first match):
   edit    -> edit tool call on notes.txt with a diff, asks permission, completes, fails or is cancelled
   write   -> new-file tool call (diff without oldText), asks permission
   shell   -> execute tool call `echo hi`; asks permission unless the mode is turbo or auto, or --bypass was given
+             ("env" in the prompt adds an environment variable to the call's arguments)
   think   -> a thought chunk, then text
   plan    -> a plan update, then text
   other   -> "Echo: <prompt>" in two chunks
@@ -222,7 +223,9 @@ def run_prompt(rid, sid, text):
         elif "shell" in lower:
             tid = "call_%d" % s["prompts"]
             call = {"toolCallId": tid, "name": "run_command", "title": "echo hi", "kind": "execute", "status": "pending",
-                    "rawInput": {"CommandLine": "echo hi"}}
+                    "rawInput": {"CommandLine": "echo hi", "toolSummary": "Say hi"}}
+            if "env" in lower:
+                call["rawInput"]["env"] = {"GREETING": "hello"}
             update(sid, dict(call, sessionUpdate="tool_call"))
             effective = INITIAL_MODE if IGNORE_MODE else s["mode"]
             if effective in ("turbo", "auto") or BYPASS:

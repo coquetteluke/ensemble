@@ -259,6 +259,33 @@ struct ACPEngineTests {
         await h.finish()
     }
 
+    @Test func alwaysOnACommandDoesNotCoverTheSameCommandWithOtherArguments() async throws {
+        let h = try FakeACPHarness()
+        let engine = h.engine()
+        let session = try await h.session(engine)
+        var mark = await h.recorder.mark()
+        try await engine.prompt(session.id, text: "run the shell", files: [])
+        let first = try await h.recorder.permission(session.id, after: mark)
+        #expect(first.alwaysPatterns == ["command: echo hi"])
+        try await engine.replyPermission(sessionID: session.id, requestID: first.id, decision: .always, message: nil)
+        _ = try await h.recorder.ended(session.id, after: mark)
+
+        // The same call again is covered.
+        mark = await h.recorder.mark()
+        try await engine.prompt(session.id, text: "run the shell", files: [])
+        #expect(try await h.recorder.ended(session.id, after: mark).outcome == "succeeded")
+        #expect(await h.recorder.all(after: mark) { if case .permissionAsked = $0 { true } else { false } }.isEmpty)
+
+        // The same command with an environment variable added asks again.
+        mark = await h.recorder.mark()
+        try await engine.prompt(session.id, text: "run the shell with env", files: [])
+        let third = try await h.recorder.permission(session.id, after: mark)
+        #expect(third.alwaysPatterns == [#"command: echo hi with {"env":{"GREETING":"hello"}}"#])
+        try await engine.replyPermission(sessionID: session.id, requestID: third.id, decision: .reject, message: nil)
+        _ = try await h.recorder.ended(session.id, after: mark)
+        await h.finish()
+    }
+
     @Test func interruptCancelsTheTurnAndOpenPrompts() async throws {
         let h = try FakeACPHarness()
         let engine = h.engine()

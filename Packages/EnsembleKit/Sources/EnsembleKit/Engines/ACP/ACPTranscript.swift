@@ -38,9 +38,16 @@ enum ACPFormatting {
     static func command(_ rawInput: JSONValue?) -> String? {
         for key in ["command", "CommandLine", "commandLine", "cmd"] {
             if let value = rawInput?[key]?.acpText { return value }
-            if let parts = rawInput?[key]?.arrayValue?.compactMap(\.stringValue), !parts.isEmpty { return parts.joined(separator: " ") }
+            if let parts = rawInput?[key]?.arrayValue?.compactMap(\.stringValue), !parts.isEmpty { return parts.map(shellQuoted).joined(separator: " ") }
         }
         return nil
+    }
+
+    /// One argument as a shell would need it written: as is when it holds only safe characters, else single-quoted.
+    static func shellQuoted(_ argument: String) -> String {
+        let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-")
+        if !argument.isEmpty, argument.unicodeScalars.allSatisfy({ safe.contains($0) }) { return argument }
+        return "'" + argument.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     static func prettyJSON(_ value: JSONValue?) -> String? {
@@ -278,16 +285,31 @@ struct ACPToolState: Equatable, Sendable {
         }
     }
 
-    /// Every path the call touches: its locations, its diffs, and every path-like argument (source and destination
-    /// included, nested arguments too), relative ones taken from the project folder, all with links resolved and
-    /// without duplicates. nil when a path cannot be resolved (a dangling link, a `..` past a missing folder), so the
-    /// call cannot be judged.
+    /// Every path the call touches: its locations, its diffs, and its path arguments (source and destination included,
+    /// nested arguments too), relative ones taken from the project folder, `~` from the home folder, all with links
+    /// resolved and without duplicates. For file tools (read, edit, delete) every string argument that looks like a
+    /// path counts, whatever its name, except text in content fields (which counts only when it is a single absolute or
+    /// `~` path). nil when a path cannot be resolved (a dangling link, a `..` past a missing folder, `~user`), so the call
+    /// cannot be judged.
     func touchedPaths(directory: String) -> [String]? {
         var raw = locations.map(\.path) + diffs.map(\.path)
-        if let rawInput { ACPAlwaysRules.collectPaths(rawInput, into: &raw) }
+        if let rawInput {
+            if ACPAlwaysRules.fileKinds.contains(kind) {
+                ACPAlwaysRules.collectPathLikeValues(rawInput, into: &raw)
+            } else {
+                ACPAlwaysRules.collectPaths(rawInput, into: &raw)
+            }
+        }
         var result: [String] = []
         for path in raw where !path.isEmpty {
-            let absolute = path.hasPrefix("/") ? path : (directory as NSString).appendingPathComponent(path)
+            var absolute = path
+            if path == "~" || path.hasPrefix("~/") {
+                absolute = NSHomeDirectory() + path.dropFirst()
+            } else if path.hasPrefix("~") {
+                return nil
+            } else if !path.hasPrefix("/") {
+                absolute = (directory as NSString).appendingPathComponent(path)
+            }
             guard let resolved = WorkspaceTrust.resolvedPath(absolute) else { return nil }
             if !result.contains(resolved) { result.append(resolved) }
         }
@@ -295,41 +317,73 @@ struct ACPToolState: Equatable, Sendable {
     }
 
     /// What an "always" answer remembers for this call, or nil when it has no concrete subject, in which case "always"
-    /// only allows this one request. Built only from what the call does, never from the title the agent wrote:
+    /// only allows this one request. Built only from what the call does, never from the title or other descriptive
+    /// text the agent wrote, and nil whenever an argument is one Ensemble does not know for that kind of call:
     /// - every kind: the call touches at most one path, and that path is inside the project folder;
-    /// - execute: the exact command from the arguments (and the folder it runs in, when given);
-    /// - read, edit, delete: exactly one path;
+    /// - execute: every argument but descriptive ones, exactly (the command, an argv array as an array, the folder with
+    ///   links resolved, environment, shell options, timeouts);
+    /// - read, edit, delete: exactly one path, and only path, content and option arguments known for that kind; for
+    ///   edits the content may differ next time, the file may not;
     /// - move: never (it touches a source and a destination);
-    /// - fetch: the canonical URL from the arguments;
+    /// - fetch: the canonical URL plus every other argument but descriptive ones, exactly;
     /// - anything else: the exact arguments.
     func alwaysRule(directory: String) -> ACPAlwaysRule? {
         guard let paths = touchedPaths(directory: directory), paths.count <= 1 else { return nil }
         if let only = paths.first, !ACPFormatting.isInside(only, directory: directory) { return nil }
         let tool = name ?? ""
+        let project = WorkspaceTrust.resolvedPath(directory) ?? directory
         switch kind {
         case "execute":
-            guard let command = ACPFormatting.command(rawInput) else { return nil }
-            let cwd = ACPAlwaysRules.workingFolder(rawInput).map { folder in
-                WorkspaceTrust.resolvedPath(folder.hasPrefix("/") ? folder : (directory as NSString).appendingPathComponent(folder)) ?? folder
+            guard case .object(let input)? = rawInput, let command = ACPFormatting.command(rawInput) else { return nil }
+            var kept: [String: JSONValue] = [:]
+            var folder: String?
+            for (key, value) in input {
+                let word = ACPAlwaysRules.normalized(key)
+                if ACPAlwaysRules.descriptiveKeys.contains(word) { continue }
+                guard ACPAlwaysRules.executeKeys.contains(word) else { return nil }
+                if ACPAlwaysRules.folderKeys.contains(word) {
+                    guard let text = value.acpText else { return nil }
+                    let resolved = WorkspaceTrust.resolvedPath(text.hasPrefix("/") ? text : (directory as NSString).appendingPathComponent(text)) ?? text
+                    folder = resolved
+                    kept[key] = .string(resolved)
+                } else {
+                    kept[key] = value
+                }
             }
             var summary = "command: \(command)"
-            if let cwd, let folder = WorkspaceTrust.resolvedPath(directory), cwd != folder {
-                summary += " (in \(ACPFormatting.displayPath(cwd, directory: folder)))"
+            if let folder, folder != project { summary += " (in \(ACPFormatting.displayPath(folder, directory: project)))" }
+            let extras = kept.filter { key, _ in
+                let word = ACPAlwaysRules.normalized(key)
+                return !ACPAlwaysRules.commandKeys.contains(word) && !ACPAlwaysRules.folderKeys.contains(word)
             }
-            return ACPAlwaysRule(key: "execute|\(tool)|\(cwd ?? "")|\(command)", summary: summary)
+            if !extras.isEmpty { summary += " with \(JSONValue.object(extras).jsonText)" }
+            return ACPAlwaysRule(key: "execute|\(tool)|\(JSONValue.object(kept).jsonText)", summary: summary)
         case "read", "edit", "delete":
-            guard let only = paths.first else { return nil }
-            let shown = ACPFormatting.displayPath(only, directory: WorkspaceTrust.resolvedPath(directory) ?? directory)
+            guard let only = paths.first, ACPAlwaysRules.onlyKnownFileArguments(rawInput, kind: kind) else { return nil }
+            let shown = ACPFormatting.displayPath(only, directory: project)
             let verb = kind == "read" ? "reading" : kind == "edit" ? "edits to" : "deleting"
             return ACPAlwaysRule(key: "\(kind)|\(tool)|\(only)", summary: "\(verb) \(shown)")
         case "move":
             return nil
         case "fetch":
-            if let url = ACPAlwaysRules.canonicalURL(rawInput) {
-                return ACPAlwaysRule(key: "fetch|\(tool)|\(url)", summary: "web request: \(url)")
+            guard case .object(let input)? = rawInput else { return nil }
+            var extras: [String: JSONValue] = [:]
+            var urlKeys = 0
+            for (key, value) in input {
+                let word = ACPAlwaysRules.normalized(key)
+                if ACPAlwaysRules.descriptiveKeys.contains(word) { continue }
+                if word == "url" || word == "uri" { urlKeys += 1; continue }
+                extras[key] = value
             }
-            guard let arguments = ACPAlwaysRules.canonicalArguments(rawInput) else { return nil }
-            return ACPAlwaysRule(key: "fetch|\(tool)|\(arguments)", summary: "\(ensembleName)(\(arguments))")
+            guard urlKeys <= 1 else { return nil }
+            let extra = extras.isEmpty ? nil : JSONValue.object(extras).jsonText
+            if urlKeys == 1 {
+                guard let url = ACPAlwaysRules.canonicalURL(rawInput) else { return nil }
+                return ACPAlwaysRule(key: "fetch|\(tool)|\(url)|\(extra ?? "")",
+                                     summary: "web request: \(url)" + (extra.map { " with \($0)" } ?? ""))
+            }
+            guard let extra else { return nil }
+            return ACPAlwaysRule(key: "fetch|\(tool)||\(extra)", summary: "\(ensembleName)(\(extra))")
         default:
             guard let arguments = ACPAlwaysRules.canonicalArguments(rawInput) else { return nil }
             return ACPAlwaysRule(key: "\(kind)|\(tool)|\(arguments)", summary: "\(ensembleName)(\(arguments))")
@@ -346,6 +400,88 @@ struct ACPAlwaysRule: Hashable, Sendable {
 enum ACPAlwaysRules {
     /// What the card says when "always" allows nothing beyond this request.
     static let thisRequestOnly = "nothing more (this request only)"
+
+    /// Kinds whose rule is "this one file".
+    static let fileKinds: Set<String> = ["read", "edit", "delete"]
+
+    /// An argument name compared loosely: lowercased, without `_` and `-` (`file_path`, `filePath` and `FilePath` match).
+    static func normalized(_ key: String) -> String { key.lowercased().filter { $0 != "_" && $0 != "-" } }
+
+    /// Arguments that only describe the call for people (or the model) and never change what it does.
+    static let descriptiveKeys: Set<String> = ["description", "title", "toolsummary", "summary", "explanation", "reason", "rationale",
+                                               "thought", "thoughts", "purpose", "intent", "label", "comment", "why", "instruction", "instructions"]
+
+    static let commandKeys: Set<String> = ["command", "commandline", "cmd", "args", "argv", "arguments"]
+    static let folderKeys: Set<String> = ["cwd", "workdir", "workingdirectory", "directory", "dir"]
+    /// Every argument a shell tool may have that Ensemble knows. Anything else and "always" allows that request only.
+    static let executeKeys: Set<String> = commandKeys.union(folderKeys).union([
+        "env", "environment", "envvars", "shell", "timeout", "timeoutms", "timeoutseconds", "waitmsbeforeasync", "background",
+        "runinbackground", "isbackground", "stdin", "input", "login", "interactive", "sandbox", "usesandbox", "safetoautorun",
+    ])
+
+    /// Path arguments of file tools.
+    static let filePathKeys: Set<String> = ["path", "filepath", "file", "filename", "absolutepath", "targetfile"]
+    /// Content arguments of edits (what is written, or the text it replaces). Agy's `edit_file` calls the old text `Target`.
+    static let fileContentKeys: Set<String> = ["content", "contents", "text", "newtext", "oldtext", "newstring", "oldstring", "newstr",
+                                               "oldstr", "replacement", "target", "replaceall", "edits"]
+    /// Options of reads.
+    static let readOptionKeys: Set<String> = ["offset", "limit", "startline", "endline", "line", "linenumber", "encoding"]
+
+    static func allowedFileKeys(kind: String) -> Set<String> {
+        switch kind {
+        case "read": filePathKeys.union(readOptionKeys).union(descriptiveKeys)
+        case "edit": filePathKeys.union(fileContentKeys).union(readOptionKeys).union(descriptiveKeys)
+        default: filePathKeys.union(descriptiveKeys)
+        }
+    }
+
+    /// True when every argument name, at any depth (`edits: [{old_string, new_string}]`), is a path, content, option or
+    /// descriptive argument Ensemble knows for this kind of file call.
+    static func onlyKnownFileArguments(_ value: JSONValue?, kind: String) -> Bool {
+        let allowed = allowedFileKeys(kind: kind)
+        func check(_ value: JSONValue) -> Bool {
+            switch value {
+            case .object(let object):
+                return object.allSatisfy { key, item in allowed.contains(normalized(key)) && check(item) }
+            case .array(let items):
+                return items.allSatisfy(check)
+            default:
+                return true
+            }
+        }
+        guard let value else { return true }
+        return check(value)
+    }
+
+    /// True for text that looks like a path: absolute, `~`, or containing `/` (a URL is not a path). Text with spaces only
+    /// when it starts like an absolute path, so a sentence such as "fix the read/write bug" is not taken for one.
+    static func looksLikePath(_ text: String) -> Bool {
+        guard !text.isEmpty, !text.contains("\n"), !text.contains("://") else { return false }
+        if text.hasPrefix("/") || text.hasPrefix("~") { return true }
+        return text.contains("/") && !text.contains(where: \.isWhitespace)
+    }
+
+    /// Collects path-like strings from a file tool's arguments, whatever their names: every string in a path argument,
+    /// a single absolute or `~` path in a content argument, and anything that looks like a path elsewhere.
+    static func collectPathLikeValues(_ value: JSONValue, into paths: inout [String], key: String? = nil) {
+        switch value {
+        case .string(let text):
+            let word = key.map(normalized) ?? ""
+            if filePathKeys.contains(word) || isPathKey(key ?? "") {
+                paths.append(text)
+            } else if fileContentKeys.contains(word) {
+                if (text.hasPrefix("/") || text.hasPrefix("~")) && !text.contains(where: \.isWhitespace) { paths.append(text) }
+            } else if looksLikePath(text) {
+                paths.append(text)
+            }
+        case .array(let items):
+            for item in items { collectPathLikeValues(item, into: &paths, key: key) }
+        case .object(let object):
+            for itemKey in object.keys.sorted() { collectPathLikeValues(object[itemKey] ?? .null, into: &paths, key: itemKey) }
+        default:
+            break
+        }
+    }
 
     /// Argument names that hold paths: anything with path, file or dir in the name, and the usual source and
     /// destination names.

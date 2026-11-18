@@ -222,8 +222,10 @@ struct ACPRealAgentTests {
         let request = ACPPermissionMapping.request(id: "p", sessionID: "s", tool: tool, directory: F.directory)
         #expect(request.kind == "bash")
         #expect(request.title == "echo hi")
-        #expect(tool.alwaysRule(directory: F.directory) == ACPAlwaysRule(key: "execute|run_command||echo hi", summary: "command: echo hi"))
-        #expect(request.alwaysPatterns == ["command: echo hi"])
+        // The descriptive `toolSummary` is left out; agy's wait time is part of what is remembered.
+        #expect(tool.alwaysRule(directory: F.directory) == ACPAlwaysRule(key: #"execute|run_command|{"CommandLine":"echo hi","WaitMsBeforeAsync":5000}"#,
+                                                                        summary: #"command: echo hi with {"WaitMsBeforeAsync":5000}"#))
+        #expect(request.alwaysPatterns == [#"command: echo hi with {"WaitMsBeforeAsync":5000}"#])
 
         let stops = try F.incoming("agy-load-cancel.jsonl").compactMap { message -> ACPStopReason? in
             if case .response(_, let result) = message, let stop = result["stopReason"]?.stringValue { return ACPStopReason(stop) }
@@ -251,7 +253,8 @@ struct ACPRealAgentTests {
         }
         #expect(kinds == ["bash", "external_directory", "external_directory", "bash"])
         // Paths outside the project are never remembered.
-        #expect(always == [["command: touch made-by-shell.txt"], [ACPAlwaysRules.thisRequestOnly], [ACPAlwaysRules.thisRequestOnly], ["command: ls"]])
+        #expect(always == [[#"command: touch made-by-shell.txt with {"WaitMsBeforeAsync":5000}"#], [ACPAlwaysRules.thisRequestOnly],
+                           [ACPAlwaysRules.thisRequestOnly], [#"command: ls with {"WaitMsBeforeAsync":5000}"#]])
         let modes = try ACPFixtures.lines("agy-ask-under-turbo.jsonl").filter { !$0.incoming && $0.message["params"]?["configId"]?.stringValue == "mode" }
         #expect(modes.compactMap { $0.message["params"]?["value"]?.stringValue } == ["default", "accept-edits", "auto"])
     }
@@ -474,6 +477,77 @@ struct ACPAlwaysRuleTests {
         // A shell command that names an outside folder in its location is not remembered either.
         let shellOutside = ["toolCallId": "t", "kind": "execute", "locations": [["path": "/etc"]], "rawInput": ["command": "ls"]] as JSONValue
         #expect(tool(shellOutside).alwaysRule(directory: Self.project) == nil)
+    }
+
+    @Test func commandsAreRememberedByEveryArgumentThatChangesWhatRuns() {
+        func key(_ input: JSONValue) -> String? {
+            tool(["toolCallId": "t", "kind": "execute", "name": "shell", "title": "x", "rawInput": input]).alwaysRule(directory: Self.project)?.key
+        }
+        let plain = key(["command": "make test"])
+        #expect(plain != nil)
+        // Only descriptive text differs: the same rule.
+        #expect(key(["command": "make test", "description": "Run the tests", "title": "tests"]) == plain)
+        // The environment, a shell option or a timeout differs: a different rule, so the call asks again.
+        #expect(key(["command": "make test", "env": ["CC": "/tmp/evil-cc"]]) != plain)
+        #expect(key(["command": "make test", "shell": "/bin/zsh"]) != plain)
+        #expect(key(["command": "make test", "timeout": 600]) != plain)
+        // argv stays an array: splitting the same words differently is a different command, shown differently.
+        let together = tool(["toolCallId": "t", "kind": "execute", "rawInput": ["command": ["rm", "a b"]]])
+        let apart = tool(["toolCallId": "t", "kind": "execute", "rawInput": ["command": ["rm", "a", "b"]]])
+        #expect(together.alwaysRule(directory: Self.project)?.key != apart.alwaysRule(directory: Self.project)?.key)
+        #expect(together.alwaysRule(directory: Self.project)?.summary == "command: rm 'a b'")
+        #expect(apart.alwaysRule(directory: Self.project)?.summary == "command: rm a b")
+        #expect(together.cardTitle(directory: Self.project) == "rm 'a b'")
+        // An argument Ensemble does not know: this request only.
+        let unknown = ["toolCallId": "t", "kind": "execute", "rawInput": ["command": "make test", "runAs": "root"]] as JSONValue
+        #expect(tool(unknown).alwaysRule(directory: Self.project) == nil)
+        #expect(request(unknown).alwaysPatterns == [ACPAlwaysRules.thisRequestOnly])
+        // What the card shows names every remembered argument.
+        #expect(tool(["toolCallId": "t", "kind": "execute", "rawInput": ["command": "make", "env": ["A": "1"]]]).alwaysRule(directory: Self.project)?.summary
+                == #"command: make with {"env":{"A":"1"}}"#)
+    }
+
+    @Test func fetchesAreRememberedWithEveryOtherArgument() {
+        func rule(_ input: JSONValue) -> ACPAlwaysRule? {
+            tool(["toolCallId": "t", "kind": "fetch", "name": "fetch", "title": "x", "rawInput": input]).alwaysRule(directory: Self.project)
+        }
+        let get = rule(["url": "https://example.com/api"])
+        #expect(get?.summary == "web request: https://example.com/api")
+        #expect(rule(["url": "https://example.com/api", "description": "Read the API"])?.key == get?.key)
+        // Method, headers or body differ: a different rule.
+        let post = rule(["url": "https://example.com/api", "method": "POST"])
+        #expect(post?.key != get?.key)
+        #expect(post?.summary == #"web request: https://example.com/api with {"method":"POST"}"#)
+        #expect(rule(["url": "https://example.com/api", "headers": ["Authorization": "Bearer x"]])?.key != get?.key)
+        #expect(rule(["url": "https://example.com/api", "method": "POST", "body": "a=1"])?.key != post?.key)
+        // Two URL arguments: nothing is remembered.
+        #expect(rule(["url": "https://example.com/a", "Uri": "https://evil.example/b"]) == nil)
+    }
+
+    @Test func fileRulesFailClosedOnArgumentsTheyDoNotKnow() {
+        let path = "/private/tmp/ensemble-acp/proj/notes.txt"
+        func rule(_ input: JSONValue, kind: String = "edit") -> ACPAlwaysRule? {
+            tool(["toolCallId": "t", "kind": .string(kind), "name": "edit_file", "title": "File notes.txt", "rawInput": input])
+                .alwaysRule(directory: Self.project)
+        }
+        let edit = rule(["path": .string(path), "oldString": "alpha", "newString": "beta"])
+        #expect(edit?.summary == "edits to notes.txt")
+        // The content may differ next time; the file may not.
+        #expect(rule(["path": .string(path), "oldString": "beta", "newString": "gamma\n/ comment"])?.key == edit?.key)
+        #expect(rule(["path": "/private/tmp/ensemble-acp/proj/other.txt", "oldString": "a", "newString": "b"])?.key != edit?.key)
+        // An argument that is not a known path, content or option argument for edits: this request only.
+        #expect(rule(["path": .string(path), "oldString": "a", "newString": "b", "mode": "append"]) == nil)
+        #expect(rule(["path": .string(path), "backupTo": "/etc/passwd"]) == nil)
+        // A path hidden in any string counts, whatever the argument is called.
+        #expect(rule(["path": .string(path), "description": "/etc/passwd"]) == nil)
+        #expect(rule(["path": .string(path), "description": "fix the read/write bug"])?.key == edit?.key)
+        #expect(rule(["path": .string(path), "Target": "/etc/passwd", "Replacement": "x"]) == nil)
+        #expect(rule(["path": "~/notes.txt", "content": "x"]) == nil)
+        // Reads take read options; deletes take nothing but the path.
+        #expect(rule(["path": .string(path), "offset": 10, "limit": 20], kind: "read")?.summary == "reading notes.txt")
+        #expect(rule(["path": .string(path), "content": "x"], kind: "read") == nil)
+        #expect(rule(["path": .string(path)], kind: "delete")?.summary == "deleting notes.txt")
+        #expect(rule(["path": .string(path), "recursive": true], kind: "delete") == nil)
     }
 
     @Test func otherCallsAreRememberedByTheirExactArguments() {
