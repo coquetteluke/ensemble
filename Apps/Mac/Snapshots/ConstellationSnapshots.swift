@@ -18,8 +18,31 @@ enum ConstellationSnapshots {
             written += save("constellation-frames-\(tone)\(suffix)", width: 560, zoom: zoom, scheme: scheme, to: directory) {
                 Frames(moments: moments)
             }
+            if zoom == 1 { written += motion("constellation-motion-\(tone)", scheme: scheme, to: directory) }
         }
         return written
+    }
+
+    /// Two seconds of the spinner as an animated GIF (44 frames at 22 a second), large, to judge the motion.
+    private static func motion(_ name: String, scheme: ColorScheme, to directory: URL) -> [String] {
+        let url = directory.appendingPathComponent(name + ".gif")
+        let count = 44
+        guard let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.gif.identifier as CFString, count, nil) else { return [] }
+        CGImageDestinationSetProperties(destination, [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0]] as CFDictionary)
+        let frameProperties = [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: 1.0 / 22]] as CFDictionary
+        for index in 0..<count {
+            let content = ConstellationSpinner(size: 96, frozenAt: Double(index) / 22)
+                .padding(16)
+                .background(ThemedBackground())
+                .ensembleTheme()
+                .environment(\.colorScheme, scheme)
+                .environment(\.isSnapshot, true)
+            let renderer = ImageRenderer(content: content)
+            renderer.scale = 2
+            guard let image = renderer.cgImage else { return [] }
+            CGImageDestinationAddImage(destination, image, frameProperties)
+        }
+        return CGImageDestinationFinalize(destination) ? [url.path] : []
     }
 
     private struct Frames: View {
