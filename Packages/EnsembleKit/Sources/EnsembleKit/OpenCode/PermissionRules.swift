@@ -331,15 +331,18 @@ public enum PermissionRules {
             guard first.action == "edit", first.effect == "allow", first.resource.hasSuffix("/*") else { continue }
             let worktree = String(first.resource.dropLast(2))
             let extraRules = Array(rules.dropFirst(base.count))
-            if let extra = worktreeEditRules(worktree, shapeLevels: shapeLevels(in: extraRules, worktree: worktree)),
-               extraRules == extra { return worktree }
+            if let levels = shapeLevels(in: extraRules, worktree: worktree),
+               let extra = worktreeEditRules(worktree, shapeLevels: levels), extraRules == extra { return worktree }
         }
         return nil
     }
 
-    /// The shape levels a ruleset's config ask rules cover (`""`, `"????"`, `"????/???"`), from the deepest one.
-    static func shapeLevels(in rules: [PermissionRule], worktree: String) -> [String] {
+    /// The shape levels a ruleset's config ask rules cover (`""`, `"????"`, `"????/???"`), from the deepest one. Nil
+    /// when a level is not a shape (rules from before shapes, with folder names spelt out), so such rules are not read
+    /// as current and `outdatedMode` rewrites them.
+    static func shapeLevels(in rules: [PermissionRule], worktree: String) -> [String]? {
         let deepest = deepestConfigLevel(in: rules, worktree: worktree)
+        guard deepest.allSatisfy({ $0 == "?" || $0 == "/" }) else { return nil }
         var levels = [""]
         var current = ""
         for part in deepest.split(separator: "/") {
@@ -368,7 +371,7 @@ public enum PermissionRules {
         if rules.isEmpty { return nil }
         if let mode = PermissionMode.allCases.first(where: { ruleset(for: $0) == rules }) { return mode }
         guard let worktree = worktree(in: rules) else { return nil }
-        let levels = shapeLevels(in: rules, worktree: worktree)
+        guard let levels = shapeLevels(in: rules, worktree: worktree) else { return nil }
         return [PermissionMode.acceptEdits, .auto].first { mode in
             guard let extra = worktreeEditRules(worktree, shapeLevels: levels) else { return false }
             return ruleset(for: mode) + extra == rules

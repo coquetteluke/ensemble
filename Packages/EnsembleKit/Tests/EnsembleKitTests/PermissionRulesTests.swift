@@ -398,6 +398,19 @@ import Testing
         #expect(PermissionRules.worktreeEditRules(own, repoPrefix: "a*/b") == nil)
         #expect(PermissionRules.worktreeEditRules(own, repoPrefix: "../x") == nil)
         #expect(PermissionRules.worktreeEditRules(own, repoPrefix: "caf\u{E9}") == nil, "non-ASCII folders get no worktree allow")
+        // Rules from before shapes (folder names spelt out) are not read as current, so they get rewritten.
+        var legacy = PermissionRules.ruleset(for: .auto)
+        legacy += [PermissionRule("edit", own + "/*", "allow")]
+        for level in ["", "apps", "apps/web"] {
+            let base = level.isEmpty ? own : own + "/" + level
+            legacy += PermissionRules.opencodeConfigEditPatterns.map { PermissionRule("edit", base + "/" + $0, "ask") }
+            legacy += PermissionRules.configLookalikesAllowed.map { PermissionRule("edit", base + "/" + $0, "allow") }
+        }
+        let tail = Array(rules.drop(while: { !($0.resource.hasPrefix(own + "/.")) || $0.effect != "ask" }))
+        legacy += tail
+        #expect(PermissionRules.worktree(in: legacy) == nil)
+        #expect(PermissionRules.mode(for: legacy) == nil)
+        #expect(PermissionRules.outdatedMode(for: legacy) == .auto)
     }
 
     @Test func worktreeRulesOnlyForWorktreeFoldersAndEditModes() {
