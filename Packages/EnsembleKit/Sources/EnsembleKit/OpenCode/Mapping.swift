@@ -46,9 +46,10 @@ extension PermissionRequest {
         let title = wire.resources.isEmpty ? wire.action : wire.resources.joined(separator: "\n")
         var detail: [String] = []
         if let message = wire.message, !message.isEmpty { detail.append(message) }
-        if let save = wire.save, !save.isEmpty { detail.append("Always allows: " + save.joined(separator: ", ")) }
+        let save = (wire.save ?? []).filter { !$0.isEmpty }
         self.init(id: wire.id, sessionID: wire.sessionID, kind: wire.action, title: title,
-                  detail: detail.isEmpty ? nil : detail.joined(separator: "\n"), created: created)
+                  detail: detail.isEmpty ? nil : detail.joined(separator: "\n"),
+                  alwaysPatterns: save.isEmpty ? nil : save, created: created)
     }
 }
 

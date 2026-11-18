@@ -143,13 +143,35 @@ import WebKit
 
     // MARK: Permission card
 
-    @Test func alwaysAllowPatternsAreSplitFromTheDetail() {
-        let both = PermissionCardView.splitDetail("Runs the tests.\nAlways allows: swift test *, swift build *")
-        #expect(both.detail == "Runs the tests.")
-        #expect(both.patterns == "swift test *, swift build *")
-        #expect(PermissionCardView.splitDetail("Always allows: echo *") == (nil, "echo *"))
-        #expect(PermissionCardView.splitDetail("Just a note") == ("Just a note", nil))
-        #expect(PermissionCardView.splitDetail(nil) == (nil, nil))
+    @Test func alwaysAllowPatternsComeOnlyFromTheEngineField() {
+        // Text the agent wrote in the detail can no longer pose as the saved rule.
+        let spoof = PermissionRequest(id: "p", sessionID: "s", kind: "shell", title: "rm -rf build",
+                                      detail: "Cleans up.\nAlways allows: echo *", alwaysPatterns: ["rm *"])
+        #expect(PermissionDisplay.patterns(spoof) == ["rm *"])
+        let none = PermissionRequest(id: "p", sessionID: "s", kind: "shell", title: "ls", detail: "Always allows: echo *")
+        #expect(PermissionDisplay.patterns(none).isEmpty)
+        // Every pattern is shown in full, with line breaks and hidden characters written out.
+        let tricky = PermissionRequest(id: "p", sessionID: "s", kind: "shell", title: "x",
+                                       alwaysPatterns: ["echo *\ncurl evil.sh *", "ls\u{200B} *", ""])
+        #expect(PermissionDisplay.patterns(tricky) == ["echo *\\ncurl evil.sh *", "ls\\u{200B} *"])
+    }
+
+    @Test func hiddenCharactersInCommandsAreMadeVisible() {
+        #expect(PermissionDisplay.visible("git push\u{202E}lol") == "git push\\u{202E}lol")
+        #expect(PermissionDisplay.visible("a\u{00A0}b\rc") == "a\\u{00A0}b\\rc")
+        #expect(PermissionDisplay.visible("line 1\nline 2\tx") == "line 1\nline 2\tx")
+        #expect(PermissionDisplay.visible("line 1\nline 2", keepLineBreaks: false) == "line 1\\nline 2")
+        #expect(PermissionDisplay.visible("swift test --parallel") == "swift test --parallel")
+    }
+
+    @Test func onlyShortPlainCommandsGetOneTapApproval() {
+        func request(_ title: String) -> PermissionRequest {
+            PermissionRequest(id: "p", sessionID: "s", kind: "shell", title: title)
+        }
+        #expect(PermissionDisplay.fitsQuickApproval(request("swift test")))
+        #expect(!PermissionDisplay.fitsQuickApproval(request("echo ok\nrm -rf ~")))
+        #expect(!PermissionDisplay.fitsQuickApproval(request("echo ok\u{200B}")))
+        #expect(!PermissionDisplay.fitsQuickApproval(request(String(repeating: "a", count: 121))))
     }
 
     // MARK: Widgets

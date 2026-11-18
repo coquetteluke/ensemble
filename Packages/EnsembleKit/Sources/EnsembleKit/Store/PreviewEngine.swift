@@ -303,7 +303,7 @@ public final class PreviewEngine: OpenCodeAPI, Sendable {
 
         if mode == .ask {
             let request = PermissionRequest(id: "perm-\(turn)", sessionID: sessionID, kind: "bash", title: "swift build",
-                                            detail: "Builds the package in the project folder.\nAlways allows: swift build *")
+                                            detail: "Builds the package in the project folder.", alwaysPatterns: ["swift build *"])
             state.withLock { $0.permissions.append(request) }
             emit(.permissionAsked(request))
             emit(.activity(sessionID: sessionID, .waitingForPermission))

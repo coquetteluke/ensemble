@@ -170,17 +170,28 @@ struct PermissionCard: View {
                 Spacer()
                 Chip(text: request.kind)
             }
-            Text(request.title)
+            Text(PermissionDisplay.visible(request.title))
                 .font(.system(.footnote, design: .monospaced))
                 .foregroundStyle(RemoteTheme.primaryText)
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RemoteTheme.cardRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .textSelection(.enabled)
-            if let detail = request.detail, !detail.isEmpty {
+            if let detail = request.detail.map({ PermissionDisplay.visible($0) }), !detail.isEmpty {
                 Text(detail)
                     .font(.footnote)
                     .foregroundStyle(RemoteTheme.secondaryText)
+            }
+            let patterns = PermissionDisplay.patterns(request)
+            if !patterns.isEmpty {
+                Label {
+                    Text("Always allows " + patterns.joined(separator: "; "))
+                        .font(.system(.caption, design: .monospaced))
+                } icon: {
+                    Image(systemName: "infinity")
+                }
+                .font(.caption)
+                .foregroundStyle(RemoteTheme.tertiaryText)
             }
             if answered {
                 Label(answerText, systemImage: decision == .reject ? "xmark.circle" : "checkmark.circle")

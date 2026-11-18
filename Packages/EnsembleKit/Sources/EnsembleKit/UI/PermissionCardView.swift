@@ -37,20 +37,20 @@ public struct PermissionCardView: View {
                     .foregroundStyle(theme.textTertiary)
             }
 
-            Text(request.title)
-                .font(theme.font(size: 12.5, design: .monospaced))
-                .foregroundStyle(theme.textPrimary)
-                .lineLimit(6)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, theme.z(10))
-                .padding(.vertical, theme.z(8))
-                .background(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).fill(theme.codeBackground))
-                .overlay(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).strokeBorder(theme.separator))
-                .selectableText()
+            // The whole command is always readable: long ones scroll instead of being cut off.
+            ViewThatFits(in: .vertical) {
+                titleText
+                ScrollView(.vertical) { titleText }
+            }
+            .frame(maxHeight: theme.z(240))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, theme.z(10))
+            .padding(.vertical, theme.z(8))
+            .background(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).fill(theme.codeBackground))
+            .overlay(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).strokeBorder(theme.separator))
+            .selectableText()
 
-            let parts = Self.splitDetail(request.detail)
-            if let detail = parts.detail {
+            if let detail = request.detail.map({ PermissionDisplay.visible($0) }), !detail.isEmpty {
                 Text(detail)
                     .font(theme.font(size: 12.5))
                     .foregroundStyle(theme.textSecondary)
@@ -65,23 +65,27 @@ public struct PermissionCardView: View {
                 Button("Always allow") { actions.replyPermission(request, .always) }
                     .buttonStyle(SecondaryButtonStyle())
                     .modifier(PermissionShortcut(key: "y", modifiers: [.command, .option], enabled: hasShortcuts))
-                    .help(alwaysHelp(parts.patterns))
+                    .help(alwaysHelp(patterns))
                 Button("Reject") { actions.replyPermission(request, .reject) }
                     .buttonStyle(SecondaryButtonStyle(foreground: theme.danger))
                     .modifier(PermissionShortcut(key: ".", modifiers: .command, enabled: hasShortcuts))
                     .help(hasShortcuts ? "Reject (Command-period)" : "Reject")
-                if let patterns = parts.patterns {
-                    HStack(spacing: theme.z(5)) {
+                if !patterns.isEmpty {
+                    HStack(alignment: .firstTextBaseline, spacing: theme.z(5)) {
                         Image(systemName: "infinity")
                             .font(theme.font(size: 10.5, weight: .semibold))
-                        Text(patterns)
-                            .font(theme.font(size: 11.5, design: .monospaced))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                        VStack(alignment: .leading, spacing: theme.z(2)) {
+                            ForEach(Array(patterns.enumerated()), id: \.offset) { _, pattern in
+                                Text(pattern)
+                                    .font(theme.font(size: 11.5, design: .monospaced))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
+                            }
+                        }
                     }
                     .foregroundStyle(theme.textTertiary)
                     .padding(.leading, theme.z(4))
-                    .help("Always allow also covers \(patterns) from now on")
+                    .help("Always allow also covers these from now on")
                 }
                 Spacer(minLength: 0)
             }
@@ -114,26 +118,19 @@ public struct PermissionCardView: View {
 
     private var hasShortcuts: Bool { actions.shortcutPermissionID == request.id }
 
-    private func alwaysHelp(_ patterns: String?) -> String {
-        let base = patterns.map { "Always allow \($0)" } ?? "Always allow"
-        return hasShortcuts ? base + " (Option-Command-Y)" : base
+    private var patterns: [String] { PermissionDisplay.patterns(request) }
+
+    private var titleText: some View {
+        Text(PermissionDisplay.visible(request.title))
+            .font(theme.font(size: 12.5, design: .monospaced))
+            .foregroundStyle(theme.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Separates the engine's "Always allows: ..." line (the patterns Always allow saves) from the rest.
-    static func splitDetail(_ detail: String?) -> (detail: String?, patterns: String?) {
-        guard let detail, !detail.isEmpty else { return (nil, nil) }
-        let prefix = "Always allows: "
-        var rest: [Substring] = []
-        var patterns: String?
-        for line in detail.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.hasPrefix(prefix) {
-                patterns = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-            } else {
-                rest.append(line)
-            }
-        }
-        let text = rest.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        return (text.isEmpty ? nil : text, patterns?.isEmpty == true ? nil : patterns)
+    private func alwaysHelp(_ patterns: [String]) -> String {
+        let base = patterns.isEmpty ? "Always allow" : "Always allow " + patterns.joined(separator: "; ")
+        return hasShortcuts ? base + " (Option-Command-Y)" : base
     }
 
     private var question: String {

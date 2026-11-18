@@ -86,7 +86,8 @@ import Testing
         #expect(request.sessionID == "ses_e13562c9effe6gN6CSgISlmn7x")
         #expect(request.kind == "shell")
         #expect(request.title == "echo ensemble-ok")
-        #expect(request.detail == "Always allows: echo *")
+        #expect(request.detail == nil)
+        #expect(request.alwaysPatterns == ["echo *"])
         #expect(all.contains(.activity(sessionID: "ses_e13562c9effe6gN6CSgISlmn7x", .waitingForPermission)))
         #expect(all.contains(.permissionReplied(sessionID: "ses_e13562c9effe6gN6CSgISlmn7x", requestID: "per_1eca9d413001kCR5o9jXikmnA9")))
 

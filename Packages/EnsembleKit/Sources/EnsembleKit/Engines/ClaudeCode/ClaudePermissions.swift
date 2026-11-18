@@ -69,9 +69,10 @@ struct ClaudePermissionPrompt: Equatable, Sendable {
         }
         if let reason = body["decision_reason"]?.stringValue, !reason.isEmpty { detail.append(reason) }
         let rules = ClaudePermissionRules.rules(for: toolName, input: input, suggestions: suggestions, isExternal: isExternal)
-        detail.append("Always allows: " + ClaudePermissionRules.describe(rules))
+        let always = rules.isEmpty ? [ClaudePermissionRules.describe(rules)] : rules.map { ClaudePermissionRules.describe([$0]) }
         request = PermissionRequest(id: requestID, sessionID: sessionID, kind: kind, title: title,
-                                    detail: detail.joined(separator: "\n"), created: created)
+                                    detail: detail.isEmpty ? nil : detail.joined(separator: "\n"),
+                                    alwaysPatterns: always, created: created)
     }
 
     /// The rules an "always" answer to this prompt adds.

@@ -97,7 +97,7 @@ struct HubView: View {
 
     @ViewBuilder
     private func quickActions(_ s: SessionSummary, bucket: HubBucket) -> some View {
-        if let ask = client.pendingPermissions(for: s.id).first {
+        if let ask = client.pendingPermissions(for: s.id).first, PermissionDisplay.fitsQuickApproval(ask) {
             VStack(alignment: .leading, spacing: 8) {
                 Text(ask.title)
                     .font(.system(.footnote, design: .monospaced))

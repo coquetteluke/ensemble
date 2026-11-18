@@ -59,16 +59,21 @@ public struct PermissionRequest: Codable, Hashable, Sendable, Identifiable {
     public var kind: String
     /// What it wants to do, in a line: the command, the file, the URL.
     public var title: String
-    /// Extra detail for the expanded card.
+    /// Extra detail for the expanded card. May contain text the agent wrote.
     public var detail: String?
+    /// What "Always allow" saves, one entry per rule, as the engine reports it. Kept apart from
+    /// `detail` so text the agent wrote can never pose as the saved rule.
+    public var alwaysPatterns: [String]?
     public var created: Date
 
-    public init(id: String, sessionID: String, kind: String, title: String, detail: String? = nil, created: Date = Date()) {
+    public init(id: String, sessionID: String, kind: String, title: String, detail: String? = nil,
+                alwaysPatterns: [String]? = nil, created: Date = Date()) {
         self.id = id
         self.sessionID = sessionID
         self.kind = kind
         self.title = title
         self.detail = detail
+        self.alwaysPatterns = alwaysPatterns
         self.created = created
     }
 }
