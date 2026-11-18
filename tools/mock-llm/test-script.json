@@ -1,18 +1,280 @@
 {
-  "default": {"text": "Mock reply from the default rule.", "title": "Mock session"},
+  "default": {
+    "text": "Mock reply from the default rule.",
+    "title": "Mock session"
+  },
   "rules": [
-    {"match": ["<subagent"], "text": "The helper reported back."},
-    {"match": ["child task marker"], "text": "Child finished the task."},
-    {"match": ["board relay marker"], "text": "Got the board message."},
-    {"match": ["hello"], "text": "Hello from the mock model. Nice to meet you.", "chunks": 6},
-    {"match": ["think first"], "reasoning": "Let me think about this carefully.", "text": "Thought about it."},
-    {"match": ["run the echo"], "tool": {"name": "shell", "arguments": {"command": "echo ensemble-ok"}}, "then": "The command printed ensemble-ok."},
-    {"match": ["auto safe"], "tool": {"name": "shell", "arguments": {"command": "git status --short"}}, "then": "Git status ran."},
-    {"match": ["auto risky"], "tool": {"name": "shell", "arguments": {"command": "rm -r -f nothing-here-ensemble"}}, "then": "Asked before deleting."},
-    {"match": ["start a helper"], "tool": {"name": "subagent", "arguments": {"agent": "general", "description": "Mock helper task", "prompt": "child task marker: say done"}}, "then": "I started a helper."},
-    {"match": ["write a file"], "tool": {"name": "write", "arguments": {"path": "hello.txt", "content": "hi from mock\n"}}, "then": "Wrote hello.txt."},
-    {"match": ["edit the file"], "reasoning": "I should change the greeting.", "tool": {"name": "edit", "arguments": {"path": "hello.txt", "oldString": "hi from mock", "newString": "hello from mock"}}, "then": "Edited hello.txt."},
-    {"match": ["fail a tool"], "tool": {"name": "read", "arguments": {"path": "does-not-exist.txt"}}, "then": "The read failed."},
-    {"match": ["go slow"], "text": "This reply streams very slowly so it can be interrupted midway through the sentence.", "chunks": 40, "delay": 0.5}
+    {
+      "match": [
+        "<subagent"
+      ],
+      "text": "The helper reported back."
+    },
+    {
+      "match": [
+        "child edit marker"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "child.txt",
+          "content": "from child\n"
+        }
+      },
+      "then": "Child wrote the file."
+    },
+    {
+      "match": [
+        "child shell marker"
+      ],
+      "tool": {
+        "name": "shell",
+        "arguments": {
+          "command": "echo child-ok"
+        }
+      },
+      "then": "Child ran the command."
+    },
+    {
+      "match": [
+        "child task marker"
+      ],
+      "text": "Child finished the task."
+    },
+    {
+      "match": [
+        "board relay marker"
+      ],
+      "text": "Got the board message."
+    },
+    {
+      "match": [
+        "hello"
+      ],
+      "text": "Hello from the mock model. Nice to meet you.",
+      "chunks": 6
+    },
+    {
+      "match": [
+        "think first"
+      ],
+      "reasoning": "Let me think about this carefully.",
+      "text": "Thought about it."
+    },
+    {
+      "match": [
+        "run the echo"
+      ],
+      "tool": {
+        "name": "shell",
+        "arguments": {
+          "command": "echo ensemble-ok"
+        }
+      },
+      "then": "The command printed ensemble-ok."
+    },
+    {
+      "match": [
+        "auto safe"
+      ],
+      "tool": {
+        "name": "shell",
+        "arguments": {
+          "command": "git status --short"
+        }
+      },
+      "then": "Git status ran."
+    },
+    {
+      "match": [
+        "auto risky"
+      ],
+      "tool": {
+        "name": "shell",
+        "arguments": {
+          "command": "rm -r -f nothing-here-ensemble"
+        }
+      },
+      "then": "Asked before deleting."
+    },
+    {
+      "match": [
+        "start an edit helper"
+      ],
+      "tool": {
+        "name": "subagent",
+        "arguments": {
+          "agent": "general",
+          "description": "Edit helper",
+          "prompt": "child edit marker: write it"
+        }
+      },
+      "then": "Started the edit helper."
+    },
+    {
+      "match": [
+        "start a shell helper"
+      ],
+      "tool": {
+        "name": "subagent",
+        "arguments": {
+          "agent": "general",
+          "description": "Shell helper",
+          "prompt": "child shell marker: run it"
+        }
+      },
+      "then": "Started the shell helper."
+    },
+    {
+      "match": [
+        "start a helper"
+      ],
+      "tool": {
+        "name": "subagent",
+        "arguments": {
+          "agent": "general",
+          "description": "Mock helper task",
+          "prompt": "child task marker: say done"
+        }
+      },
+      "then": "I started a helper."
+    },
+    {
+      "match": [
+        "run code mode"
+      ],
+      "tool": {
+        "name": "execute",
+        "arguments": {
+          "code": "return await fetch('http://127.0.0.1:9/ensemble').then(r => r.status)"
+        }
+      },
+      "then": "Ran code."
+    },
+    {
+      "match": [
+        "search the web"
+      ],
+      "tool": {
+        "name": "websearch",
+        "arguments": {
+          "query": "ensemble test"
+        }
+      },
+      "then": "Searched."
+    },
+    {
+      "match": [
+        "write plain notes"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "notes.txt",
+          "content": "notes\n"
+        }
+      },
+      "then": "Wrote notes.txt."
+    },
+    {
+      "match": [
+        "write git hook"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": ".git/hooks/pre-commit",
+          "content": "#!/bin/sh\nexit 0\n"
+        }
+      },
+      "then": "Wrote the hook."
+    },
+    {
+      "match": [
+        "write absolute makefile"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "__PROJECT_DIR__/abs/Makefile",
+          "content": "all:\n"
+        }
+      },
+      "then": "Wrote abs/Makefile."
+    },
+    {
+      "match": [
+        "write nested makefile"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "sub/Makefile",
+          "content": "all:\n"
+        }
+      },
+      "then": "Wrote sub/Makefile."
+    },
+    {
+      "match": [
+        "write root makefile"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "Makefile",
+          "content": "all:\n\techo hi\n"
+        }
+      },
+      "then": "Wrote the Makefile."
+    },
+    {
+      "match": [
+        "write a file"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "hello.txt",
+          "content": "hi from mock\n"
+        }
+      },
+      "then": "Wrote hello.txt."
+    },
+    {
+      "match": [
+        "edit the file"
+      ],
+      "reasoning": "I should change the greeting.",
+      "tool": {
+        "name": "edit",
+        "arguments": {
+          "path": "hello.txt",
+          "oldString": "hi from mock",
+          "newString": "hello from mock"
+        }
+      },
+      "then": "Edited hello.txt."
+    },
+    {
+      "match": [
+        "fail a tool"
+      ],
+      "tool": {
+        "name": "read",
+        "arguments": {
+          "path": "does-not-exist.txt"
+        }
+      },
+      "then": "The read failed."
+    },
+    {
+      "match": [
+        "go slow"
+      ],
+      "text": "This reply streams very slowly so it can be interrupted midway through the sentence.",
+      "chunks": 40,
+      "delay": 0.5
+    }
   ]
 }

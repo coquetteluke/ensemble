@@ -232,7 +232,10 @@ public final class EngineManager {
                 }
                 if process.isRunning {
                     process.terminate()
-                    process.waitUntilExit()
+                    let killDeadline = Date().addingTimeInterval(3)
+                    while process.isRunning, Date() < killDeadline { Thread.sleep(forTimeInterval: 0.05) }
+                    if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+                    while process.isRunning { Thread.sleep(forTimeInterval: 0.05) }
                 }
                 try? handle.close()
                 let output = (try? String(contentsOf: outputURL, encoding: .utf8)) ?? ""

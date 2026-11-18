@@ -131,9 +131,31 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
         try await sendIgnoringBody("PATCH", "/api/session/\(sessionID)", body: ["archived": .bool(archived)])
     }
 
+    /// Sets the session's ruleset and the ruleset of every subagent session under it. OpenCode copies a parent's
+    /// rules into a child when the child is created, but later changes to the parent do not reach existing children
+    /// (and a parent can send follow-ups to an existing child), so they are updated here as well.
     public func setPermissionMode(_ sessionID: String, mode: PermissionMode) async throws {
         let rules = try JSONValue(encoding: PermissionRules.ruleset(for: mode))
         try await sendIgnoringBody("PATCH", "/api/session/\(sessionID)", body: ["permissions": rules])
+        var pending = [sessionID]
+        var seen: Set<String> = [sessionID]
+        while let parent = pending.popLast() {
+            for child in try await children(parent) where seen.insert(child.id).inserted {
+                try await sendIgnoringBody("PATCH", "/api/session/\(child.id)", body: ["permissions": rules])
+                pending.append(child.id)
+            }
+        }
+    }
+
+    /// The session's own permission rules (empty when it has none, which means the agent's rules apply).
+    public func permissionRules(_ sessionID: String) async throws -> [PermissionRule] {
+        let response: Wire.DataEnvelope<Wire.Session> = try await get("/api/session/\(sessionID)")
+        return (response.data.permissions ?? []).map { PermissionRule($0.action, $0.resource, $0.effect) }
+    }
+
+    /// The Ensemble mode a session's rules match, or `nil` when they were set some other way.
+    public func permissionMode(_ sessionID: String) async throws -> PermissionMode? {
+        PermissionRules.mode(for: try await permissionRules(sessionID))
     }
 
     public func switchModel(_ sessionID: String, model: ModelRef) async throws {
@@ -310,7 +332,7 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
         return response.data.map { ModelRef(providerID: $0.providerID, id: $0.id) }
     }
 
-    private func wireModels(directory: String?, refresh: Bool = false) async throws -> [Wire.Model] {
+    func wireModels(directory: String?, refresh: Bool = false) async throws -> [Wire.Model] {
         let key = directory ?? ""
         if !refresh, let cached = state.withLock({ $0.modelCache[key] }), Date().timeIntervalSince(cached.date) < 60 {
             return cached.models

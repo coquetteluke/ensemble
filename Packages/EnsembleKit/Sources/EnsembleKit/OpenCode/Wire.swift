@@ -248,6 +248,7 @@ enum Wire {
 
     struct ModelVariant: Decodable, Hashable {
         let id: String
+        let settings: JSONValue?
     }
 
     struct Model: Decodable, Hashable {
@@ -320,6 +321,20 @@ enum Wire {
         let additions: Int?
         let deletions: Int?
         let status: String?
+    }
+
+    // MARK: Commands and skills
+
+    struct Command: Decodable, Hashable {
+        let name: String
+        let description: String?
+    }
+
+    /// A skill. Its `content` (the full instructions) is not decoded.
+    struct Skill: Decodable, Hashable {
+        let id: String
+        let name: String?
+        let description: String?
     }
 
     // MARK: Schedules

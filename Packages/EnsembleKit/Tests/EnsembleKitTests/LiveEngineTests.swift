@@ -76,15 +76,21 @@ final class LiveHarness: @unchecked Sendable {
         // Mock model on a free port.
         let script = LiveConfig.repoRoot.appendingPathComponent("tools/mock-llm/mock_llm.py")
         guard FileManager.default.fileExists(atPath: script.path) else {
+            try? FileManager.default.removeItem(at: directory)
             throw LiveTimeout(what: "tools/mock-llm/mock_llm.py (set ENSEMBLE_REPO_ROOT)")
         }
         let portFile = directory.appendingPathComponent(".mock-port")
+        // The script may name files by absolute path inside the project folder.
+        let scriptCopy = directory.appendingPathComponent(".mock-script.json")
+        try String(contentsOf: LiveConfig.repoRoot.appendingPathComponent("tools/mock-llm/test-script.json"), encoding: .utf8)
+            .replacingOccurrences(of: "__PROJECT_DIR__", with: directory.path)
+            .write(to: scriptCopy, atomically: true, encoding: .utf8)
         let mock = Process()
         mock.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         mock.arguments = [
             script.path,
             "--port", "0", "--port-file", portFile.path,
-            "--script", LiveConfig.repoRoot.appendingPathComponent("tools/mock-llm/test-script.json").path,
+            "--script", scriptCopy.path,
             "--log", directory.appendingPathComponent(".mock-requests.jsonl").path,
         ]
         mock.standardOutput = FileHandle.nullDevice
@@ -97,6 +103,7 @@ final class LiveHarness: @unchecked Sendable {
         }
         guard let port else {
             mock.terminate()
+            try? FileManager.default.removeItem(at: directory)
             throw LiveTimeout(what: "mock model to start")
         }
 
@@ -104,14 +111,14 @@ final class LiveHarness: @unchecked Sendable {
         let template = try String(contentsOf: LiveConfig.repoRoot.appendingPathComponent("tools/mock-llm/opencode.json.example"), encoding: .utf8)
         try template.replacingOccurrences(of: "PORT", with: port)
             .write(to: directory.appendingPathComponent("opencode.json"), atomically: true, encoding: .utf8)
-        try ".mock-port\n.mock-requests.jsonl\n".write(to: directory.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+        try ".mock-port\n.mock-requests.jsonl\n.mock-script.json\n".write(to: directory.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
         let git = Process()
         git.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         git.arguments = ["init", "-q", directory.path]
         git.standardOutput = FileHandle.nullDevice
         git.standardError = FileHandle.nullDevice
         try? git.run()
-        git.waitUntilExit()
+        await LiveHarness.waitForExit(git, timeout: 10)
 
         let client = try OpenCodeClient.fromServiceFile(defaultDirectory: directory.path)
         let harness = LiveHarness(directory: directory, client: client, mock: mock)
@@ -155,6 +162,36 @@ final class LiveHarness: @unchecked Sendable {
         return outcome
     }
 
+    enum PromptResult: Equatable {
+        case asked(PermissionRequest)
+        case ended(String)
+    }
+
+    /// Sends a prompt and waits until the session asks for permission or its run ends.
+    func promptUntilAskOrEnd(_ sessionID: String, _ text: String) async throws -> PromptResult {
+        let mark = await recorder.mark()
+        try await client.prompt(sessionID, text: text, files: [])
+        let event = try await recorder.waitFor("a permission prompt or the end of \(sessionID)", after: mark) { event in
+            switch event {
+            case .permissionAsked(let request): request.sessionID == sessionID
+            case .executionEnded(let id, _, _): id == sessionID
+            default: false
+            }
+        }
+        switch event {
+        case .permissionAsked(let request): return .asked(request)
+        case .executionEnded(_, let outcome, _): return .ended(outcome)
+        default: return .ended("")
+        }
+    }
+
+    /// Rejects a prompt and waits for that session's run to end.
+    func reject(_ request: PermissionRequest) async throws {
+        let mark = await recorder.mark()
+        try await client.replyPermission(sessionID: request.sessionID, requestID: request.id, decision: .reject, message: nil)
+        _ = try await waitForEnd(of: request.sessionID, after: mark)
+    }
+
     func cleanup() async {
         eventTask?.cancel()
         let sessions = lock.withLock { createdSessions }
@@ -162,8 +199,17 @@ final class LiveHarness: @unchecked Sendable {
             try? await client.deleteSession(id)
         }
         mock.terminate()
-        mock.waitUntilExit()
+        await LiveHarness.waitForExit(mock, timeout: 5)
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    /// `Process.waitUntilExit()` can hang inside Swift concurrency, so poll instead and kill after the timeout.
+    static func waitForExit(_ process: Process, timeout: Double) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while process.isRunning, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
     }
 }
 
@@ -434,6 +480,168 @@ struct LiveEngineTests {
             }
             try await h.client.removeAPIKey(providerID: provider)
             #expect(try await h.client.providers().first { $0.id == provider }?.connected == false)
+        }
+    }
+
+    @Test func autoAsksBeforeEditingBuildFilesAndUsingTheNetwork() async throws {
+        try await withHarness { h in
+            let session = try await h.createSession(.auto)
+            // Edit resources are relative to the project folder, also when the model passes an absolute path.
+            for (prompt, resource) in [("write root makefile", "Makefile"), ("write nested makefile", "sub/Makefile"),
+                                       ("write absolute makefile", "abs/Makefile"), ("write git hook", ".git/hooks/pre-commit")] {
+                let result = try await h.promptUntilAskOrEnd(session.id, "please \(prompt)")
+                guard case .asked(let request) = result else {
+                    Issue.record("\(prompt) did not ask: \(result)")
+                    continue
+                }
+                #expect(request.kind == "edit")
+                #expect(request.title == resource)
+                try await h.reject(request)
+            }
+            for name in ["Makefile", "sub/Makefile", "abs/Makefile", ".git/hooks/pre-commit"] {
+                #expect(!FileManager.default.fileExists(atPath: h.directory.appendingPathComponent(name).path), "\(name) was written")
+            }
+
+            #expect(try await h.promptUntilAskOrEnd(session.id, "please write plain notes") == .ended("succeeded"))
+            #expect(FileManager.default.fileExists(atPath: h.directory.appendingPathComponent("notes.txt").path))
+
+            // Web search asks; Code Mode runs but its fetch asks as webfetch.
+            for (prompt, kind) in [("search the web", "websearch"), ("run code mode", "webfetch")] {
+                let result = try await h.promptUntilAskOrEnd(session.id, "please \(prompt)")
+                guard case .asked(let request) = result else {
+                    Issue.record("\(prompt) did not ask: \(result)")
+                    continue
+                }
+                #expect(request.kind == kind)
+                try await h.reject(request)
+            }
+        }
+    }
+
+    @Test func subagentsCopyTheParentsRules() async throws {
+        try await withHarness { h in
+            let parent = try await h.createSession(.ask)
+            let mark = await h.recorder.mark()
+            try await h.client.prompt(parent.id, text: "please start a shell helper", files: [])
+            let created = try await h.recorder.waitFor("child session", after: mark) { event in
+                if case .sessionCreated(let child) = event { return child.parentID == parent.id }
+                return false
+            }
+            guard case .sessionCreated(let child) = created else { return }
+            // The child's own shell call asks, because it copied the parent's Ask rules when it was created.
+            let asked = try await h.recorder.waitFor("child permission prompt", after: mark) { event in
+                if case .permissionAsked(let request) = event { return request.sessionID == child.id }
+                return false
+            }
+            guard case .permissionAsked(let request) = asked else { return }
+            #expect(request.kind == "shell")
+            #expect(request.title == "echo child-ok")
+            #expect(try await h.client.permissionRules(child.id) == PermissionRules.ruleset(for: .ask))
+            try await h.reject(request)
+
+            // Later changes to the parent do not reach the child by themselves; setPermissionMode updates both.
+            try await h.client.setPermissionMode(parent.id, mode: .bypass)
+            #expect(try await h.client.permissionMode(parent.id) == .bypass)
+            #expect(try await h.client.permissionMode(child.id) == .bypass)
+            try await h.client.setPermissionMode(parent.id, mode: .auto)
+            #expect(try await h.client.permissionMode(child.id) == .auto)
+        }
+    }
+
+    @Test func acceptEditsChildrenEditButAskForCommands() async throws {
+        try await withHarness { h in
+            let editParent = try await h.createSession(.acceptEdits)
+            var mark = await h.recorder.mark()
+            try await h.client.prompt(editParent.id, text: "please start an edit helper", files: [])
+            _ = try await h.recorder.waitFor("edit helper report", after: mark) { event in
+                if case .textEnded(let id, _, let text) = event { return id == editParent.id && text == "The helper reported back." }
+                return false
+            }
+            #expect(FileManager.default.fileExists(atPath: h.directory.appendingPathComponent("child.txt").path))
+            let editAsks = await h.recorder.all().dropFirst(mark).contains { if case .permissionAsked = $0 { true } else { false } }
+            #expect(!editAsks, "a child edit should not ask in Accept edits")
+
+            let shellParent = try await h.createSession(.acceptEdits)
+            mark = await h.recorder.mark()
+            try await h.client.prompt(shellParent.id, text: "please start a shell helper", files: [])
+            let asked = try await h.recorder.waitFor("child shell prompt", after: mark) { event in
+                if case .permissionAsked(let request) = event { return request.sessionID != shellParent.id && request.kind == "shell" }
+                return false
+            }
+            guard case .permissionAsked(let request) = asked else { return }
+            #expect(try await h.client.permissionMode(request.sessionID) == .acceptEdits)
+            try await h.reject(request)
+        }
+    }
+
+    @Test func forkAndRewind() async throws {
+        try await withHarness { h in
+            let session = try await h.createSession(.bypass)
+            #expect(try await h.run(session.id, "now write a file") == "succeeded")
+            #expect(try await h.run(session.id, "edit the file please") == "succeeded")
+            #expect(try await h.run(session.id, "hello there") == "succeeded")
+            let file = h.directory.appendingPathComponent("hello.txt")
+            #expect(try String(contentsOf: file, encoding: .utf8) == "hello from mock\n")
+
+            let users = try await h.client.messages(session.id, type: "user").map(\.id)
+            #expect(users.count == 3)
+            let all = try await h.client.messages(session.id)
+            // Fork through the reply to the second prompt: the fork keeps two prompts and drops "hello there".
+            let secondReply = try #require(all.last { $0.type == "assistant" && $0.time.created < all.first { $0.id == users[2] }!.time.created })
+            let fork = try await h.client.fork(session.id, atMessageID: secondReply.id)
+            h.track(fork.id)
+            #expect(fork.id != session.id)
+            #expect(fork.parentID == nil)
+            #expect(fork.title.contains("(fork"))
+            #expect(fork.directory == h.path)
+            let forkTranscript = try await h.client.transcript(fork.id)
+            let forkPrompts = forkTranscript.compactMap { if case .user(_, let text, _) = $0 { text } else { nil } }
+            #expect(forkPrompts == ["now write a file", "edit the file please"])
+            #expect(forkTranscript.contains { if case .agentText(_, let text, _, _) = $0 { text == "Edited hello.txt." } else { false } })
+            #expect(try await h.client.permissionMode(fork.id) == .bypass)
+
+            let full = try await h.client.fork(session.id, atMessageID: nil)
+            h.track(full.id)
+            #expect(try await h.client.messages(full.id, type: "user").count == 3)
+
+            // Rewind to before the second prompt: the edit is undone on disk and the later messages are gone.
+            try await h.client.rewind(session.id, toBeforeMessageID: users[1])
+            #expect(try String(contentsOf: file, encoding: .utf8) == "hi from mock\n")
+            let rewound = try await h.client.transcript(session.id)
+            let prompts = rewound.compactMap { if case .user(_, let text, _) = $0 { text } else { nil } }
+            #expect(prompts == ["now write a file"])
+            #expect(h.client.rewindRestoresFiles)
+
+            // The session keeps working after a rewind.
+            #expect(try await h.run(session.id, "hello again") == "succeeded")
+        }
+    }
+
+    @Test func effortAndCommands() async throws {
+        try await withHarness { h in
+            let session = try await h.createSession(.bypass)
+            let options = try await h.client.modelOptions(for: ModelRef(providerID: "mock", id: "mock-1"))
+            #expect(options.effortLevels == [.low, .medium, .high])
+            #expect(!options.supportsFastMode)
+            try await h.client.setEffort(session.id, effort: .high)
+            #expect(try await h.client.session(session.id).model == ModelRef(providerID: "mock", id: "mock-1", variant: "high"))
+            try await h.client.setEffort(session.id, effort: nil)
+            #expect(try await h.client.session(session.id).model == ModelRef(providerID: "mock", id: "mock-1"))
+            await #expect(throws: OpenCodeError.self) { try await h.client.setFastMode(session.id, enabled: true) }
+
+            let commands = try await h.client.commands(directory: h.path)
+            #expect(commands.contains { $0.kind == .command && $0.name == "review" && $0.argumentHint == "[commit|branch|pr]" })
+            #expect(commands.contains { $0.kind == .command && $0.name == "init" })
+            #expect(commands.contains { $0.kind == .skill && $0.name == "opencode" })
+
+            let beforeSkill = await h.recorder.mark()
+            try await h.client.runCommand(session.id, name: "opencode", arguments: "")
+            #expect(try await h.waitForEnd(of: session.id, after: beforeSkill) == "succeeded")
+            #expect(try await h.client.transcript(session.id).contains { if case .notice(_, let text) = $0 { text == "Loaded skill OpenCode" } else { false } })
+
+            let beforeCommand = await h.recorder.mark()
+            try await h.client.runCommand(session.id, name: "review", arguments: "")
+            #expect(try await h.waitForEnd(of: session.id, after: beforeCommand) == "succeeded")
         }
     }
 
