@@ -63,7 +63,8 @@ public struct PermissionCardView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            HStack(spacing: theme.z(8)) {
+            // Wraps in a narrow pane rather than cutting the labels short.
+            FlowRow(spacing: theme.z(8)) {
                 Button("Allow once") { actions.replyPermission(request, .once) }
                     .buttonStyle(PrimaryButtonStyle())
                     .modifier(PermissionShortcut(key: "y", modifiers: .command, enabled: hasShortcuts))
@@ -93,8 +94,8 @@ public struct PermissionCardView: View {
                     .padding(.leading, theme.z(4))
                     .help("Always allow also covers these from now on")
                 }
-                Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, theme.z(2))
         }
         .padding(theme.z(14))

@@ -195,22 +195,39 @@ public struct QuestionCardView: View {
         question.options.isEmpty ? "Type your answer" : "Other: type your own answer"
     }
 
+    /// Decline and Back on the left, Send answer (or Next) on the right; in a narrow pane the buttons wrap instead of
+    /// cutting their labels short.
     private func footer(_ question: AgentQuestion) -> some View {
-        HStack(spacing: theme.z(8)) {
-            Button("Decline", action: onDecline)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: theme.z(8)) {
+                secondaryButtons
+                Spacer(minLength: 0)
+                primaryButton(question)
+            }
+            FlowRow(spacing: theme.z(8)) {
+                secondaryButtons
+                primaryButton(question)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder private var secondaryButtons: some View {
+        Button("Decline", action: onDecline)
+            .buttonStyle(SecondaryButtonStyle())
+            .help("Tell the agent you won't answer")
+        if step > 0 {
+            Button("Back") { step -= 1 }
                 .buttonStyle(SecondaryButtonStyle())
-                .help("Tell the agent you won't answer")
-            if step > 0 {
-                Button("Back") { step -= 1 }
-                    .buttonStyle(SecondaryButtonStyle())
-            }
-            Spacer(minLength: 0)
-            // Single-choice questions answer on click; the button is for checkboxes and typed answers.
-            if question.multiSelect || question.allowsOther || questions.count > 1 {
-                Button(isLast ? "Send answer" : "Next") { advance(from: question) }
-                    .buttonStyle(PrimaryButtonStyle())
-                    .disabled(answer(for: question) == nil)
-            }
+        }
+    }
+
+    /// Single-choice questions answer on click; the button is for checkboxes and typed answers.
+    @ViewBuilder private func primaryButton(_ question: AgentQuestion) -> some View {
+        if question.multiSelect || question.allowsOther || questions.count > 1 {
+            Button(isLast ? "Send answer" : "Next") { advance(from: question) }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(answer(for: question) == nil)
         }
     }
 

@@ -38,6 +38,7 @@ struct CompactRootView: View {
                         .navigationDestination(for: ChatRoute.self) { chat($0) }
                 }
             }
+            .badge(client.rooms.count(where: \.needsYou))
             Tab("Usage", systemImage: "chart.bar", value: RemoteTab.usage) {
                 NavigationStack { UsageView(client: client) }
             }

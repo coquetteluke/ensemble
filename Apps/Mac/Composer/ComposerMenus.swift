@@ -311,3 +311,101 @@ struct SlashCommandMenu: View {
         }
     }
 }
+
+/// What the composer's More menu holds: the controls the row moved out to fit a narrow pane.
+struct ComposerMoreItems: Equatable {
+    var effort = false
+    var fast = false
+    var workInCopy = false
+    var attach = false
+    var keepAwake = false
+
+    var isEmpty: Bool { !(effort || fast || workInCopy || attach || keepAwake) }
+
+    /// "Effort, Fast mode, Attach files": the tooltip says what is inside.
+    var summary: String {
+        [effort ? "Effort" : nil, fast ? "Fast mode" : nil, workInCopy ? "Work in a copy" : nil,
+         attach ? "Attach files" : nil, keepAwake ? "Keep Mac awake" : nil]
+            .compactMap { $0 }
+            .joined(separator: ", ")
+    }
+}
+
+/// The "..." button in a narrow composer's row: a menu with the effort levels, fast mode, the "Work in a copy" switch,
+/// Attach Files and the Keep awake switches, whichever the row moved out. Its icon turns accent while fast mode is on
+/// inside it.
+struct ComposerMoreMenu: View {
+    let store: SessionStore
+    let session: SessionModel
+    let window: WindowState
+    let items: ComposerMoreItems
+    let options: ModelOptions?
+    let onAttach: () -> Void
+    @Environment(\.theme) private var theme
+    @Environment(\.isSnapshot) private var isSnapshot
+    @State private var hovering = false
+
+    private var fastOn: Bool { items.fast && session.fastMode }
+
+    var body: some View {
+        Group {
+            if isSnapshot {
+                label
+            } else {
+                Menu {
+                    menuItems
+                } label: {
+                    label
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            }
+        }
+        .onHover { hovering = $0 }
+        .help("More: \(items.summary)" + (fastOn ? ". Fast mode is on" : ""))
+        .accessibilityLabel("More")
+        .accessibilityValue(items.summary)
+    }
+
+    private var label: some View {
+        Image(systemName: "ellipsis")
+            .font(theme.font(size: 13.5, weight: .medium))
+            .foregroundStyle(fastOn ? theme.accent : theme.textSecondary)
+            .frame(width: theme.z(30), height: theme.z(30))
+            .background(Circle().fill(fastOn ? theme.accent.opacity(0.14) : (hovering ? theme.hover : .clear)))
+            .contentShape(Circle())
+    }
+
+    @ViewBuilder private var menuItems: some View {
+        if items.effort, let options {
+            Picker("Effort", selection: Binding(
+                get: { session.effort ?? options.defaultEffort },
+                set: { level in if let level { Task { await store.setEffort(level, for: session.id) } } })) {
+                ForEach(options.effortLevels, id: \.self) { level in
+                    Text(level.label).tag(Optional(level))
+                }
+            }
+        }
+        if items.fast {
+            Toggle("Fast Mode", isOn: Binding(get: { session.fastMode },
+                                              set: { on in Task { await store.setFastMode(on, for: session.id) } }))
+        }
+        if items.workInCopy {
+            Toggle("Work in a Copy (Git Worktree)", isOn: Binding(
+                get: { store.isInWorktree(session.id) },
+                set: { on in WorktreeStatusControls.setWorkInCopy(on, session: session, store: store, window: window) }))
+                .disabled(store.worktreeSwitchUnavailableReason(session.id) != nil || store.worktrees.busy.contains(session.id))
+        }
+        if (items.effort || items.fast || items.workInCopy) && (items.attach || items.keepAwake) {
+            Divider()
+        }
+        if items.attach {
+            Button("Attach Files\u{2026}", action: onAttach)
+        }
+        if items.keepAwake {
+            PowerMenuItems(holder: .session(session.id))
+        }
+    }
+}

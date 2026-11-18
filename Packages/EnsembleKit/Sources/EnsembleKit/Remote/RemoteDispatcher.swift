@@ -44,6 +44,10 @@ public enum RemoteDispatcher {
             case .respondToPlan(let r):
                 try await host.respondToPlan(sessionID: r.sessionID, requestID: r.requestID, decision: r.decision)
                 return .ack
+            case .decideRoom(var r):
+                r.text = r.text?.trimmingCharacters(in: .whitespacesAndNewlines).remoteNilIfEmpty
+                try await host.decideRoom(r)
+                return .ack
             }
         } catch let error as RemoteError {
             return .error(error)

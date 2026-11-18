@@ -75,13 +75,16 @@ final class AppEngine {
         newStore.defaultModel = defaults.string(forKey: "defaultModel").flatMap(ModelRef.init(string:))
         newStore.defaultPermissionMode = defaults.string(forKey: "defaultPermissionMode").flatMap(PermissionMode.init(rawValue:)) ?? .auto
         store = newStore
-        let remoteControl = RemoteControlController(host: MacRemoteHost(store: newStore))
+        let remoteHost = MacRemoteHost(store: newStore)
+        let remoteControl = RemoteControlController(host: remoteHost)
         remote = remoteControl
         // Sample data keeps its rooms in memory and never runs git, so it never touches saved rooms or real folders.
         let roomsController = RoomsController(api: newStore.engine,
                                               store: Self.usePreview ? InMemoryRoomStore() : FileRoomStore.standard,
                                               git: Self.usePreview ? nil : ProcessGitOps())
         rooms = roomsController
+        // Rooms on the iPhone.
+        remoteHost.rooms = roomsController
         // The Dock badge and the menu bar count rooms waiting on a decision (room agents' prompts count as sessions).
         AttentionCenter.shared.extraNeedsYou = { [weak roomsController] in roomsController?.decisionsWaiting ?? 0 }
         Task {

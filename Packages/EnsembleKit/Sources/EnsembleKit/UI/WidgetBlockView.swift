@@ -529,22 +529,37 @@ final class WidgetBlocker {
     private var waiting: [CheckedContinuation<WKContentRuleList?, Never>] = []
     private var compiling = false
 
+    /// Compiles tried before giving up. A compile fails when another process compiles the same list into the shared
+    /// store at the same moment (two test runs, or the app and a snapshot run), so a failure is tried again.
+    static let attempts = 4
+
     func rules() async -> WKContentRuleList? {
         if let compiled { return compiled }
         return await withCheckedContinuation { continuation in
             waiting.append(continuation)
             guard !compiling else { return }
             compiling = true
-            WKContentRuleListStore.default().compileContentRuleList(
-                forIdentifier: "ensemble-widget-blocker", encodedContentRuleList: WidgetDocument.blockerRules
-            ) { list, _ in
-                MainActor.assumeIsolated {
-                    self.compiled = list
-                    self.compiling = false
-                    let continuations = self.waiting
-                    self.waiting.removeAll()
-                    for continuation in continuations { continuation.resume(returning: list) }
+            compile(attempt: 1)
+        }
+    }
+
+    private func compile(attempt: Int) {
+        WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: "ensemble-widget-blocker", encodedContentRuleList: WidgetDocument.blockerRules
+        ) { list, _ in
+            MainActor.assumeIsolated {
+                if list == nil, attempt < Self.attempts {
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(150 * attempt))
+                        self.compile(attempt: attempt + 1)
+                    }
+                    return
                 }
+                self.compiled = list
+                self.compiling = false
+                let continuations = self.waiting
+                self.waiting.removeAll()
+                for continuation in continuations { continuation.resume(returning: list) }
             }
         }
     }

@@ -15,35 +15,55 @@ import WebKit
     <script>document.getElementById('box').style.height = '400px';</script>
     """
 
-    private final class HeightBox {
-        var value: CGFloat = 0
+    /// The first height the frame reports, handed to whoever waits for it.
+    @MainActor private final class HeightReport {
+        private(set) var value: CGFloat = 0
+        private var waiter: CheckedContinuation<CGFloat, Never>?
+
+        func set(_ height: CGFloat) {
+            value = height
+            finish(height)
+        }
+
+        /// The first report, or 0 when none arrives within `timeout`.
+        func first(timeout: Duration) async -> CGFloat {
+            if value != 0 { return value }
+            let timer = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: timeout)
+                self?.finish(0)
+            }
+            defer { timer.cancel() }
+            return await withCheckedContinuation { waiter = $0 }
+        }
+
+        private func finish(_ height: CGFloat) {
+            waiter?.resume(returning: height)
+            waiter = nil
+        }
     }
 
-    /// Loads `html` in a widget web view inside a window that is never shown and returns the first
-    /// height the frame reports (0 if none arrives in time).
-    private func renderedHeight(_ html: String) async -> CGFloat {
+    /// Loads `html` in a widget web view inside a window that is never shown and returns the first height the frame
+    /// reports (0 if none arrives within `timeout`). Waits for the report itself: while the test waits, the main run
+    /// loop delivers WebKit's messages. The timeout is generous because a loaded machine can take many seconds to start
+    /// WebKit's processes.
+    private func renderedHeight(_ html: String, timeout: Duration = .seconds(180)) async -> CGFloat {
         _ = NSApplication.shared
-        let box = HeightBox()
-        let coordinator = WidgetWebView.Coordinator(height: Binding(get: { box.value }, set: { box.value = $0 }))
+        // The page loads only once the network blocker is compiled; check it here so a failure says so.
+        guard await WidgetBlocker.shared.rules() != nil else {
+            Issue.record("The widget network blocker did not compile")
+            return 0
+        }
+        let report = HeightReport()
+        let coordinator = WidgetWebView.Coordinator(height: Binding(get: { report.value }, set: { report.set($0) }))
         let webView = WidgetWebView.makeWebView(coordinator: coordinator, zoom: 1, scrolls: false)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 120), styleMask: [.borderless],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = webView
         coordinator.load(html, into: webView)
-        // WebKit answers through the main run loop and the blocker through the main actor; give both turns.
-        let deadline = Date().addingTimeInterval(20)
-        while box.value == 0, Date() < deadline {
-            spin(0.05)
-            await Task.yield()
-        }
+        let height = await report.first(timeout: timeout)
         window.close()
-        return box.value
-    }
-
-    /// Runs the main run loop (WebKit answers through it) between turns of the main actor.
-    private func spin(_ seconds: TimeInterval) {
-        RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+        return height
     }
 
     @Test func aWidgetRunsItsScriptAndSizesToItsContent() async {

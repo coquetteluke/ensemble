@@ -15,15 +15,18 @@ struct ComposerQueueStrip: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: theme.z(2)) {
-            HStack(spacing: theme.z(6)) {
-                Text(messages.count == 1 ? "1 queued message" : "\(messages.count) queued messages")
-                    .font(theme.font(size: 11.5, weight: .semibold))
-                    .foregroundStyle(theme.textSecondary)
-                Text(status)
-                    .font(theme.font(size: 11.5))
-                    .foregroundStyle(held ? theme.warning : theme.textTertiary)
-                    .lineLimit(1)
-                Spacer(minLength: 0)
+            // The status goes under the count in a narrow pane.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: theme.z(6)) {
+                    countText
+                    statusText.lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: theme.z(2)) {
+                    countText
+                    statusText.fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, theme.z(10))
             .padding(.top, theme.z(4))
@@ -46,6 +49,19 @@ struct ComposerQueueStrip: View {
         .accessibilityLabel("Queued messages")
     }
 
+    private var countText: some View {
+        Text(messages.count == 1 ? "1 queued message" : "\(messages.count) queued messages")
+            .font(theme.font(size: 11.5, weight: .semibold))
+            .foregroundStyle(theme.textSecondary)
+            .lineLimit(1)
+    }
+
+    private var statusText: some View {
+        Text(status)
+            .font(theme.font(size: 11.5))
+            .foregroundStyle(held ? theme.warning : theme.textTertiary)
+    }
+
     private var status: String {
         if held { return "Held because the last turn stopped" }
         switch delivery {
@@ -65,21 +81,10 @@ private struct QueueRow: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: theme.z(8)) {
-            Image(systemName: message.files.isEmpty ? "arrow.turn.down.right" : "paperclip")
-                .font(theme.font(size: 11))
-                .foregroundStyle(theme.textTertiary)
-                .frame(width: theme.z(16))
-            Text(message.preview)
-                .font(theme.font(size: 13))
-                .foregroundStyle(theme.textPrimary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .help(message.text)
-            Spacer(minLength: theme.z(8))
-            QueueTextButton(title: "Send now", help: sendNow.help, action: onSendNow)
-            QueueIconButton(symbol: "pencil", help: "Edit: put this message back in the box", action: onEdit)
-            QueueIconButton(symbol: "xmark", help: "Cancel: remove this message", action: onCancel)
+        // In a narrow pane Send now keeps its icon only (the tooltip keeps the words).
+        ViewThatFits(in: .horizontal) {
+            content(labelled: true)
+            content(labelled: false)
         }
         .padding(.leading, theme.z(8))
         .padding(.trailing, theme.z(4))
@@ -92,9 +97,33 @@ private struct QueueRow: View {
     }
 }
 
+extension QueueRow {
+    /// The preview takes the room the buttons leave (at least a short stretch, so a narrow pane drops the Send now
+    /// label rather than the preview).
+    fileprivate func content(labelled: Bool) -> some View {
+        HStack(spacing: theme.z(8)) {
+            Image(systemName: message.files.isEmpty ? "arrow.turn.down.right" : "paperclip")
+                .font(theme.font(size: 11))
+                .foregroundStyle(theme.textTertiary)
+                .frame(width: theme.z(16))
+            Text(message.preview)
+                .font(theme.font(size: 13))
+                .foregroundStyle(theme.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(minWidth: 0, idealWidth: theme.z(90), maxWidth: .infinity, alignment: .leading)
+                .help(message.text)
+            QueueTextButton(title: "Send now", help: sendNow.help, iconOnly: !labelled, action: onSendNow)
+            QueueIconButton(symbol: "pencil", help: "Edit: put this message back in the box", action: onEdit)
+            QueueIconButton(symbol: "xmark", help: "Cancel: remove this message", action: onCancel)
+        }
+    }
+}
+
 private struct QueueTextButton: View {
     let title: String
     let help: String
+    var iconOnly = false
     let action: () -> Void
     @Environment(\.theme) private var theme
     @State private var hovering = false
@@ -104,9 +133,12 @@ private struct QueueTextButton: View {
             HStack(spacing: theme.z(4)) {
                 Image(systemName: "arrow.up")
                     .font(theme.font(size: 10, weight: .bold))
-                Text(title)
-                    .font(theme.font(size: 12, weight: .medium))
+                if !iconOnly {
+                    Text(title)
+                        .font(theme.font(size: 12, weight: .medium))
+                }
             }
+            .fixedSize()
             .foregroundStyle(hovering ? theme.textPrimary : theme.textSecondary)
             .padding(.horizontal, theme.z(8))
             .frame(height: theme.z(24))
@@ -122,7 +154,7 @@ private struct QueueTextButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help(help)
+        .help(iconOnly ? "\(title): \(help)" : help)
         .accessibilityLabel(title)
         .accessibilityHint(help)
     }

@@ -26,6 +26,9 @@ public protocol RemoteHost: AnyObject, Sendable {
     /// Proceed or Keep planning on a plan of `sessionID`. Must refuse a request of another session, and a mode the plan
     /// does not offer.
     func respondToPlan(sessionID: String, requestID: String, decision: PlanDecision) async throws
+    /// Answers what a room waits on (`RemoteRoom.decision`). Must refuse a decision id that is no longer open, a choice
+    /// the decision does not offer, and a missing text the choice requires.
+    func decideRoom(_ reply: RemoteRoomDecisionReply) async throws
 }
 
 public extension RemoteHost {
@@ -35,6 +38,10 @@ public extension RemoteHost {
 
     func respondToPlan(sessionID: String, requestID: String, decision: PlanDecision) async throws {
         throw RemoteError(.unknownMessage, "This Mac cannot review plans from the iPhone.")
+    }
+
+    func decideRoom(_ reply: RemoteRoomDecisionReply) async throws {
+        throw RemoteError(.unknownMessage, "This Mac cannot answer room decisions from the iPhone.")
     }
 }
 
@@ -47,6 +54,7 @@ public enum RemoteHostAction: Hashable, Sendable {
     case controlRoom(roomID: UUID, action: RemoteRoomAction)
     case answerQuestion(sessionID: String, requestID: String, answers: [AgentQuestionAnswer])
     case respondToPlan(sessionID: String, requestID: String, decision: PlanDecision)
+    case decideRoom(RemoteRoomDecisionReply)
 }
 
 /// In-memory `RemoteHost` with sample data. Records every action and applies it to its own state the way
@@ -103,6 +111,9 @@ public actor DemoRemoteHost: RemoteHost {
         case .session(let id): sessionID = id
         case .room(let roomID):
             guard let room = roomList.first(where: { $0.id == roomID }) else { throw RemoteError(.notFound, "No room") }
+            if let agent, !room.agents.contains(where: { $0.name.caseInsensitiveCompare(agent) == .orderedSame }) {
+                throw RemoteError(.badRequest, "This room has no agent named \(agent).")
+            }
             sessionID = room.sessionID
         }
         guard transcripts[sessionID] != nil else { throw RemoteError(.notFound, "No session \(sessionID)") }
@@ -120,6 +131,11 @@ public actor DemoRemoteHost: RemoteHost {
         }
         permissions.removeAll { $0.id == requestID }
         emit(.permissionReplied(sessionID: sessionID, requestID: requestID, decision: decision))
+        for r in roomList.indices where roomList[r].permissions.contains(where: { $0.id == requestID }) {
+            roomList[r].permissions.removeAll { $0.id == requestID }
+            emit(.roomUpserted(room: roomList[r]))
+            upsertRoomRow(roomList[r])
+        }
         if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
             sessions[i].pendingPermissions = max(0, sessions[i].pendingPermissions - 1)
             if sessions[i].pendingPermissions == 0 {
@@ -165,6 +181,36 @@ public actor DemoRemoteHost: RemoteHost {
             sessions[i].lastActivity = Date()
             emit(.sessionUpserted(session: sessions[i]))
         }
+    }
+
+    public func decideRoom(_ reply: RemoteRoomDecisionReply) async throws {
+        recordedActions.append(.decideRoom(reply))
+        guard let i = roomList.firstIndex(where: { $0.id == reply.roomID }) else { throw RemoteError(.notFound, "No room") }
+        guard let decision = roomList[i].decision, decision.id == reply.decisionID else {
+            throw RemoteError(.notFound, "That decision is no longer open in the room.")
+        }
+        guard let choice = decision.choices.first(where: { $0.id == reply.choice }) else {
+            throw RemoteError(.badRequest, "That answer is not offered for this decision.")
+        }
+        let text = (reply.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if choice.input == .required && text.isEmpty { throw RemoteError(.badRequest, "Write your answer first.") }
+        roomList[i].decision = nil
+        roomList[i].state = .running
+        roomList[i].phaseLabel = "Working"
+        roomList[i].lastActivity = Date()
+        emit(.roomUpserted(room: roomList[i]))
+        upsertRoomRow(roomList[i])
+        let sessionID = roomList[i].sessionID
+        emit(.transcriptUpsert(sessionID: sessionID, item: .notice(id: nextID("notice"), text: "You chose \(choice.label).")))
+        setActivity(.working, sessionID: sessionID)
+    }
+
+    /// Keeps a room's Session Hub row in step with the room.
+    private func upsertRoomRow(_ room: RemoteRoom) {
+        guard let i = sessions.firstIndex(where: { $0.id == room.sessionID }) else { return }
+        var row = RemoteRoomBridge.hubRow(room)
+        row.usage = sessions[i].usage
+        emit(.sessionUpserted(session: row))
     }
 
     public func setPermissionMode(_ mode: PermissionMode, for target: RemoteTarget) async throws {

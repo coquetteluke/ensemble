@@ -37,15 +37,18 @@ public struct TrustCardView: View {
                     .foregroundStyle(theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                HStack(spacing: theme.z(8)) {
-                    buttons
-                    Text(Format.abbreviatedPath(prompt.folder))
-                        .font(theme.font(size: 11.5))
-                        .foregroundStyle(theme.textTertiary)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                        .help(prompt.folder)
-                    Spacer(minLength: 0)
+                // The folder sits beside the buttons, or under them in a narrow pane (the buttons wrap there rather
+                // than cutting their labels short).
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: theme.z(8)) {
+                        buttons
+                        folderLabel
+                        Spacer(minLength: 0)
+                    }
+                    VStack(alignment: .leading, spacing: theme.z(6)) {
+                        FlowRow(spacing: theme.z(8)) { buttons }
+                        folderLabel
+                    }
                 }
                 .padding(.top, theme.z(4))
                 if let error {
@@ -67,6 +70,15 @@ public struct TrustCardView: View {
         )
         .accessibilityElement(children: .contain)
         .accessibilityLabel(prompt.title)
+    }
+
+    private var folderLabel: some View {
+        Text(Format.abbreviatedPath(prompt.folder))
+            .font(theme.font(size: 11.5))
+            .foregroundStyle(theme.textTertiary)
+            .lineLimit(1)
+            .truncationMode(.head)
+            .help(prompt.folder)
     }
 
     @ViewBuilder private var buttons: some View {

@@ -710,6 +710,8 @@ public struct UsageLimitCard: View {
                     Text("Continue automatically at \(Self.timeText(continueAt, now: now))")
                         .font(theme.font(size: 13))
                         .foregroundStyle(theme.textPrimary)
+                        // Offered the row before the spacer, so a narrow pane wraps it only when it must.
+                        .layoutPriority(1)
                     Spacer(minLength: theme.z(8))
                     Toggle(isOn: Binding(get: { stop.autoContinue },
                                          set: { store?.setAutoContinue($0, forItem: stop.id) })) { EmptyView() }

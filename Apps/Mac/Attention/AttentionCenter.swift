@@ -7,7 +7,8 @@ import EnsembleKit
 /// macOS notifications, sounds, the Dock badge and the menu bar count. Also owns the sidebar marks
 /// (pinned, unread, completed) and opens a session from a notification or the menu bar.
 ///
-/// Alerts only fire when the session is not the one on screen, or when Ensemble is not the frontmost app.
+/// Alerts only fire when the session is not on screen (the selected session, or any split pane), or when Ensemble is not
+/// the frontmost app.
 /// Started by the sidebar (`attach`); the app-wide instance is `shared`.
 @Observable @MainActor
 final class AttentionCenter {
@@ -47,7 +48,7 @@ final class AttentionCenter {
     @ObservationIgnored private var pendingOpen: String?
     @ObservationIgnored private var statusItem: AttentionStatusItem?
     @ObservationIgnored private var flushTask: Task<Void, Never>?
-    @ObservationIgnored private var visibleSessionID: String?
+    @ObservationIgnored private var visibleSessionIDs: Set<String> = []
     /// Notification ids posted per session, so they can be removed once seen.
     @ObservationIgnored private var posted: [String: Set<String>] = [:]
     @ObservationIgnored private var lastSound = Date.distantPast
@@ -69,7 +70,7 @@ final class AttentionCenter {
         self.store = store
         self.window = window
         tracker = SessionAttentionTracker()
-        visibleSessionID = nil
+        visibleSessionIDs = []
         installNotificationHandler()
         if statusItem == nil { statusItem = AttentionStatusItem(center: self) }
         if observers.isEmpty { installObservers() }
@@ -188,7 +189,7 @@ final class AttentionCenter {
         generation &+= 1
         let mine = generation
         let (snapshots, extra, visible) = withObservationTracking {
-            (store.isLoaded ? store.attentionSnapshots() : [], extraNeedsYou?() ?? 0, visibleSession(store: store, window: window))
+            (store.isLoaded ? store.attentionSnapshots() : [], extraNeedsYou?() ?? 0, visibleSessions(store: store, window: window))
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, self.generation == mine else { return }
@@ -198,16 +199,18 @@ final class AttentionCenter {
         process(snapshots: snapshots, extra: extra, visible: visible, loaded: store.isLoaded)
     }
 
-    private func process(snapshots: [SessionAttentionSnapshot], extra: Int, visible: String?, loaded: Bool) {
+    private func process(snapshots: [SessionAttentionSnapshot], extra: Int, visible: Set<String>, loaded: Bool) {
         if self.snapshots != snapshots { self.snapshots = snapshots }
         if extraCount != extra { extraCount = extra }
         let totals = SessionAttentionTotals.count(snapshots, extraNeedsYou: extra)
         if self.totals != totals { self.totals = totals }
         applyPreferences()
 
-        if visible != visibleSessionID {
-            visibleSessionID = visible
-            if let visible { seen(visible) }
+        if visible != visibleSessionIDs {
+            // Sessions that just came on screen are read, and their notifications are no longer needed.
+            let appeared = visible.subtracting(visibleSessionIDs)
+            visibleSessionIDs = visible
+            for id in appeared.sorted() { seen(id) }
         }
 
         guard loaded else { return }
@@ -230,12 +233,18 @@ final class AttentionCenter {
         }
     }
 
-    /// The top-level session on screen, or nil when Ensemble is not in front or shows something else.
-    private func visibleSession(store: SessionStore, window: WindowState) -> String? {
-        guard window.route == .session, let selected = store.selected else { return nil }
-        guard NSApp.isActive else { return nil }
-        if let main = mainWindow, !main.isVisible || main.isMiniaturized { return nil }
-        return selected.info.parentID ?? selected.id
+    /// The top-level sessions on screen: every split pane's, or the selected one's. None when Ensemble is not in front,
+    /// its window is hidden or miniaturized, or it shows something else.
+    private func visibleSessions(store: SessionStore, window: WindowState) -> Set<String> {
+        let windowShown = mainWindow.map { $0.isVisible && !$0.isMiniaturized } ?? true
+        return Self.visibleSessions(store: store, window: window, appActive: NSApp.isActive, windowShown: windowShown)
+    }
+
+    /// `visibleSessions` from plain values (the snapshot run checks it). A pane showing a subagent counts as its parent.
+    static func visibleSessions(store: SessionStore, window: WindowState, appActive: Bool, windowShown: Bool) -> Set<String> {
+        guard appActive, windowShown, window.route == .session else { return [] }
+        let shown = window.split.isActive ? window.split.panes.map(\.sessionID) : (store.selectedSessionID.map { [$0] } ?? [])
+        return Set(shown.compactMap { id in store.session(id).map { $0.info.parentID ?? $0.id } })
     }
 
     private func installObservers() {
@@ -267,6 +276,8 @@ final class AttentionCenter {
             let id = event.sessionID
             let alerted = alerts(event) && shouldAlert(id)
             defer { eventObserver?(event, alerted) }
+            // The same alert to the phone through ntfy, when the user set that up (Settings > Alerts).
+            if alerted { NtfyAlertCenter.shared.forward(event, title: (tracker.snapshot(id) ?? snapshots.first { $0.id == id })?.title) }
             switch event {
             case .needsYou(_, let request):
                 marks.setCompleted(id, false)
@@ -307,10 +318,11 @@ final class AttentionCenter {
         }
     }
 
-    /// False when the session is on screen in the frontmost app (checked now, not at the last observation).
+    /// False when the session is on screen (in any split pane) in the frontmost app (checked now, not at the last
+    /// observation).
     private func shouldAlert(_ sessionID: String) -> Bool {
         guard let store, let window else { return true }
-        return visibleSession(store: store, window: window) != sessionID
+        return !visibleSessions(store: store, window: window).contains(sessionID)
     }
 
     /// The user is looking at the session: it is read, and its notifications are no longer needed.

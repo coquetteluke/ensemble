@@ -126,6 +126,9 @@ public enum RemoteClientMessage: Hashable, Sendable {
     case answerQuestion(RemoteQuestionAnswer)
     /// Reply: `.ack`. Proceed or Keep planning on a plan.
     case respondToPlan(RemotePlanResponse)
+    /// Reply: `.ack`. Answers what a room waits on (`RemoteRoom.decision`). Added after protocol 3 shipped: a Mac without
+    /// it answers `unknownMessage`.
+    case decideRoom(RemoteRoomDecisionReply)
 
     public var typeName: String {
         switch self {
@@ -142,6 +145,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .usageRequest: "usageRequest"
         case .answerQuestion: "answerQuestion"
         case .respondToPlan: "respondToPlan"
+        case .decideRoom: "roomDecision"
         }
     }
 
@@ -158,6 +162,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .roomControl(let p): try c.encode(p, forKey: .data)
         case .answerQuestion(let p): try c.encode(p, forKey: .data)
         case .respondToPlan(let p): try c.encode(p, forKey: .data)
+        case .decideRoom(let p): try c.encode(p, forKey: .data)
         }
     }
 
@@ -177,6 +182,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case "usageRequest": return .usageRequest
         case "answerQuestion": return .answerQuestion(try c.decode(RemoteQuestionAnswer.self, forKey: .data))
         case "respondToPlan": return .respondToPlan(try c.decode(RemotePlanResponse.self, forKey: .data))
+        case "roomDecision": return .decideRoom(try c.decode(RemoteRoomDecisionReply.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)
         }
     }

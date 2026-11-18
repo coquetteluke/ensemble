@@ -6,16 +6,20 @@ struct ConversationView: View {
     let store: SessionStore
     let session: SessionModel
     @Bindable var window: WindowState
-    /// A split pane narrower than the composer's row passes a smaller zoom for the composer, its cards and the status
-    /// line, so every control stays on screen; nil uses the window's zoom.
+    /// A split pane narrower than the composer's narrowest row passes a smaller zoom for the composer, its cards and the
+    /// status line, so every control stays on screen; nil uses the window's zoom.
     var composerZoom: CGFloat?
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
     @Environment(\.zoom) private var zoom
     @State private var pinnedToBottom = true
     @State private var position = ScrollPosition(edge: .bottom)
+    /// The status line is too narrow for the "Work in a copy" switch; the composer's More menu offers it instead.
+    @State private var worktreeSwitchInMore = false
 
     static let columnWidth: CGFloat = 760
+    /// Below this width (before zoom) the transcript, the composer and the status line use tighter side padding.
+    static let narrowWidth: CGFloat = 480
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,8 +28,11 @@ struct ConversationView: View {
                 // "Trust this folder?" when the session's engine skips or refuses the folder's own settings.
                 SessionTrustCard(store: store, session: session)
                 PullRequestBarHost(store: store, session: session)
-                ComposerView(store: store, session: session, window: window)
-                StatusLine(store: store, session: session, window: window)
+                ComposerView(store: store, session: session, window: window, worktreeSwitchInMore: worktreeSwitchInMore)
+                StatusLine(store: store, session: session, window: window,
+                           onWorktreeSwitchHidden: { hidden in
+                               if worktreeSwitchInMore != hidden { worktreeSwitchInMore = hidden }
+                           })
             }
             // Always applied (at the window's zoom when there is no override) so the composer keeps its identity, and
             // its focus, while a split pane is resized.
@@ -53,10 +60,9 @@ struct ConversationView: View {
             }
         }
         .frame(maxWidth: theme.z(Self.columnWidth), alignment: .leading)
-        .padding(.horizontal, theme.z(32))
         .padding(.top, theme.z(12))
         .padding(.bottom, theme.z(22))
-        .frame(maxWidth: .infinity)
+        .modifier(AdaptiveInsetModifier(wide: 32, narrow: 16))
     }
 
     @ViewBuilder private var transcript: some View {
@@ -110,8 +116,23 @@ private struct ComposerColumn<Content: View>: View {
 
     var body: some View {
         VStack(spacing: 0) { content }
-            .frame(maxWidth: theme.z(ConversationView.columnWidth + 24))
-            .padding(.horizontal, theme.z(20))
+            .modifier(AdaptiveInsetModifier(wide: 20, narrow: 10, maxContentWidth: ConversationView.columnWidth + 24))
+    }
+}
+
+/// `AdaptiveInset` at the theme's zoom: the narrow padding below `threshold` (before zoom).
+struct AdaptiveInsetModifier: ViewModifier {
+    let wide: CGFloat
+    let narrow: CGFloat
+    var threshold: CGFloat = ConversationView.narrowWidth
+    var maxContentWidth: CGFloat = .infinity
+    @Environment(\.theme) private var theme
+
+    func body(content: Content) -> some View {
+        AdaptiveInset(wide: theme.z(wide), narrow: theme.z(narrow), below: theme.z(threshold),
+                      maxContentWidth: theme.z(maxContentWidth)) {
+            content
+        }
     }
 }
 

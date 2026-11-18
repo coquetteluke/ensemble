@@ -23,7 +23,10 @@ struct SplitSessionsView: View {
                     SplitPaneView(store: store, window: window, pane: pane, width: widths[index],
                                   isFirst: index == 0, isLast: index == layout.panes.count - 1,
                                   focused: layout.focusedID == pane.id, showsFocus: layout.panes.count > 1)
-                        .frame(width: widths[index])
+                        // Each pane is exactly the view's height with its header at the top: one whose cards cannot
+                        // fit (a very narrow pane at a large zoom) clips at the bottom instead of growing the row and
+                        // pushing the other panes' headers down.
+                        .frame(width: widths[index], height: proxy.size.height, alignment: .top)
                         // A pane narrower than its composer's row clips it instead of drawing over its neighbours.
                         .clipped()
                 }
@@ -124,20 +127,17 @@ struct SplitPaneView: View {
     @Environment(\.isSnapshot) private var isSnapshot
     @Environment(\.zoom) private var zoom
 
-    /// How wide the composer's row is at 100% (measured: `Split pane check` in the snapshot run), with the model's
-    /// effort and fast mode chips and without. Lower these once the composer's row adapts to narrow widths.
-    static let composerWidth: CGFloat = 530
-    static let plainComposerWidth: CGFloat = 430
+    /// The narrowest pane, at 100%, whose composer and status line fit at their most compact (measured: `Split pane
+    /// check` in the snapshot run). Wider panes fit everything at the window's zoom (`ComposerRowLevel`).
+    static let composerWidth: CGFloat = 188
 
     /// The composer shrinks at most to this share of the window's zoom; a pane narrower than that clips its edges.
     static let smallestComposerScale: CGFloat = 0.8
 
-    /// A smaller zoom for the composer when the pane is narrower than its row (at most 20% smaller, so it still matches
-    /// the rest of the window); nil when it fits.
-    static func composerZoom(width: CGFloat, zoom: CGFloat, store: SessionStore, session: SessionModel) -> CGFloat? {
-        let options = store.options(for: session.info.model)
-        let chips = !(options?.effortLevels.isEmpty ?? true) || options?.supportsFastMode == true
-        let needed = (chips ? composerWidth : plainComposerWidth) * zoom
+    /// A smaller zoom for the composer when the pane is narrower than its most compact row (at most 20% smaller, so it
+    /// still matches the rest of the window); nil when it fits.
+    static func composerZoom(width: CGFloat, zoom: CGFloat) -> CGFloat? {
+        let needed = composerWidth * zoom
         guard width < needed else { return nil }
         return max(zoom * smallestComposerScale, CGFloat(Zoom.steps.first ?? 0.7), zoom * width / needed)
     }
@@ -149,7 +149,7 @@ struct SplitPaneView: View {
                 .frame(width: width)
             if let session = store.session(pane.sessionID) {
                 ConversationView(store: store, session: session, window: paneWindow,
-                                 composerZoom: Self.composerZoom(width: width, zoom: zoom, store: store, session: session))
+                                 composerZoom: Self.composerZoom(width: width, zoom: zoom))
                     .frame(width: width)
                     .environment(\.transcriptActions,
                                  MainView.transcriptActions(store: store, session: session, window: window,

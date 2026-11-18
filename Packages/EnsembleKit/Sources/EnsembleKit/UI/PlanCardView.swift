@@ -155,7 +155,8 @@ public struct PlanCardView: View {
     // MARK: Footer
 
     private var footer: some View {
-        HStack(spacing: theme.z(8)) {
+        // Wraps in a narrow pane rather than cutting the labels short.
+        FlowRow(spacing: theme.z(8)) {
             ForEach(Array(proceedModes.enumerated()), id: \.element) { position, mode in
                 Button("Proceed in \(mode.shortLabel)") { decide(.proceed(mode)) }
                     .modifier(PlanButtonStyle(primary: position == 0))
@@ -165,8 +166,8 @@ public struct PlanCardView: View {
             Button("Keep planning") { decide(.keepPlanning(comments: writtenComments)) }
                 .buttonStyle(SecondaryButtonStyle())
                 .help(keepPlanningHelp)
-            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .disabled(store == nil)
         .padding(.horizontal, theme.z(14))
         .padding(.vertical, theme.z(12))

@@ -161,19 +161,173 @@ public struct RemoteAgent: Codable, Hashable, Sendable, Identifiable {
     public var activity: SessionActivity
     /// The agent's own engine session, if the phone wants to open it alone.
     public var sessionID: String?
+    /// True when the agent stopped at its spending cap. Absent from Macs that predate rooms on the phone.
+    public var capped: Bool?
 
-    public init(id: UUID, name: String, model: String, colorHex: String, activity: SessionActivity = .idle, sessionID: String? = nil) {
+    public init(id: UUID, name: String, model: String, colorHex: String, activity: SessionActivity = .idle, sessionID: String? = nil,
+                capped: Bool? = nil) {
         self.id = id
         self.name = name
         self.model = model
         self.colorHex = colorHex
         self.activity = activity
         self.sessionID = sessionID
+        self.capped = capped
     }
 
-    public init(_ spec: AgentSpec, activity: SessionActivity = .idle, sessionID: String? = nil) {
+    public init(_ spec: AgentSpec, activity: SessionActivity = .idle, sessionID: String? = nil, capped: Bool? = nil) {
         self.init(id: spec.id, name: spec.name, model: spec.model.description, colorHex: spec.colorHex,
-                  activity: activity, sessionID: sessionID)
+                  activity: activity, sessionID: sessionID, capped: capped)
+    }
+}
+
+// MARK: - Room decisions
+
+/// Something a room waits on the user for, with the answers the phone may give. The Mac writes the title, text and
+/// choices, so a phone shows a new kind of decision without an update; `kind` only picks the icon.
+/// Added after protocol 3 shipped: older Macs never send it, and older phones ignore it.
+public struct RemoteRoomDecision: Codable, Hashable, Sendable, Identifiable {
+    public enum Kind: String, Codable, Sendable {
+        case approvePlan
+        case writePlan
+        case reviewStalemate
+        case takeover
+        case judge
+        case mergeConflict
+        case verdict
+        /// A kind this phone does not know yet.
+        case other
+
+        public init(from decoder: any Decoder) throws {
+            self = Kind(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .other
+        }
+    }
+
+    /// One line under the text: a plan's assignment (with its agent) or a file in a merge conflict.
+    public struct Item: Codable, Hashable, Sendable {
+        public var agentID: UUID?
+        public var text: String
+
+        public init(agentID: UUID? = nil, text: String) {
+            self.agentID = agentID
+            self.text = text
+        }
+    }
+
+    /// Changes whenever the decision or what it is about changes (a new plan, another run). The Mac refuses an answer
+    /// to an id that is no longer open, so the phone can never approve a plan it did not show.
+    public var id: String
+    public var kind: Kind
+    public var title: String
+    /// The agent it is about.
+    public var agentID: UUID?
+    /// Markdown: the plan, the last review, the reason for a takeover, the verdict.
+    public var text: String?
+    public var items: [Item]
+    /// One line of instructions under the card.
+    public var note: String?
+    public var choices: [RemoteRoomChoice]
+    /// False for a card that waits on nobody (a debate's verdict with Build it): it is not counted as needs you.
+    public var needsYou: Bool
+
+    public init(id: String, kind: Kind, title: String, agentID: UUID? = nil, text: String? = nil, items: [Item] = [],
+                note: String? = nil, choices: [RemoteRoomChoice], needsYou: Bool = true) {
+        self.id = id
+        self.kind = kind
+        self.title = title
+        self.agentID = agentID
+        self.text = text
+        self.items = items
+        self.note = note
+        self.choices = choices
+        self.needsYou = needsYou
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, kind, title, agentID, text, items, note, choices, needsYou }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        kind = try c.decodeIfPresent(Kind.self, forKey: .kind) ?? .other
+        title = try c.decode(String.self, forKey: .title)
+        agentID = try c.decodeIfPresent(UUID.self, forKey: .agentID)
+        text = try c.decodeIfPresent(String.self, forKey: .text)
+        items = try c.decodeIfPresent([Item].self, forKey: .items) ?? []
+        note = try c.decodeIfPresent(String.self, forKey: .note)
+        choices = try c.decodeIfPresent([RemoteRoomChoice].self, forKey: .choices) ?? []
+        needsYou = try c.decodeIfPresent(Bool.self, forKey: .needsYou) ?? true
+    }
+}
+
+/// One answer to a room decision, as a button on the phone.
+public struct RemoteRoomChoice: Codable, Hashable, Sendable, Identifiable {
+    public enum Style: String, Codable, Sendable {
+        case primary
+        case standard
+        case destructive
+
+        public init(from decoder: any Decoder) throws {
+            self = Style(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .standard
+        }
+    }
+
+    /// Whether the answer carries text the user writes.
+    public enum Input: String, Codable, Sendable {
+        case none
+        case optional
+        case required
+
+        public init(from decoder: any Decoder) throws {
+            self = Input(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .required
+        }
+    }
+
+    /// Sent back in `RemoteRoomDecisionReply.choice`.
+    public var id: String
+    public var label: String
+    public var style: Style
+    public var input: Input
+    public var placeholder: String?
+    /// Text the box starts with (the plan outline when you lead).
+    public var template: String?
+
+    public init(id: String, label: String, style: Style = .standard, input: Input = .none, placeholder: String? = nil,
+                template: String? = nil) {
+        self.id = id
+        self.label = label
+        self.style = style
+        self.input = input
+        self.placeholder = placeholder
+        self.template = template
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, label, style, input, placeholder, template }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        label = try c.decode(String.self, forKey: .label)
+        style = try c.decodeIfPresent(Style.self, forKey: .style) ?? .standard
+        input = try c.decodeIfPresent(Input.self, forKey: .input) ?? .none
+        placeholder = try c.decodeIfPresent(String.self, forKey: .placeholder)
+        template = try c.decodeIfPresent(String.self, forKey: .template)
+    }
+}
+
+/// The phone's answer to `RemoteRoom.decision`.
+public struct RemoteRoomDecisionReply: Codable, Hashable, Sendable {
+    public var roomID: UUID
+    /// `RemoteRoomDecision.id` as the phone showed it.
+    public var decisionID: String
+    /// `RemoteRoomChoice.id`.
+    public var choice: String
+    public var text: String?
+
+    public init(roomID: UUID, decisionID: String, choice: String, text: String? = nil) {
+        self.roomID = roomID
+        self.decisionID = decisionID
+        self.choice = choice
+        self.text = text
     }
 }
 
@@ -208,8 +362,22 @@ public struct RemoteRoom: Codable, Hashable, Sendable, Identifiable {
     public var usage: Usage
     public var lastActivity: Date
 
+    // Added after protocol 3 shipped. Older Macs leave them out (they decode as empty), older phones ignore them.
+
+    /// The run's step in the Mac's words ("Waiting for plan approval", "Debating").
+    public var phaseLabel: String?
+    /// Why the room is paused.
+    public var pauseReason: String?
+    /// What the room waits on the user for.
+    public var decision: RemoteRoomDecision?
+    /// Open permission prompts from the room's agents and their subagents, oldest first. Answer them with
+    /// `replyPermission` like any other prompt (each carries its own session id).
+    public var permissions: [PermissionRequest]
+
     public init(id: UUID, title: String, directory: String, mode: RoomMode, agents: [RemoteAgent], leadAgentID: UUID? = nil,
-                state: State, permissionMode: PermissionMode, sessionID: String, usage: Usage = .zero, lastActivity: Date = Date()) {
+                state: State, permissionMode: PermissionMode, sessionID: String, usage: Usage = .zero, lastActivity: Date = Date(),
+                phaseLabel: String? = nil, pauseReason: String? = nil, decision: RemoteRoomDecision? = nil,
+                permissions: [PermissionRequest] = []) {
         self.id = id
         self.title = title
         self.directory = directory
@@ -221,6 +389,45 @@ public struct RemoteRoom: Codable, Hashable, Sendable, Identifiable {
         self.sessionID = sessionID
         self.usage = usage
         self.lastActivity = lastActivity
+        self.phaseLabel = phaseLabel
+        self.pauseReason = pauseReason
+        self.decision = decision
+        self.permissions = permissions
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, directory, mode, agents, leadAgentID, state, permissionMode, sessionID, usage, lastActivity
+        case phaseLabel, pauseReason, decision, permissions
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        directory = try c.decode(String.self, forKey: .directory)
+        mode = try c.decode(RoomMode.self, forKey: .mode)
+        agents = try c.decode([RemoteAgent].self, forKey: .agents)
+        leadAgentID = try c.decodeIfPresent(UUID.self, forKey: .leadAgentID)
+        state = try c.decode(State.self, forKey: .state)
+        permissionMode = try c.decode(PermissionMode.self, forKey: .permissionMode)
+        sessionID = try c.decode(String.self, forKey: .sessionID)
+        usage = try c.decode(Usage.self, forKey: .usage)
+        lastActivity = try c.decode(Date.self, forKey: .lastActivity)
+        phaseLabel = try c.decodeIfPresent(String.self, forKey: .phaseLabel)
+        pauseReason = try c.decodeIfPresent(String.self, forKey: .pauseReason)
+        // A decision this phone cannot read is left out rather than losing the whole room.
+        decision = (try? c.decodeIfPresent(RemoteRoomDecision.self, forKey: .decision)) ?? nil
+        permissions = (try? c.decodeIfPresent([PermissionRequest].self, forKey: .permissions)) ?? []
+    }
+
+    /// True while a run exists that Stop would end.
+    public var isRunActive: Bool {
+        state == .running || state == .paused || decision?.needsYou == true
+    }
+
+    /// Waiting on the user: a decision or a permission prompt.
+    public var needsYou: Bool {
+        decision?.needsYou == true || !permissions.isEmpty
     }
 }
 

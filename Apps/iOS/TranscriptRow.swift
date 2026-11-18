@@ -51,7 +51,9 @@ struct TranscriptRow: View {
             } else if request.isPlan {
                 RemotePlanCard(request: request, client: client, onError: onError)
             } else {
-                PermissionCard(request: request, client: client, onError: onError)
+                // In a room, the agent that asks (its own session, or one of its subagents' prompts).
+                PermissionCard(request: request, client: client, onError: onError,
+                               agent: agents.values.first { $0.sessionID == request.sessionID })
             }
         case .board(_, let from, let to, let text, _):
             BoardMessage(from: agents[from], to: to.compactMap { agents[$0] }, text: text)
@@ -159,6 +161,8 @@ struct PermissionCard: View {
     let request: PermissionRequest
     let client: RemoteClient
     var onError: (String) -> Void
+    /// The room agent that asks, when in a room.
+    var agent: RemoteAgent?
     @State private var busy = false
 
     private var decision: PermissionDecision? { client.permissionDecisions[request.id] }
@@ -173,7 +177,8 @@ struct PermissionCard: View {
                 Text("Permission needed")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(RemoteTheme.primaryText)
-                Spacer()
+                if let agent { AgentTag(agent: agent) }
+                Spacer(minLength: 4)
                 Chip(text: request.kind)
             }
             Text(PermissionDisplay.visible(request.title))

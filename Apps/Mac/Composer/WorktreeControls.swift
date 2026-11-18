@@ -2,29 +2,22 @@ import SwiftUI
 import EnsembleKit
 
 /// In the line under the composer, for sessions in a git repository: the "Work in a copy (git worktree)" switch (before
-/// the first message) and the branch chip. In a copy, the chip switches the copy to another local branch while the
-/// session is idle, asking first when the copy has uncommitted changes.
+/// the first message) and the branch chip, drawn for one of the line's width levels. In a copy, the chip switches the
+/// copy to another local branch while the session is idle (`onPick`). At `.minimal` the switch moves into the
+/// composer's More menu. Loading and the question before a switch are `WorktreeStatusTasks`, applied once around the
+/// line's levels.
 struct WorktreeStatusControls: View {
     let store: SessionStore
     let session: SessionModel
-    @Bindable var window: WindowState
-    @Environment(\.isSnapshot) private var isSnapshot
-    @State private var showBranches = false
-    @State private var pendingSwitch: PendingSwitch?
-
-    struct PendingSwitch: Identifiable {
-        let branch: String
-        let changes: [String]
-        var id: String { branch }
-    }
+    let window: WindowState
+    var level: StatusLineLevel = .full
+    @Binding var showBranches: Bool
+    let onPick: (String) -> Void
 
     var body: some View {
         let inCopy = store.isInWorktree(session.id)
-        let folder = store.projectFolder(for: session)
-        let availability = store.worktrees.availability[folder]
-        let showsSwitch = !hasMessages && !session.isSubagent && (inCopy || (availability != nil && availability != Self.notRepository))
         WorktreeControlsRow(
-            showsSwitch: showsSwitch,
+            showsSwitch: level != .minimal && Self.showsSwitch(store: store, session: session),
             isOn: inCopy,
             switchUnavailableReason: store.worktreeSwitchUnavailableReason(session.id),
             busy: store.worktrees.busy.contains(session.id),
@@ -32,43 +25,34 @@ struct WorktreeStatusControls: View {
             inCopy: inCopy,
             copyPath: store.worktree(for: session.id)?.path ?? (inCopy ? session.directory : nil),
             branchUnavailableReason: store.branchSwitchUnavailableReason(session.id),
+            level: level,
             showBranches: $showBranches,
-            onToggle: toggle,
+            onToggle: { Self.setWorkInCopy($0, session: session, store: store, window: window) },
             branchMenu: {
                 BranchMenuContent(branches: store.worktrees.branches[session.id] ?? [],
                                   current: store.worktrees.currentBranch[session.id]) { branch in
                     showBranches = false
-                    pick(branch)
+                    onPick(branch)
                 }
                 .ensembleTheme()
             })
-        .task(id: session.id) {
-            guard !isSnapshot else { return }
-            await store.checkWorktreeAvailability(folder)
-            await store.loadBranches(for: session.id)
-        }
-        // The agent can change branches itself; read it again after each turn.
-        .onChange(of: session.isWorking) {
-            guard !session.isWorking, !isSnapshot else { return }
-            Task { await store.loadBranches(for: session.id) }
-        }
-        .onChange(of: showBranches) {
-            if showBranches { Task { await store.loadBranches(for: session.id) } }
-        }
-        .confirmationDialog(pendingSwitch.map { "Switch the copy to \($0.branch)?" } ?? "",
-                            isPresented: Binding(get: { pendingSwitch != nil }, set: { if !$0 { pendingSwitch = nil } }),
-                            presenting: pendingSwitch) { pending in
-            Button("Switch to \(pending.branch)") { run(pending.branch) }
-            Button("Cancel", role: .cancel) {}
-        } message: { pending in
-            Text(Self.uncommittedMessage(pending))
-        }
+    }
+
+    struct PendingSwitch: Identifiable {
+        let branch: String
+        let changes: [String]
+        var id: String { branch }
     }
 
     static let notRepository = "Not a git repository"
 
-    private var hasMessages: Bool {
-        session.items.contains { if case .user = $0 { true } else { false } }
+    /// The switch shows before the first message, for a top-level session in a git repository (or one in a copy).
+    static func showsSwitch(store: SessionStore, session: SessionModel) -> Bool {
+        let hasMessages = session.items.contains { if case .user = $0 { true } else { false } }
+        guard !hasMessages, !session.isSubagent else { return false }
+        if store.isInWorktree(session.id) { return true }
+        let availability = store.worktrees.availability[store.projectFolder(for: session)]
+        return availability != nil && availability != notRepository
     }
 
     static func uncommittedMessage(_ pending: PendingSwitch) -> String {
@@ -77,7 +61,9 @@ struct WorktreeStatusControls: View {
         return "The copy has uncommitted changes in \(count) (\(list)). They come along to \(pending.branch). If they conflict with it, git stops and nothing changes."
     }
 
-    private func toggle(_ on: Bool) {
+    /// Turns "Work in a copy" on or off. The session is replaced by one in the copy (or the folder); its draft and
+    /// attachments follow it and the window opens it.
+    static func setWorkInCopy(_ on: Bool, session: SessionModel, store: SessionStore, window: WindowState) {
         let oldID = session.id
         Task {
             if let replacement = await store.setWorkInCopy(on, for: oldID) {
@@ -92,28 +78,66 @@ struct WorktreeStatusControls: View {
         }
     }
 
-    private func pick(_ branch: String) {
+    /// Switches the copy to `branch`, or asks first (`ask`) when it has uncommitted changes.
+    static func pick(_ branch: String, session: SessionModel, store: SessionStore, ask: @escaping @MainActor (PendingSwitch) -> Void) {
         Task {
             let changes = await store.uncommittedChanges(in: session.id)
             if changes.isEmpty {
-                run(branch)
+                switchBranch(branch, sessionID: session.id, store: store)
             } else {
-                pendingSwitch = PendingSwitch(branch: branch, changes: changes)
+                ask(PendingSwitch(branch: branch, changes: changes))
             }
         }
     }
 
-    private func run(_ branch: String) {
-        let id = session.id
+    static func switchBranch(_ branch: String, sessionID: String, store: SessionStore) {
         Task {
-            if !(await store.switchBranch(branch, for: id)), let error = store.worktrees.errors[id] {
+            if !(await store.switchBranch(branch, for: sessionID)), let error = store.worktrees.errors[sessionID] {
                 store.lastError = error
             }
         }
     }
 }
 
-/// The switch and the branch chip, drawn from plain values (snapshots use it directly).
+/// Loads whether the folder is a git repository and the session's branches, reads them again after each turn (the agent
+/// can change branches itself) and when the branch menu opens, and asks before switching a copy with uncommitted
+/// changes.
+struct WorktreeStatusTasks: ViewModifier {
+    let store: SessionStore
+    let session: SessionModel
+    @Binding var showBranches: Bool
+    @Binding var pendingSwitch: WorktreeStatusControls.PendingSwitch?
+    @Environment(\.isSnapshot) private var isSnapshot
+
+    func body(content: Content) -> some View {
+        content
+            .task(id: session.id) {
+                guard !isSnapshot else { return }
+                await store.checkWorktreeAvailability(store.projectFolder(for: session))
+                await store.loadBranches(for: session.id)
+            }
+            .onChange(of: session.isWorking) {
+                guard !session.isWorking, !isSnapshot else { return }
+                Task { await store.loadBranches(for: session.id) }
+            }
+            .onChange(of: showBranches) {
+                if showBranches { Task { await store.loadBranches(for: session.id) } }
+            }
+            .confirmationDialog(pendingSwitch.map { "Switch the copy to \($0.branch)?" } ?? "",
+                                isPresented: Binding(get: { pendingSwitch != nil }, set: { if !$0 { pendingSwitch = nil } }),
+                                presenting: pendingSwitch) { pending in
+                Button("Switch to \(pending.branch)") {
+                    WorktreeStatusControls.switchBranch(pending.branch, sessionID: session.id, store: store)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { pending in
+                Text(WorktreeStatusControls.uncommittedMessage(pending))
+            }
+    }
+}
+
+/// The switch and the branch chip, drawn from plain values. Narrower levels shorten the switch's label and then show
+/// its icon only, and cut the branch name shorter and then to its icon; the tooltips keep the full text.
 struct WorktreeControlsRow<Menu: View>: View {
     let showsSwitch: Bool
     let isOn: Bool
@@ -123,13 +147,14 @@ struct WorktreeControlsRow<Menu: View>: View {
     let inCopy: Bool
     let copyPath: String?
     let branchUnavailableReason: String?
+    var level: StatusLineLevel = .full
     @Binding var showBranches: Bool
     let onToggle: (Bool) -> Void
     @ViewBuilder let branchMenu: () -> Menu
     @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(spacing: theme.z(10)) {
+        HStack(spacing: theme.z(level == .full ? 10 : 8)) {
             if showsSwitch { workInCopySwitch }
             if let branch { branchChip(branch) }
         }
@@ -139,10 +164,20 @@ struct WorktreeControlsRow<Menu: View>: View {
         HStack(spacing: theme.z(6)) {
             Toggle(isOn: Binding(get: { isOn }, set: { onToggle($0) })) {
                 HStack(spacing: theme.z(4)) {
-                    Text("Work in a copy")
-                        .foregroundStyle(switchUnavailableReason == nil ? theme.textSecondary : theme.textTertiary)
-                    Text("(git worktree)")
-                        .foregroundStyle(theme.textTertiary)
+                    switch level {
+                    case .full:
+                        Text("Work in a copy")
+                            .foregroundStyle(switchUnavailableReason == nil ? theme.textSecondary : theme.textTertiary)
+                        Text("(git worktree)")
+                            .foregroundStyle(theme.textTertiary)
+                    case .short:
+                        Text("Work in a copy")
+                            .foregroundStyle(switchUnavailableReason == nil ? theme.textSecondary : theme.textTertiary)
+                    case .icons, .minimal:
+                        Image(systemName: "square.on.square")
+                            .font(theme.font(size: 10))
+                            .foregroundStyle(switchUnavailableReason == nil ? theme.textSecondary : theme.textTertiary)
+                    }
                 }
             }
             .toggleStyle(CompactSwitchStyle())
@@ -152,7 +187,7 @@ struct WorktreeControlsRow<Menu: View>: View {
             if busy { Spinner(size: 9) }
         }
         .help(switchUnavailableReason ?? (isOn ? "This session works in its own git worktree, on its own branch. Turn off to work in the project folder"
-            : "Runs this session in its own git worktree on a new branch, so other sessions in this project keep their own files"))
+            : "Work in a copy (git worktree): runs this session in its own git worktree on a new branch, so other sessions in this project keep their own files"))
         .accessibilityLabel("Work in a copy (git worktree)")
     }
 
@@ -164,10 +199,12 @@ struct WorktreeControlsRow<Menu: View>: View {
             HStack(spacing: theme.z(4)) {
                 Image(systemName: inCopy ? "square.on.square" : "arrow.triangle.branch")
                     .font(theme.font(size: 10))
-                Text(branch)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: theme.z(160), alignment: .leading)
+                if level < .icons {
+                    Text(branch)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: theme.z(level == .full ? 160 : 90), alignment: .leading)
+                }
                 if switchable {
                     Image(systemName: "chevron.down")
                         .font(theme.font(size: 7, weight: .bold))

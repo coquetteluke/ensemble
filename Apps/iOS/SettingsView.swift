@@ -1,5 +1,6 @@
 import EnsembleKit
 import SwiftUI
+import UIKit
 
 /// Connection details, reconnect, pair again, unpair.
 struct SettingsView: View {
@@ -7,6 +8,9 @@ struct SettingsView: View {
     @Environment(RemoteAppModel.self) private var model
     @State private var showPairing = false
     @State private var confirmUnpair = false
+    @AppStorage(RemoteNotifier.enabledKey) private var alerts = true
+    @State private var notificationsDenied = false
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         List {
@@ -28,6 +32,20 @@ struct SettingsView: View {
                 if !client.isInProcess {
                     Button("Reconnect now") { client.reconnectNow() }
                 }
+            }
+            .listRowBackground(RemoteTheme.card)
+
+            Section {
+                Toggle("Notify me when something needs me", isOn: $alerts)
+                if alerts && notificationsDenied {
+                    Button("Turn on notifications in iOS Settings") {
+                        if let url = URL(string: UIApplication.openNotificationSettingsURLString) { openURL(url) }
+                    }
+                }
+            } header: {
+                Text("Alerts")
+            } footer: {
+                Text("Works while this app is open and for about half a minute after you leave it. For alerts at any time, turn on Send alerts through ntfy in Settings > Alerts on your Mac.")
             }
             .listRowBackground(RemoteTheme.card)
 
@@ -71,6 +89,10 @@ struct SettingsView: View {
             NavigationStack { PairingView(isSheet: true) }
                 .environment(model)
                 .preferredColorScheme(.dark)
+        }
+        .task(id: alerts) {
+            if alerts { await RemoteNotifier.requestAuthorization() }
+            notificationsDenied = await RemoteNotifier.authorizationStatus() == .denied
         }
         .confirmationDialog("Unpair this iPhone?", isPresented: $confirmUnpair, titleVisibility: .visible) {
             Button("Unpair", role: .destructive) { model.unpair() }

@@ -241,7 +241,7 @@ public enum RemoteKeychain {
         return result as? Data
     }
 
-    public static func write(_ data: Data, service: String, account: String) throws {
+    public static func write(_ data: Data, service: String, account: String, label: String = "Ensemble Remote pairing") throws {
         let query = baseQuery(service: service, account: account)
         let update: [String: Any] = [kSecValueData as String: data]
         let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
@@ -250,7 +250,7 @@ public enum RemoteKeychain {
         var add = query
         add[kSecValueData as String] = data
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        add[kSecAttrLabel as String] = "Ensemble Remote pairing"
+        add[kSecAttrLabel as String] = label
         let addStatus = SecItemAdd(add as CFDictionary, nil)
         guard addStatus == errSecSuccess else { throw Failure(status: addStatus) }
     }

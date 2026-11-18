@@ -2,72 +2,137 @@ import SwiftUI
 import EnsembleKit
 
 /// Under the composer: session cost and tokens (opens the usage popover), "Work in a copy" and the branch chip
-/// (`WorktreeControls.swift`), the Claude plan limit ring and a small context meter.
+/// (`WorktreeControls.swift`), the Claude plan limit ring and a small context meter. Shows the widest level that fits
+/// (`StatusLineLevel`): labels shorten, then items keep their icons only (the tooltips keep the full text), then the
+/// "Work in a copy" switch moves into the composer's More menu (`onWorktreeSwitchHidden`).
 struct StatusLine: View {
     let store: SessionStore
     let session: SessionModel
     @Bindable var window: WindowState
     /// Snapshots pass a fixed plan meter; the app reads the Claude engine.
     var planMeter: PlanLimitMeter?
+    /// Told whether the level on screen leaves out the "Work in a copy" switch.
+    var onWorktreeSwitchHidden: ((Bool) -> Void)?
     @Environment(\.theme) private var theme
+    @Environment(\.isSnapshot) private var isSnapshot
     @State private var showUsage = false
+    @State private var showBranches = false
+    @State private var pendingSwitch: WorktreeStatusControls.PendingSwitch?
+    @State private var planLoader = PlanLimitLoader()
 
     var body: some View {
-        let usage = session.usage
-        let context = store.contextBreakdown(for: session)
-        HStack(spacing: theme.z(12)) {
-            Button {
-                showUsage.toggle()
-            } label: {
-                HStack(spacing: theme.z(5)) {
-                    Image(systemName: "chart.bar")
-                        .font(theme.font(size: 10.5))
-                    Text("\(Format.usd(usage.costUSD))  \(Format.tokens(usage.inputTokens + usage.outputTokens)) tokens")
-                        .monospacedDigit()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Usage for this session")
-            .onChange(of: window.showUsage) {
-                if window.showUsage {
-                    window.showUsage = false
-                    showUsage = true
-                }
-            }
-            .popover(isPresented: $showUsage, arrowEdge: .top) {
-                UsagePopover(usage: usage, title: session.title, store: store) {
-                    showUsage = false
-                    window.route = .usage
-                }
-                .ensembleTheme()
-            }
-
-            PowerStatusChip(store: store)
-
-            WorktreeStatusControls(store: store, session: session, window: window)
-
-            Spacer(minLength: theme.z(8))
-
-            PlanLimitStatusItem(store: store, fixedMeter: planMeter) { showUsage = true }
-
-            Button {
-                if !window.showContextPanel { window.toggleContextPanel() }
-            } label: {
-                HStack(spacing: theme.z(6)) {
-                    ContextRing(fraction: context.fractionUsed)
-                    Text("\(Format.wholePercent(context.fractionUsed)) context")
-                        .monospacedDigit()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("\(Format.tokens(context.usedTokens)) of \(Format.tokens(context.limitTokens)) tokens used")
+        ViewThatFits(in: .horizontal) {
+            line(.full)
+            line(.short)
+            line(.icons)
+            line(.minimal)
         }
         .font(theme.font(size: 11.5))
         .foregroundStyle(theme.textTertiary)
         .padding(.horizontal, theme.z(10))
         .frame(height: theme.z(30))
+        .onChange(of: window.showUsage) {
+            if window.showUsage {
+                window.showUsage = false
+                showUsage = true
+            }
+        }
+        .modifier(WorktreeStatusTasks(store: store, session: session, showBranches: $showBranches, pendingSwitch: $pendingSwitch))
+        .modifier(PlanLimitRefresh(store: store, loader: planLoader, enabled: planMeter == nil && !isSnapshot))
+    }
+
+    private func line(_ level: StatusLineLevel) -> some View {
+        HStack(spacing: theme.z(level.spacing)) {
+            usageButton(level)
+            PowerStatusChip(store: store)
+            WorktreeStatusControls(store: store, session: session, window: window, level: level, showBranches: $showBranches) { branch in
+                WorktreeStatusControls.pick(branch, session: session, store: store) { pendingSwitch = $0 }
+            }
+            Spacer(minLength: theme.z(8))
+            PlanLimitStatusItem(meter: planMeter ?? planLoader.meter, compact: level >= .icons) { showUsage = true }
+            contextButton(level)
+        }
+        .onAppear { onWorktreeSwitchHidden?(level == .minimal) }
+    }
+
+    private func usageButton(_ level: StatusLineLevel) -> some View {
+        let usage = session.usage
+        let cost = Format.usd(usage.costUSD)
+        let tokens = Format.tokens(usage.inputTokens + usage.outputTokens)
+        return Button {
+            showUsage.toggle()
+        } label: {
+            HStack(spacing: theme.z(5)) {
+                Image(systemName: "chart.bar")
+                    .font(theme.font(size: 10.5))
+                switch level {
+                case .full: Text("\(cost)  \(tokens) tokens").monospacedDigit()
+                case .short, .icons: Text(cost).monospacedDigit()
+                case .minimal: EmptyView()
+                }
+            }
+            .lineLimit(1)
+            .fixedSize()
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(level == .full ? "Usage for this session" : "Usage for this session: \(cost), \(tokens) tokens")
+        .accessibilityLabel("Usage for this session")
+        .accessibilityValue("\(cost), \(tokens) tokens")
+        .popover(isPresented: $showUsage, arrowEdge: .top) {
+            UsagePopover(usage: usage, title: session.title, store: store) {
+                showUsage = false
+                window.route = .usage
+            }
+            .ensembleTheme()
+        }
+    }
+
+    private func contextButton(_ level: StatusLineLevel) -> some View {
+        let context = store.contextBreakdown(for: session)
+        let percent = Format.wholePercent(context.fractionUsed)
+        return Button {
+            if !window.showContextPanel { window.toggleContextPanel() }
+        } label: {
+            HStack(spacing: theme.z(6)) {
+                ContextRing(fraction: context.fractionUsed)
+                switch level {
+                case .full: Text("\(percent) context").monospacedDigit()
+                case .short, .icons: Text(percent).monospacedDigit()
+                case .minimal: EmptyView()
+                }
+            }
+            .lineLimit(1)
+            .fixedSize()
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("\(percent) context: \(Format.tokens(context.usedTokens)) of \(Format.tokens(context.limitTokens)) tokens used")
+        .accessibilityLabel("Context")
+        .accessibilityValue("\(percent) used")
+    }
+}
+
+/// How much of the status line fits, widest first.
+enum StatusLineLevel: Int, Comparable {
+    /// "$0.42  45.6k tokens", "Work in a copy (git worktree)", the branch name, "5h 60%", "8% context".
+    case full
+    /// "$0.42", "Work in a copy", a shorter branch name, "8%".
+    case short
+    /// "$0.42", the switch and the branch chip with icons only, the plan ring without its text.
+    case icons
+    /// Icons and rings only; the "Work in a copy" switch is in the composer's More menu.
+    case minimal
+
+    static func < (lhs: StatusLineLevel, rhs: StatusLineLevel) -> Bool { lhs.rawValue < rhs.rawValue }
+
+    var spacing: CGFloat {
+        switch self {
+        case .full: 12
+        case .short: 10
+        case .icons: 8
+        case .minimal: 7
+        }
     }
 }
 

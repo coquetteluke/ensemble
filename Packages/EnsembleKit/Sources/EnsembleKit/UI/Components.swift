@@ -401,6 +401,110 @@ private struct SelectableText: ViewModifier {
     }
 }
 
+// MARK: - Layouts for narrow places
+
+/// Children left to right, starting a new line when the next one would not fit, so a row of buttons in a narrow card
+/// (a split pane, a large zoom) wraps instead of cutting a label to "Allow o...". Each child gets its ideal width, or
+/// the row's width when that is less. Lines are leading-aligned; children are centred on their line.
+public struct FlowRow: Layout {
+    var spacing: CGFloat
+    var lineSpacing: CGFloat
+
+    public init(spacing: CGFloat, lineSpacing: CGFloat? = nil) {
+        self.spacing = spacing
+        self.lineSpacing = lineSpacing ?? spacing
+    }
+
+    private struct Line {
+        var items: [(index: Int, size: CGSize)] = []
+        var width: CGFloat = 0
+        var height: CGFloat = 0
+    }
+
+    private func lines(width: CGFloat?, subviews: Subviews) -> [Line] {
+        let limit = width ?? .infinity
+        var lines: [Line] = []
+        var line = Line()
+        for index in subviews.indices {
+            var size = subviews[index].sizeThatFits(.unspecified)
+            if size.width > limit { size = subviews[index].sizeThatFits(ProposedViewSize(width: limit, height: nil)) }
+            if !line.items.isEmpty, line.width + spacing + size.width > limit {
+                lines.append(line)
+                line = Line()
+            }
+            line.width += (line.items.isEmpty ? 0 : spacing) + size.width
+            line.height = max(line.height, size.height)
+            line.items.append((index, size))
+        }
+        if !line.items.isEmpty { lines.append(line) }
+        return lines
+    }
+
+    public func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let lines = lines(width: proposal.width, subviews: subviews)
+        let height = lines.reduce(0) { $0 + $1.height } + lineSpacing * CGFloat(max(0, lines.count - 1))
+        return CGSize(width: lines.map(\.width).max() ?? 0, height: height)
+    }
+
+    public func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for line in lines(width: bounds.width, subviews: subviews) {
+            var x = bounds.minX
+            for item in line.items {
+                subviews[item.index].place(at: CGPoint(x: x, y: y + (line.height - item.size.height) / 2), anchor: .topLeading,
+                                           proposal: ProposedViewSize(item.size))
+                x += item.size.width + spacing
+            }
+            y += line.height + lineSpacing
+        }
+    }
+}
+
+/// Side padding that tightens when the offered width is under `threshold` (a narrow split pane), around content at
+/// most `maxContentWidth` wide and centred. Takes the whole offered width, or more when the content cannot fit in it,
+/// so a parent that clips cuts both edges evenly.
+public struct AdaptiveInset: Layout {
+    var wide: CGFloat
+    var narrow: CGFloat
+    var threshold: CGFloat
+    var maxContentWidth: CGFloat
+
+    public init(wide: CGFloat, narrow: CGFloat, below threshold: CGFloat, maxContentWidth: CGFloat = .infinity) {
+        self.wide = wide
+        self.narrow = narrow
+        self.threshold = threshold
+        self.maxContentWidth = maxContentWidth
+    }
+
+    /// The padding on each side at this width (the wide one when the width is not known).
+    public func inset(for width: CGFloat?) -> CGFloat {
+        guard let width else { return wide }
+        return width < threshold ? narrow : wide
+    }
+
+    private func contentProposal(_ proposal: ProposedViewSize) -> ProposedViewSize {
+        let inset = inset(for: proposal.width)
+        return ProposedViewSize(width: proposal.width.map { min(max(0, $0 - 2 * inset), maxContentWidth) }, height: proposal.height)
+    }
+
+    public func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let content = subviews.reduce(CGSize.zero) { size, child in
+            let fitted = child.sizeThatFits(contentProposal(proposal))
+            return CGSize(width: max(size.width, fitted.width), height: max(size.height, fitted.height))
+        }
+        let needed = content.width + 2 * inset(for: proposal.width)
+        return CGSize(width: max(needed, proposal.width ?? 0), height: content.height)
+    }
+
+    public func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        // The same padding as when measured: an overflowing child makes the bounds wider than the offer.
+        let content = contentProposal(ProposedViewSize(width: proposal.width ?? bounds.width, height: bounds.height))
+        for child in subviews {
+            child.place(at: CGPoint(x: bounds.midX, y: bounds.minY), anchor: .top, proposal: content)
+        }
+    }
+}
+
 /// Copies plain text to the system pasteboard.
 @MainActor public func copyToPasteboard(_ text: String) {
     #if canImport(AppKit)

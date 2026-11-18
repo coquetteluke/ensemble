@@ -92,6 +92,7 @@ struct AttentionSettingsTab: View {
     var body: some View {
         Form {
             AttentionSettingsSection()
+            NtfyAlertsSection()
         }
         .formStyle(.grouped)
     }

@@ -83,7 +83,8 @@ struct PullRequestBar: View {
 
 // MARK: Rows
 
-/// "#42 Fix the README · 2 checks failing · Changes requested" with Fix checks, Push and the menu.
+/// "#42 Fix the README · 2 checks failing · Changes requested" with Fix checks, Push and the menu. In a narrow pane the
+/// status and the buttons keep their icons only (the tooltips keep the words), then move to a second line.
 private struct PullRequestRow: View {
     @Bindable var controller: GitHubPullRequestController
     let pr: GitHubPullRequest
@@ -91,39 +92,82 @@ private struct PullRequestRow: View {
     @Environment(\.openURL) private var openURL
 
     var body: some View {
-        HStack(spacing: theme.z(8)) {
-            Image(systemName: pr.state == .merged ? "arrow.triangle.merge" : "arrow.triangle.pull")
-                .font(theme.font(size: 12.5, weight: .semibold))
-                .foregroundStyle(GitHubColors.state(pr, theme))
-                .frame(width: theme.z(16))
-                .help(pr.stateLabel)
-            Button {
-                if let url = controller.pullRequestURL { openURL(url) }
-            } label: {
-                HStack(spacing: theme.z(6)) {
-                    Text("#\(pr.number)")
-                        .font(theme.font(size: 12.5, weight: .semibold))
-                        .foregroundStyle(theme.textPrimary)
-                    Text(pr.title)
-                        .font(theme.font(size: 12.5))
-                        .foregroundStyle(theme.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .contentShape(Rectangle())
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: theme.z(8)) {
+                stateIcon
+                title
+                status(compact: false)
+                actions(iconOnly: false)
+                PullRequestMenu(controller: controller, pr: pr)
             }
-            .buttonStyle(.plain)
-            .help("Open #\(pr.number) on GitHub")
-            .layoutPriority(-1)
-            Spacer(minLength: theme.z(6))
-            status
-            actions
-            PullRequestMenu(controller: controller, pr: pr)
+            HStack(spacing: theme.z(8)) {
+                stateIcon
+                title
+                status(compact: true)
+                actions(iconOnly: true)
+                PullRequestMenu(controller: controller, pr: pr)
+            }
+            VStack(alignment: .leading, spacing: theme.z(2)) {
+                HStack(spacing: theme.z(8)) {
+                    stateIcon
+                    title
+                    PullRequestMenu(controller: controller, pr: pr)
+                }
+                ViewThatFits(in: .horizontal) {
+                    secondLine(compactStatus: false, iconOnly: false)
+                    secondLine(compactStatus: true, iconOnly: false)
+                    secondLine(compactStatus: true, iconOnly: true)
+                }
+            }
+            .padding(.vertical, theme.z(5))
         }
     }
 
-    @ViewBuilder private var status: some View {
-        HStack(spacing: theme.z(10)) {
+    private func secondLine(compactStatus: Bool, iconOnly: Bool) -> some View {
+        HStack(spacing: theme.z(8)) {
+            status(compact: compactStatus)
+            Spacer(minLength: theme.z(6))
+            actions(iconOnly: iconOnly)
+        }
+        .padding(.leading, theme.z(24))
+        .padding(.trailing, theme.z(4))
+    }
+
+    private var stateIcon: some View {
+        Image(systemName: pr.state == .merged ? "arrow.triangle.merge" : "arrow.triangle.pull")
+            .font(theme.font(size: 12.5, weight: .semibold))
+            .foregroundStyle(GitHubColors.state(pr, theme))
+            .frame(width: theme.z(16))
+            .help(pr.stateLabel)
+    }
+
+    /// "#42" and the title, which takes the room left (and at least a short stretch, so a narrow pane picks a more
+    /// compact row rather than hiding the title).
+    private var title: some View {
+        Button {
+            if let url = controller.pullRequestURL { openURL(url) }
+        } label: {
+            HStack(spacing: theme.z(6)) {
+                Text("#\(pr.number)")
+                    .font(theme.font(size: 12.5, weight: .semibold))
+                    .foregroundStyle(theme.textPrimary)
+                    .fixedSize()
+                Text(pr.title)
+                    .font(theme.font(size: 12.5))
+                    .foregroundStyle(theme.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(minWidth: 0, idealWidth: theme.z(110), maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open #\(pr.number) on GitHub: \(pr.title)")
+        .layoutPriority(-1)
+    }
+
+    private func status(compact: Bool) -> some View {
+        HStack(spacing: theme.z(compact ? 8 : 10)) {
             if pr.state != .open || pr.isDraft {
                 StateBadge(text: pr.stateLabel, tint: GitHubColors.state(pr, theme))
             }
@@ -131,35 +175,52 @@ private struct PullRequestRow: View {
                 if pr.autoMergeEnabled {
                     HStack(spacing: theme.z(4)) {
                         Image(systemName: "arrow.triangle.merge").font(theme.font(size: 11, weight: .semibold))
-                        Text("Auto-merge on").font(theme.font(size: 12))
+                        if !compact { Text("Auto-merge on").font(theme.font(size: 12)) }
                     }
                     .foregroundStyle(theme.accent)
                     .lineLimit(1)
-                    .help("GitHub merges #\(pr.number) once its required checks and reviews pass")
+                    .help("Auto-merge on: GitHub merges #\(pr.number) once its required checks and reviews pass")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Auto-merge on")
                 }
                 if let decision = pr.reviewDecision {
-                    Text(decision.label)
-                        .font(theme.font(size: 12))
-                        .foregroundStyle(GitHubColors.review(decision, theme))
-                        .lineLimit(1)
+                    Group {
+                        if compact {
+                            Image(systemName: Self.reviewSymbol(decision)).font(theme.font(size: 11.5, weight: .medium))
+                        } else {
+                            Text(decision.label).font(theme.font(size: 12))
+                        }
+                    }
+                    .foregroundStyle(GitHubColors.review(decision, theme))
+                    .lineLimit(1)
+                    .help(decision.label)
+                    .accessibilityLabel(decision.label)
                 }
-                ChecksSummaryView(pr: pr)
+                ChecksSummaryView(pr: pr, compact: compact)
             }
         }
         .fixedSize()
     }
 
-    @ViewBuilder private var actions: some View {
+    static func reviewSymbol(_ decision: GitHubPullRequest.ReviewDecision) -> String {
+        switch decision {
+        case .approved: "checkmark.seal"
+        case .changesRequested: "exclamationmark.bubble"
+        case .reviewRequired: "eye"
+        }
+    }
+
+    @ViewBuilder private func actions(iconOnly: Bool) -> some View {
         if pr.isOpen, !pr.failingChecks.isEmpty {
             BarButton(title: controller.busy.contains(.fixing) ? "Fetching logs" : "Fix checks", symbol: "wrench.and.screwdriver",
-                      busy: controller.busy.contains(.fixing),
+                      busy: controller.busy.contains(.fixing), iconOnly: iconOnly,
                       help: "Send the failed logs to the agent as one message") {
                 Task { await controller.fixFailingChecks() }
             }
         }
         if pr.isOpen, let plan = controller.pushPlan {
             BarButton(title: controller.busy.contains(.pushing) ? "Pushing" : "Push", symbol: "arrow.up",
-                      busy: controller.busy.contains(.pushing),
+                      busy: controller.busy.contains(.pushing), iconOnly: iconOnly,
                       help: "Push \(plan.commits.map { $0 == 1 ? "1 commit" : "\($0) commits" } ?? plan.branch) to \(plan.remoteName)") {
                 Task { await controller.requestPush() }
             }
@@ -167,15 +228,17 @@ private struct PullRequestRow: View {
     }
 }
 
-/// The checks in one item: a coloured symbol and "2 checks failing", with each check in the tooltip.
+/// The checks in one item: a coloured symbol and "2 checks failing" (the symbol and the count when `compact`), with
+/// each check in the tooltip.
 private struct ChecksSummaryView: View {
     let pr: GitHubPullRequest
+    var compact = false
     @Environment(\.theme) private var theme
 
     var body: some View {
         let summary = pr.checkSummary
         if summary.overall != .none {
-            HStack(spacing: theme.z(5)) {
+            HStack(spacing: theme.z(compact ? 4 : 5)) {
                 switch summary.overall {
                 case .pending:
                     Spinner(size: 10, lineWidth: 1.6, color: theme.warning)
@@ -184,12 +247,24 @@ private struct ChecksSummaryView: View {
                 default:
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.success)
                 }
-                Text(summary.label)
+                Text(compact ? "\(Self.count(summary))" : summary.label)
+                    .monospacedDigit()
                     .foregroundStyle(summary.overall == .failing ? theme.danger : theme.textSecondary)
             }
             .font(theme.font(size: 12))
             .lineLimit(1)
-            .help(pr.checks.map { "\($0.label): \(Self.word($0.bucket))" }.joined(separator: "\n"))
+            .help(([summary.label] + pr.checks.map { "\($0.label): \(Self.word($0.bucket))" }).joined(separator: "\n"))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(summary.label)
+        }
+    }
+
+    /// The number the compact item shows: failing checks, else pending ones, else passing ones.
+    static func count(_ summary: GitHubCheckSummary) -> Int {
+        switch summary.overall {
+        case .failing: summary.failing
+        case .pending: summary.pending
+        default: summary.passing + summary.skipped
         }
     }
 
@@ -204,7 +279,8 @@ private struct ChecksSummaryView: View {
     }
 }
 
-/// A branch without a pull request: its name, how far ahead it is, and Create pull request.
+/// A branch without a pull request: its name, how far ahead it is, and Create pull request. In a narrow pane the details
+/// and the button go under the name.
 private struct BranchRow: View {
     @Bindable var controller: GitHubPullRequestController
     let branch: String
@@ -212,16 +288,18 @@ private struct BranchRow: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(spacing: theme.z(8)) {
+        NarrowBarRow {
             BranchName(branch)
+        } detail: {
             if let detail {
                 Text(detail)
                     .font(theme.font(size: 12))
                     .foregroundStyle(theme.textTertiary)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .help(detail)
             }
-            Spacer(minLength: theme.z(6))
+        } trailing: {
             Button {
                 Task { await controller.beginPullRequest() }
             } label: {
@@ -261,21 +339,24 @@ private struct DefaultBranchRow: View {
     @Environment(\.isSnapshot) private var isSnapshot
 
     var body: some View {
-        HStack(spacing: theme.z(8)) {
+        NarrowBarRow {
             BranchName(branch)
+        } detail: {
             Text("Pull requests need their own branch")
                 .font(theme.font(size: 12))
                 .foregroundStyle(theme.textTertiary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-            Spacer(minLength: theme.z(6))
+                .help("Pull requests need their own branch")
+        } trailing: {
             BarButton(title: "Create branch", symbol: "plus", busy: controller.busy.contains(.creatingBranch),
                       help: "Make a branch from here and switch this folder to it") {
                 controller.beginCreateBranch()
             }
-            .popover(isPresented: branchShown, arrowEdge: .top) {
-                CreateBranchPopover(controller: controller)
-            }
+        }
+        // On the row rather than the button, which the row's layouts draw more than once.
+        .popover(isPresented: branchShown, arrowEdge: .top) {
+            CreateBranchPopover(controller: controller)
         }
     }
 
@@ -284,7 +365,8 @@ private struct DefaultBranchRow: View {
     }
 }
 
-/// gh is missing or signed out: what to run in Terminal, and a close button.
+/// gh is missing or signed out: what to run in Terminal, and a close button. In a narrow pane the command goes under the
+/// title.
 private struct NoteRow: View {
     let symbol: String
     let title: String
@@ -295,29 +377,60 @@ private struct NoteRow: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(spacing: theme.z(8)) {
-            Image(systemName: symbol)
-                .font(theme.font(size: 12))
-                .foregroundStyle(theme.warning)
-                .frame(width: theme.z(16))
-            Text(title)
-                .font(theme.font(size: 12.5, weight: .medium))
-                .foregroundStyle(theme.textPrimary)
-                .lineLimit(1)
-            HStack(spacing: theme.z(5)) {
-                Text(lead)
-                CodeChip(code)
-                if let trail { Text(trail) }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: theme.z(8)) {
+                icon
+                titleText.lineLimit(1)
+                command
+                Spacer(minLength: theme.z(6))
+                buttons
             }
-            .font(theme.font(size: 12))
-            .foregroundStyle(theme.textTertiary)
-            .lineLimit(1)
-            Spacer(minLength: theme.z(6))
-            IconButton("arrow.clockwise", help: "Check again", size: 24) {
-                Task { await controller.refresh(force: true) }
+            VStack(alignment: .leading, spacing: theme.z(2)) {
+                HStack(spacing: theme.z(8)) {
+                    icon
+                    titleText
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: theme.z(6))
+                    buttons
+                }
+                command
+                    .padding(.leading, theme.z(24))
             }
-            IconButton("xmark", help: "Hide for this session", size: 24) { controller.isDismissed = true }
+            .padding(.vertical, theme.z(5))
         }
+    }
+
+    private var icon: some View {
+        Image(systemName: symbol)
+            .font(theme.font(size: 12))
+            .foregroundStyle(theme.warning)
+            .frame(width: theme.z(16))
+    }
+
+    private var titleText: some View {
+        Text(title)
+            .font(theme.font(size: 12.5, weight: .medium))
+            .foregroundStyle(theme.textPrimary)
+    }
+
+    private var command: some View {
+        HStack(spacing: theme.z(5)) {
+            Text(lead)
+            CodeChip(code)
+            if let trail { Text(trail) }
+        }
+        .font(theme.font(size: 12))
+        .foregroundStyle(theme.textTertiary)
+        .lineLimit(1)
+        .fixedSize()
+    }
+
+    @ViewBuilder private var buttons: some View {
+        IconButton("arrow.clockwise", help: "Check again", size: 24) {
+            Task { await controller.refresh(force: true) }
+        }
+        IconButton("xmark", help: "Hide for this session", size: 24) { controller.isDismissed = true }
     }
 }
 
@@ -335,14 +448,46 @@ private struct FailedRow: View {
             Text("Could not check for a pull request: \(message)")
                 .font(theme.font(size: 12.5))
                 .foregroundStyle(theme.textSecondary)
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
                 .help(message)
             Spacer(minLength: theme.z(6))
             BarButton(title: "Try again", symbol: nil, busy: controller.isRefreshing, help: "Ask GitHub again") {
                 Task { await controller.refresh(force: true) }
             }
             IconButton("xmark", help: "Hide for this session", size: 24) { controller.isDismissed = true }
+        }
+    }
+}
+
+/// A branch row: the name, a detail and a control on one line, or in a narrow pane the name on its own line and the
+/// detail and the control under it.
+private struct NarrowBarRow<Leading: View, Detail: View, Trailing: View>: View {
+    @ViewBuilder let leading: Leading
+    @ViewBuilder let detail: Detail
+    @ViewBuilder let trailing: Trailing
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: theme.z(8)) {
+                leading
+                detail
+                    .frame(minWidth: 0, idealWidth: theme.z(90), maxWidth: .infinity, alignment: .leading)
+                    .layoutPriority(-1)
+                trailing
+            }
+            VStack(alignment: .leading, spacing: theme.z(4)) {
+                leading
+                HStack(spacing: theme.z(8)) {
+                    detail
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.leading, theme.z(22))
+                    trailing
+                }
+            }
+            .padding(.vertical, theme.z(6))
         }
     }
 }
@@ -466,6 +611,8 @@ private struct BarButton: View {
     let title: String
     let symbol: String?
     var busy = false
+    /// The symbol alone (the title goes in the tooltip and the accessibility label).
+    var iconOnly = false
     let help: String
     let action: () -> Void
     @Environment(\.theme) private var theme
@@ -479,7 +626,9 @@ private struct BarButton: View {
                 } else if let symbol {
                     Image(systemName: symbol).font(theme.font(size: 10.5, weight: .semibold))
                 }
-                Text(title).font(theme.font(size: 12, weight: .medium))
+                if !iconOnly || symbol == nil {
+                    Text(title).font(theme.font(size: 12, weight: .medium))
+                }
             }
             .foregroundStyle(hovering ? theme.textPrimary : theme.textSecondary)
             .padding(.horizontal, theme.z(8))
@@ -491,7 +640,8 @@ private struct BarButton: View {
         .buttonStyle(.plain)
         .disabled(busy)
         .onHover { hovering = $0 }
-        .help(help)
+        .help(iconOnly ? "\(title): \(help)" : help)
+        .accessibilityLabel(title)
         .fixedSize()
     }
 }

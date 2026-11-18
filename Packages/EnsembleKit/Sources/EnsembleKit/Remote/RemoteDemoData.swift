@@ -27,6 +27,11 @@ public struct RemoteDemoData: Sendable {
         public static let permission = "demo-perm-1"
         public static let agentA = UUID(uuidString: "0B5E7C1A-1111-4E2B-9C3D-2A6F8E9B0C01")!
         public static let agentB = UUID(uuidString: "0B5E7C1A-2222-4E2B-9C3D-2A6F8E9B0C02")!
+        public static let agentC = UUID(uuidString: "0B5E7C1A-3333-4E2B-9C3D-2A6F8E9B0C03")!
+        public static let teamRoomID = UUID(uuidString: "6F1D1E9A-2B7C-4C55-9E1A-6B0C8F3A2D22")!
+        public static let roomPermission = "demo-room-perm-lint"
+        public static let roomLongPermission = "demo-room-perm-migrate"
+        public static let planDecision = "approvePlan-demo"
     }
 
     public static func sample(now: Date = Date()) -> RemoteDemoData {
@@ -138,5 +143,70 @@ public struct RemoteDemoData: Sendable {
             transcripts: [IDs.fixSession: fixTranscript, IDs.roomSession: roomTranscript,
                           IDs.docsSession: docsTranscript, IDs.oldSession: oldTranscript],
             rooms: [room], usage: usage)
+    }
+
+    /// `sample` plus what rooms on the phone show: the round table waiting on a short and a long command, and a Team
+    /// room waiting for its plan to be approved. Used by the iPhone's demo mode and its screenshots.
+    public static func showcase(now: Date = Date()) -> RemoteDemoData {
+        var data = sample(now: now)
+        let minute: TimeInterval = 60
+
+        let lint = PermissionRequest(id: IDs.roomPermission, sessionID: "demo-room-grace", kind: "bash", title: "npm run lint",
+                                     created: now.addingTimeInterval(-2 * minute))
+        let migrate = PermissionRequest(
+            id: IDs.roomLongPermission, sessionID: "demo-room-ada", kind: "bash",
+            title: "psql \"$DATABASE_URL\" <<'SQL'\nALTER TABLE notes ADD COLUMN version integer NOT NULL DEFAULT 0;\nCREATE INDEX notes_updated_at ON notes (updated_at);\nSQL",
+            detail: "Adds a version column to the notes table.", created: now.addingTimeInterval(-1 * minute))
+        data.permissions += [lint, migrate]
+        if var roundTable = data.rooms.first {
+            roundTable.permissions = [lint, migrate]
+            roundTable.phaseLabel = RoomPhase.building.label
+            for i in roundTable.agents.indices { roundTable.agents[i].activity = .waitingForPermission }
+            data.rooms[0] = roundTable
+            data.transcripts[IDs.roomSession]?.items += [.permission(lint), .permission(migrate)]
+            data.transcripts[IDs.roomSession]?.agents = roundTable.agents
+            if let i = data.sessions.firstIndex(where: { $0.id == IDs.roomSession }) {
+                var row = RemoteRoomBridge.hubRow(roundTable)
+                row.id = IDs.roomSession
+                data.sessions[i] = row
+            }
+        }
+
+        let ada = RemoteAgent(id: IDs.agentA, name: "Ada", model: "anthropic/claude-opus-5.5", colorHex: "#D97757", sessionID: "demo-team-ada")
+        let grace = RemoteAgent(id: IDs.agentB, name: "Grace", model: "openai/gpt-6", colorHex: "#6A9BCC", sessionID: "demo-team-grace")
+        let linus = RemoteAgent(id: IDs.agentC, name: "Linus", model: "google/gemini-3-pro", colorHex: "#7FB069", sessionID: "demo-team-linus")
+        let plan = """
+        Keep a local copy of every note in SQLite and sync changes when the network comes back.
+
+        - Conflicts: last write wins per field, using the version number.
+        - The sync queue survives app restarts.
+        """
+        let decision = RemoteRoomDecision(
+            id: IDs.planDecision, kind: .approvePlan, title: "The plan is ready", agentID: IDs.agentA, text: plan,
+            items: [.init(agentID: IDs.agentA, text: "Local SQLite store and its migrations"),
+                    .init(agentID: IDs.agentB, text: "Sync queue with retry and backoff"),
+                    .init(agentID: IDs.agentC, text: "Tests for offline edits and conflicts")],
+            choices: [RemoteRoomChoice(id: "approve", label: "Approve", style: .primary),
+                      RemoteRoomChoice(id: "redo", label: "Redo", input: .optional, placeholder: "What should change (optional)")])
+        let team = RemoteRoom(id: IDs.teamRoomID, title: "Add offline sync", directory: "/Users/demo/code/notes", mode: .team,
+                              agents: [ada, grace, linus], leadAgentID: IDs.agentA, state: .idle, permissionMode: .ask,
+                              sessionID: IDs.teamRoomID.uuidString,
+                              usage: Usage(inputTokens: 42_000, outputTokens: 5_600, costUSD: 0.51),
+                              lastActivity: now.addingTimeInterval(-6 * minute),
+                              phaseLabel: RoomPhase.awaitingApproval.label, decision: decision)
+        data.rooms.append(team)
+        data.sessions.append(RemoteRoomBridge.hubRow(team))
+        data.transcripts[team.sessionID] = RemoteTranscript(
+            sessionID: team.sessionID, title: team.title,
+            items: [
+                .user(id: "tu1", text: "Add offline sync to the notes app.", date: now.addingTimeInterval(-14 * minute)),
+                .notice(id: "tn1", text: "Ada leads. Team started."),
+                .board(id: "tb1", fromAgentID: IDs.agentA, toAgentIDs: [],
+                       text: "PLAN: " + plan + "\n\nASSIGN @Ada: Local SQLite store and its migrations\nASSIGN @Grace: Sync queue with retry and backoff\nASSIGN @Linus: Tests for offline edits and conflicts",
+                       date: now.addingTimeInterval(-6 * minute)),
+                .notice(id: "tn2", text: "The plan is ready. Approve, edit or redo it."),
+            ],
+            activity: .idle, permissionMode: .ask, roomID: team.id, agents: team.agents)
+        return data
     }
 }

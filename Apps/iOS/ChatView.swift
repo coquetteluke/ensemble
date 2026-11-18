@@ -11,6 +11,10 @@ struct ChatView: View {
     @State private var sending = false
     @State private var loadError: String?
     @State private var actionError: String?
+    @State private var confirmStop = false
+    /// Where the reader was when this view appeared (nil: the end). Read once, before the transcript arrives, because the
+    /// scroll view records its first row as the position while the rows come in.
+    @State private var startAnchor: String??
     @FocusState private var composerFocused: Bool
 
     private var transcript: RemoteTranscript? {
@@ -43,6 +47,10 @@ struct ChatView: View {
 
     private static let bottomID = "bottom"
     private static let workingID = "working"
+    private static let decisionID = "decision"
+
+    /// What the room waits on, while it is open.
+    private var decision: RemoteRoomDecision? { room.flatMap { client.openDecision(inRoom: $0.id) } }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -52,6 +60,10 @@ struct ChatView: View {
                         ForEach(transcript.items) { item in
                             TranscriptRow(item: item, agents: agents, client: client, onError: { actionError = $0 })
                                 .id(item.id)
+                        }
+                        if let room, let decision {
+                            RoomDecisionCard(room: room, decision: decision, client: client, onError: { actionError = $0 })
+                                .id(Self.decisionID)
                         }
                         if activity == .working {
                             HStack(spacing: 8) {
@@ -85,7 +97,8 @@ struct ChatView: View {
             .onChange(of: transcript?.items.last) { old, _ in
                 // Follow new rows only when the reader was already at the end.
                 let anchor = model.scrollAnchors[sessionID]
-                let atEnd = anchor == nil || anchor == Self.bottomID || anchor == Self.workingID || anchor == old?.id
+                let atEnd = anchor == nil || anchor == Self.bottomID || anchor == Self.workingID || anchor == Self.decisionID
+                    || anchor == old?.id
                 if atEnd {
                     withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
                 }
@@ -93,7 +106,17 @@ struct ChatView: View {
             .onChange(of: transcript != nil) { _, loaded in
                 if loaded { restoreScroll(proxy) }
             }
-            .onAppear { if transcript != nil { restoreScroll(proxy) } }
+            .onChange(of: decision?.id) { _, id in
+                // A new decision is what the reader needs next.
+                if id != nil { withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.bottomID, anchor: .bottom) } }
+            }
+            .onAppear {
+                if startAnchor == nil { startAnchor = .some(model.scrollAnchors[sessionID]) }
+                if transcript != nil { restoreScroll(proxy) }
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let room { RoomAgentsBar(room: room) }
         }
         .safeAreaInset(edge: .bottom) { composer }
         .navigationTitle(transcript?.title ?? title)
@@ -104,15 +127,22 @@ struct ChatView: View {
             if connected && transcript == nil { Task { await open() } }
         }
         .actionErrorAlert($actionError)
+        .confirmationDialog("Stop \(room?.title ?? "the room")?", isPresented: $confirmStop, titleVisibility: .visible) {
+            Button("Stop the room", role: .destructive) { control(.stop) }
+        } message: {
+            Text("Ends the run. The sessions and the board stay, and a new message starts another run.")
+        }
     }
 
     /// Puts the transcript back where the reader left it, or at the end the first time.
     private func restoreScroll(_ proxy: ScrollViewProxy) {
-        let target = model.scrollAnchors[sessionID] ?? Self.bottomID
+        let target = (startAnchor ?? nil) ?? Self.bottomID
         DispatchQueue.main.async { proxy.scrollTo(target, anchor: .bottom) }
     }
 
     private func open() async {
+        // Not connected yet: the chat opens when the connection comes up (`onChange` of the connection state).
+        guard client.state.isConnected else { return }
         do {
             loadError = nil
             try await client.open(sessionID: sessionID)
@@ -127,35 +157,38 @@ struct ChatView: View {
     private var toolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
-                Section("Permission mode") {
-                    // Rooms do not offer Plan mode.
-                    ForEach(PermissionMode.allCases.filter { roomID == nil || $0 != .plan }, id: \.self) { mode in
-                        Button {
-                            act { try await client.setPermissionMode(mode, for: target) }
-                        } label: {
-                            if mode == currentMode {
-                                Label(mode.label, systemImage: "checkmark")
-                            } else {
-                                Text(mode.label)
-                            }
-                        }
-                    }
-                }
                 if let room {
-                    Section("Room") {
-                        if room.state == .paused || room.state == .stopped {
+                    // A room keeps the permission mode it was made with.
+                    Section("Permission mode: \(room.permissionMode.label)") {
+                        if room.state == .paused {
                             Button { control(.resume) } label: { Label("Resume room", systemImage: "play.fill") }
-                        } else {
+                        } else if room.state == .running {
                             Button { control(.pause) } label: { Label("Pause room", systemImage: "pause.fill") }
                         }
-                        Button(role: .destructive) { control(.stop) } label: { Label("Stop room", systemImage: "stop.fill") }
+                        if room.isRunActive {
+                            Button(role: .destructive) { confirmStop = true } label: { Label("Stop room", systemImage: "stop.fill") }
+                        }
+                    }
+                } else {
+                    Section("Permission mode") {
+                        ForEach(PermissionMode.allCases, id: \.self) { mode in
+                            Button {
+                                act { try await client.setPermissionMode(mode, for: target) }
+                            } label: {
+                                if mode == currentMode {
+                                    Label(mode.label, systemImage: "checkmark")
+                                } else {
+                                    Text(mode.label)
+                                }
+                            }
+                        }
                     }
                 }
             } label: {
                 Image(systemName: currentMode == .bypass ? "exclamationmark.shield" : "shield.lefthalf.filled")
                     .foregroundStyle(currentMode == .bypass ? RemoteTheme.danger : RemoteTheme.primaryText)
             }
-            .accessibilityLabel("Permission mode and room controls")
+            .accessibilityLabel(room == nil ? "Permission mode" : "Room controls")
         }
     }
 
@@ -185,10 +218,10 @@ struct ChatView: View {
                     Button {
                         act { try await client.interrupt(target) }
                     } label: {
-                        Image(systemName: "stop.circle.fill").font(.system(size: 32))
+                        Image(systemName: room == nil ? "stop.circle.fill" : "pause.circle.fill").font(.system(size: 32))
                     }
                     .foregroundStyle(RemoteTheme.primaryText)
-                    .accessibilityLabel("Stop")
+                    .accessibilityLabel(room == nil ? "Stop" : "Pause the room")
                 } else {
                     Button(action: send) {
                         Image(systemName: "arrow.up.circle.fill").font(.system(size: 32))
@@ -227,16 +260,10 @@ struct ChatView: View {
                 .padding(.vertical, 5)
                 .background(RemoteTheme.cardRaised, in: Capsule())
             }
-            Chip(text: room.state.label, color: room.state == .running ? RemoteTheme.success : RemoteTheme.warning)
-            Spacer()
-            HStack(spacing: -4) {
-                ForEach(room.agents) { agent in
-                    Circle()
-                        .fill(Color(remoteHex: agent.colorHex))
-                        .frame(width: 10, height: 10)
-                        .overlay(Circle().strokeBorder(RemoteTheme.background, lineWidth: 1.5))
-                }
+            if let agent = addressee.flatMap({ name in room.agents.first { $0.name == name } }) {
+                Circle().fill(Color(remoteHex: agent.colorHex)).frame(width: 8, height: 8)
             }
+            Spacer()
         }
     }
 

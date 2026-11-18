@@ -2,53 +2,35 @@ import SwiftUI
 import EnsembleKit
 
 /// Claude plan use in the status line: a small ring (five-hour window outside, weekly inside) and the use of the window
-/// closest to its limit. Amber from 80%, red when a window is used up. The tooltip gives each window's use and reset
-/// time; a click opens the usage popover. Hidden when no Claude engine is signed in with a subscription. Reads the
-/// engine after every turn and every three minutes while shown.
+/// closest to its limit (the ring alone when `compact`). Amber from 80%, red when a window is used up. The tooltip
+/// gives each window's use and reset time; a click opens the usage popover. Hidden without a meter (no Claude engine
+/// signed in with a subscription); `PlanLimitRefresh` keeps the meter current.
 struct PlanLimitStatusItem: View {
-    let store: SessionStore
-    /// Snapshots pass a fixed meter instead of reading the engine.
-    var fixedMeter: PlanLimitMeter?
+    let meter: PlanLimitMeter?
+    var compact = false
     let onOpen: () -> Void
     @Environment(\.theme) private var theme
-    @Environment(\.isSnapshot) private var isSnapshot
-    @State private var loader = PlanLimitLoader()
 
     static let refreshInterval: Duration = .seconds(180)
 
-    private var meter: PlanLimitMeter? { fixedMeter ?? loader.meter }
-
     var body: some View {
-        HStack(spacing: 0) {
-            if let meter {
-                Button(action: onOpen) {
-                    HStack(spacing: theme.z(6)) {
-                        PlanLimitRing(meter: meter)
-                        if let leading = meter.leading {
-                            Text("\(leading.shortLabel) \(Text(Format.wholePercent(leading.fraction)).monospacedDigit())")
-                                .foregroundStyle(Self.textColor(meter.level, theme: theme))
-                        }
+        if let meter {
+            Button(action: onOpen) {
+                HStack(spacing: theme.z(6)) {
+                    PlanLimitRing(meter: meter)
+                    if !compact, let leading = meter.leading {
+                        Text("\(leading.shortLabel) \(Text(Format.wholePercent(leading.fraction)).monospacedDigit())")
+                            .foregroundStyle(Self.textColor(meter.level, theme: theme))
+                            .lineLimit(1)
                     }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .help(Self.tooltip(meter))
-                .accessibilityLabel("Claude plan use")
-                .accessibilityValue(Self.tooltip(meter))
+                .fixedSize()
+                .contentShape(Rectangle())
             }
-            Color.clear.frame(width: 0, height: 0)
-                .task(id: store.background.planLimitsRevision) {
-                    guard fixedMeter == nil, !isSnapshot else { return }
-                    await loader.refresh(store: store)
-                }
-                .task {
-                    guard fixedMeter == nil, !isSnapshot else { return }
-                    while !Task.isCancelled {
-                        try? await Task.sleep(for: Self.refreshInterval)
-                        guard !Task.isCancelled else { return }
-                        await loader.refresh(store: store)
-                    }
-                }
+            .buttonStyle(.plain)
+            .help(Self.tooltip(meter))
+            .accessibilityLabel("Claude plan use")
+            .accessibilityValue(Self.tooltip(meter))
         }
     }
 
@@ -69,6 +51,31 @@ struct PlanLimitStatusItem: View {
             return line
         }
         .joined(separator: "\n")
+    }
+}
+
+/// Reads the Claude engine into `loader` after every turn and every three minutes. Applied once to the status line, so
+/// its width levels share one meter.
+struct PlanLimitRefresh: ViewModifier {
+    let store: SessionStore
+    let loader: PlanLimitLoader
+    /// False in snapshots and when a fixed meter is shown.
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .task(id: store.background.planLimitsRevision) {
+                guard enabled else { return }
+                await loader.refresh(store: store)
+            }
+            .task {
+                guard enabled else { return }
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: PlanLimitStatusItem.refreshInterval)
+                    guard !Task.isCancelled else { return }
+                    await loader.refresh(store: store)
+                }
+            }
     }
 }
 

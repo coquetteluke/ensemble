@@ -15,9 +15,12 @@ struct ComposerView: View {
     var snapshotSideQuestion: (question: SideQuestion, answer: String)?
     /// Snapshots draw the microphone in this state.
     var snapshotDictation: DictationController?
+    /// The status line has no room for its "Work in a copy" switch, so the More menu offers it (`StatusLine`).
+    var worktreeSwitchInMore = false
 
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
+    @Environment(PowerController.self) private var power: PowerController?
     @State private var textHeight: CGFloat = 22
     @State private var showModeMenu = false
     @State private var showModelMenu = false
@@ -98,20 +101,9 @@ struct ComposerView: View {
                 attachmentChips
             }
             textArea
-            HStack(spacing: theme.z(4)) {
-                attachButton
-                modeChip
-                PowerMenuButton(holder: .session(session.id))
-                Spacer(minLength: theme.z(8))
-                modelChip
-                effortChip
-                fastToggle
-                DictationButton(dictation: dictation)
-                sendButton
-                    .padding(.leading, theme.z(4))
-            }
+            controls
         }
-        .padding(.horizontal, theme.z(14))
+        .modifier(AdaptiveInsetModifier(wide: 14, narrow: 10, threshold: 440))
         .padding(.top, theme.z(12))
         .padding(.bottom, theme.z(10))
         .background(
@@ -336,28 +328,118 @@ struct ComposerView: View {
 
     // MARK: Controls
 
-    private var attachButton: some View {
-        ComposerIconButton(symbol: "paperclip", help: "Attach files") {
-            let panel = NSOpenPanel()
-            panel.allowsMultipleSelection = true
-            panel.canChooseDirectories = false
-            panel.canChooseFiles = true
-            panel.directoryURL = URL(fileURLWithPath: session.directory)
-            panel.prompt = "Attach"
-            if panel.runModal() == .OK {
-                window.attachments[session.id, default: []].append(contentsOf: panel.urls)
+    /// The bottom row at the widest level that fits (`ComposerRowLevel`). Only the level shown is in the window, so
+    /// each menu's popover opens from the one control that is on screen.
+    private var controls: some View {
+        ViewThatFits(in: .horizontal) {
+            // While the More menu holds the "Work in a copy" switch, the row keeps the menu on screen.
+            if !switchInMore {
+                row(.full)
+                row(.iconChips)
+            }
+            row(.more)
+            row(.compact)
+            row(.truncated)
+            row(.twoLines)
+        }
+    }
+
+    @ViewBuilder private func row(_ level: ComposerRowLevel) -> some View {
+        if level == .twoLines {
+            VStack(alignment: .leading, spacing: theme.z(4)) {
+                HStack(spacing: theme.z(4)) {
+                    modeChip(iconOnly: true)
+                    modelChip(maxTitleWidth: nil)
+                    Spacer(minLength: 0)
+                    moreMenu(level)
+                }
+                HStack(spacing: theme.z(4)) {
+                    attachButton
+                    PowerMenuButton(holder: .session(session.id))
+                    Spacer(minLength: theme.z(8))
+                    DictationButton(dictation: dictation)
+                    sendButton
+                        .padding(.leading, theme.z(4))
+                }
+            }
+        } else {
+            HStack(spacing: theme.z(4)) {
+                if !level.attachInMore { attachButton }
+                modeChip(iconOnly: level != .full)
+                if !level.attachInMore { PowerMenuButton(holder: .session(session.id)) }
+                Spacer(minLength: theme.z(8))
+                modelChip(maxTitleWidth: level == .truncated ? theme.z(ComposerRowLevel.truncatedModelWidth) : nil)
+                if !level.effortInMore {
+                    effortChip(iconOnly: level != .full)
+                    fastToggle
+                }
+                moreMenu(level)
+                DictationButton(dictation: dictation)
+                sendButton
+                    .padding(.leading, theme.z(4))
             }
         }
     }
 
-    private var modeChip: some View {
+    private var effortOptions: ModelOptions? {
+        guard let options = store.options(for: session.info.model), !options.effortLevels.isEmpty else { return nil }
+        return options
+    }
+
+    private var hasFastMode: Bool { store.options(for: session.info.model)?.supportsFastMode == true }
+
+    /// The status line hid its "Work in a copy" switch and the switch applies to this session.
+    private var switchInMore: Bool {
+        worktreeSwitchInMore && WorktreeStatusControls.showsSwitch(store: store, session: session)
+    }
+
+    private func moreItems(_ level: ComposerRowLevel) -> ComposerMoreItems {
+        ComposerMoreItems(effort: level.effortInMore && effortOptions != nil,
+                          fast: level.effortInMore && hasFastMode,
+                          workInCopy: switchInMore,
+                          attach: level.attachInMore,
+                          keepAwake: level.attachInMore && power != nil)
+    }
+
+    /// The More menu with what this level moved out of the row; nothing when it moved nothing. Effort's own menu
+    /// (`/effort`, the command palette) opens from here while effort is inside.
+    @ViewBuilder private func moreMenu(_ level: ComposerRowLevel) -> some View {
+        let items = moreItems(level)
+        if !items.isEmpty {
+            ComposerMoreMenu(store: store, session: session, window: window, items: items, options: effortOptions,
+                             onAttach: attachFiles)
+                .popover(isPresented: items.effort ? $showEffortMenu : .constant(false), arrowEdge: .bottom) {
+                    effortMenu
+                }
+        }
+    }
+
+    private var attachButton: some View {
+        ComposerIconButton(symbol: "paperclip", help: "Attach files", action: attachFiles)
+    }
+
+    private func attachFiles() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.directoryURL = URL(fileURLWithPath: session.directory)
+        panel.prompt = "Attach"
+        if panel.runModal() == .OK {
+            window.attachments[session.id, default: []].append(contentsOf: panel.urls)
+        }
+    }
+
+    private func modeChip(iconOnly: Bool) -> some View {
         let mode = session.permissionMode
         return ComposerChip(symbol: mode.symbolName, title: mode.label,
-                            tint: mode.isDangerous ? theme.danger : nil) {
+                            tint: mode.isDangerous ? theme.danger : nil, iconOnly: iconOnly) {
             showModeMenu.toggle()
         }
         .fixedSize()
-        .help("Permission mode (Shift-Tab to switch)")
+        .help(iconOnly ? "Permission mode: \(mode.label) (Shift-Tab to switch)" : "Permission mode (Shift-Tab to switch)")
+        .accessibilityLabel("Permission mode")
+        .accessibilityValue(mode.label)
         .popover(isPresented: $showModeMenu, arrowEdge: .bottom) {
             ModeMenuContent(current: mode, planSupport: store.planModeSupport(for: session.id)) { newMode in
                 showModeMenu = false
@@ -367,11 +449,15 @@ struct ComposerView: View {
         }
     }
 
-    private var modelChip: some View {
-        ComposerChip(symbol: nil, title: store.modelName(session.info.model), tint: nil) {
+    /// The model's name; the row counts it as at most `maxTitleWidth` wide when given, and cuts it to the room left.
+    private func modelChip(maxTitleWidth: CGFloat?) -> some View {
+        let name = store.modelName(session.info.model)
+        return ComposerChip(symbol: nil, title: name, tint: nil, maxTitleWidth: maxTitleWidth) {
             showModelMenu.toggle()
         }
-        .help("Model")
+        .help("Model: \(name)")
+        .accessibilityLabel("Model")
+        .accessibilityValue(name)
         .popover(isPresented: $showModelMenu, arrowEdge: .bottom) {
             ModelMenuContent(models: store.models, current: session.info.model, billing: modelBilling) { ref in
                 showModelMenu = false
@@ -379,30 +465,41 @@ struct ComposerView: View {
             }
             .ensembleTheme()
         }
+        // Offered the row's room before the spacer, so the name is only cut when the row is short of room. Last, so
+        // the row sees it.
+        .layoutPriority(1)
     }
 
     /// Effort for this model, when the engine offers it.
-    @ViewBuilder private var effortChip: some View {
-        if let options = store.options(for: session.info.model), !options.effortLevels.isEmpty {
+    @ViewBuilder private func effortChip(iconOnly: Bool) -> some View {
+        if let options = effortOptions {
             let current = session.effort ?? options.defaultEffort
-            ComposerChip(symbol: "gauge.with.dots.needle.50percent", title: current?.label ?? "Effort", tint: nil) {
+            ComposerChip(symbol: "gauge.with.dots.needle.50percent", title: current?.label ?? "Effort", tint: nil, iconOnly: iconOnly) {
                 showEffortMenu.toggle()
             }
             .fixedSize()
-            .help("How hard the model thinks")
+            .help(iconOnly ? "Effort: \(current?.label ?? "default"). How hard the model thinks" : "How hard the model thinks")
+            .accessibilityLabel("Effort")
+            .accessibilityValue(current?.label ?? "Default")
             .popover(isPresented: $showEffortMenu, arrowEdge: .bottom) {
-                EffortMenuContent(levels: options.effortLevels, current: current) { level in
-                    showEffortMenu = false
-                    Task { await store.setEffort(level, for: session.id) }
-                }
-                .ensembleTheme()
+                effortMenu
             }
+        }
+    }
+
+    @ViewBuilder private var effortMenu: some View {
+        if let options = effortOptions {
+            EffortMenuContent(levels: options.effortLevels, current: session.effort ?? options.defaultEffort) { level in
+                showEffortMenu = false
+                Task { await store.setEffort(level, for: session.id) }
+            }
+            .ensembleTheme()
         }
     }
 
     /// Fast mode, when the model has one.
     @ViewBuilder private var fastToggle: some View {
-        if store.options(for: session.info.model)?.supportsFastMode == true {
+        if hasFastMode {
             let on = session.fastMode
             Button {
                 Task { await store.setFastMode(!on, for: session.id) }
@@ -481,11 +578,39 @@ struct ComposerIconButton: View {
     }
 }
 
-/// Text chip with an optional icon and a small chevron (mode and model pickers).
+/// How much of the composer's bottom row fits, widest first; the row shows the first level that fits its width.
+enum ComposerRowLevel: Int, Comparable {
+    /// Every control with its label.
+    case full
+    /// Permission mode and effort show their icons only (the name is in the tooltip and the accessibility value).
+    case iconChips
+    /// Effort and fast mode move into the More menu.
+    case more
+    /// Attach and Keep awake move into the More menu too.
+    case compact
+    /// The model's name is counted as `truncatedModelWidth` wide, and cut to the room the row leaves it.
+    case truncated
+    /// Two lines: permission mode, model and More above; attach, Keep awake, dictation and send below.
+    case twoLines
+
+    /// The model name's width at `.truncated`, before zoom.
+    static let truncatedModelWidth: CGFloat = 58
+
+    static func < (lhs: ComposerRowLevel, rhs: ComposerRowLevel) -> Bool { lhs.rawValue < rhs.rawValue }
+
+    var effortInMore: Bool { self >= .more }
+    var attachInMore: Bool { self == .compact || self == .truncated }
+}
+
+/// Text chip with an optional icon and a small chevron (mode and model pickers). Icon-only drops the text (callers give
+/// the full text in the tooltip and the accessibility value).
 struct ComposerChip: View {
     let symbol: String?
     let title: String
     let tint: Color?
+    var iconOnly = false
+    /// The row counts the title as at most this wide; it is cut to the room the row gives it.
+    var maxTitleWidth: CGFloat?
     let action: () -> Void
     @Environment(\.theme) private var theme
     @State private var hovering = false
@@ -496,13 +621,20 @@ struct ComposerChip: View {
                 if let symbol {
                     Image(systemName: symbol).font(theme.font(size: 11.5))
                 }
-                Text(title).font(theme.font(size: 12.5))
+                if !iconOnly || symbol == nil {
+                    CappedWidth(maxWidth: maxTitleWidth ?? .infinity) {
+                        Text(title)
+                            .font(theme.font(size: 12.5))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
                 Image(systemName: "chevron.down")
                     .font(theme.font(size: 8, weight: .bold))
                     .opacity(0.7)
             }
             .foregroundStyle(tint ?? (hovering ? theme.textPrimary : theme.textSecondary))
-            .padding(.horizontal, theme.z(9))
+            .padding(.horizontal, theme.z(iconOnly && symbol != nil ? 7 : 9))
             .frame(height: theme.z(28))
             .background(
                 RoundedRectangle(cornerRadius: theme.z(8), style: .continuous)
@@ -512,6 +644,21 @@ struct ComposerChip: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+}
+
+/// Counts its content as at most `maxWidth` wide when the row measures its ideal width (so the row picks the level with
+/// the cut name), but takes more of the name when the row has room for it.
+private struct CappedWidth: Layout {
+    let maxWidth: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        return content.sizeThatFits(ProposedViewSize(width: proposal.width ?? maxWidth, height: proposal.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
     }
 }
 

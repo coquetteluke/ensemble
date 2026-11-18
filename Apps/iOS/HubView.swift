@@ -97,7 +97,9 @@ struct HubView: View {
 
     @ViewBuilder
     private func quickActions(_ s: SessionSummary, bucket: HubBucket) -> some View {
-        if let ask = client.pendingPermissions(for: s.id).first, ask.isInteraction {
+        if let roomID = s.roomID, let room = client.room(id: roomID) {
+            roomActions(room)
+        } else if let ask = client.pendingPermissions(for: s.id).first, ask.isInteraction {
             interactionActions(ask, session: s)
         } else if let ask = client.pendingPermissions(for: s.id).first, PermissionDisplay.fitsQuickApproval(ask) {
             VStack(alignment: .leading, spacing: 8) {
@@ -123,6 +125,29 @@ struct HubView: View {
                 act { try await client.interrupt(target(for: s)) }
             } label: {
                 Label("Stop", systemImage: "stop.fill")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+    }
+
+    /// A room: open its decision, answer a short command from one of its agents in one tap (longer ones open the room),
+    /// or pause it while it runs.
+    @ViewBuilder
+    private func roomActions(_ room: RemoteRoom) -> some View {
+        let route = ChatRoute(sessionID: room.sessionID, title: room.title)
+        if let decision = client.openDecision(inRoom: room.id), decision.needsYou {
+            Button(RoomText.openLabel(decision)) { open(route) }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+        } else if let request = client.pendingPermissions(inRoom: room.id).first {
+            RoomPromptRow(request: request, agent: room.agents.first { $0.sessionID == request.sessionID }, client: client,
+                          open: { open(route) }, onError: { actionError = $0 })
+        } else if room.state == .running {
+            Button {
+                act { try await client.controlRoom(room.id, action: .pause) }
+            } label: {
+                Label("Pause", systemImage: "pause.fill")
             }
             .buttonStyle(.bordered)
             .controlSize(.small)

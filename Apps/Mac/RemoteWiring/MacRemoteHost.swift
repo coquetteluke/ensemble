@@ -1,9 +1,10 @@
 import Foundation
+import Observation
+import Synchronization
 import EnsembleKit
 
 enum MacRemoteHostError: LocalizedError {
     case sessionNotFound
-    case roomsNotAvailable
     case requestNotOpen
     /// An Allow from an iPhone app that predates plans and questions.
     case needsOwnAnswer(plan: Bool)
@@ -12,7 +13,6 @@ enum MacRemoteHostError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .sessionNotFound: "That session is not on this Mac anymore."
-        case .roomsNotAvailable: "Rooms are not available from the iPhone yet."
         case .requestNotOpen: "That question or plan is no longer open in this session."
         case .needsOwnAnswer(let plan):
             plan ? "Choose Proceed or Keep planning on the plan. Update Ensemble on the iPhone to do that here."
@@ -22,14 +22,19 @@ enum MacRemoteHostError: LocalizedError {
     }
 }
 
-/// Gives the iPhone remote the Mac's sessions and carries out what the phone asks for, through the
-/// same `SessionStore` the window uses. Rooms join once the room screen is wired in.
+/// Gives the iPhone remote the Mac's sessions and rooms and carries out what the phone asks for, through the same
+/// `SessionStore` and `RoomsController` the window uses. Only paired phones get here: the `RemoteServer` hands this
+/// host nothing before a phone has proved the pairing token, and every room action is checked again against the
+/// room as it is now (the room exists, the agent is in it, the decision is still the one the phone showed).
 @MainActor
 final class MacRemoteHost: RemoteHost {
     private let store: SessionStore
+    /// The app's rooms. `AppEngine` sets this right after it makes the rooms controller.
+    weak var rooms: RoomsController?
 
-    init(store: SessionStore) {
+    init(store: SessionStore, rooms: RoomsController? = nil) {
         self.store = store
+        self.rooms = rooms
     }
 
     // MARK: Snapshots
@@ -60,9 +65,7 @@ final class MacRemoteHost: RemoteHost {
 
     /// The Hub row's line for what the session waits on.
     static func askText(_ request: PermissionRequest) -> String {
-        if request.isPlan { return "Plan ready: \(request.plan?.title ?? request.title)" }
-        if request.isQuestion { return "Question: \(request.questions?.first?.text ?? request.title)" }
-        return "Approve: \(request.title)"
+        RemoteRoomBridge.askText(request)
     }
 
     /// The open request `requestID` of `sessionID` as the store holds it. A request id from another session is never
@@ -75,19 +78,56 @@ final class MacRemoteHost: RemoteHost {
         return request
     }
 
+    /// Room agents' own sessions. Like on the Mac's Session Hub they show inside their room's row, not on their own.
+    private var roomAgentSessionIDs: Set<String> {
+        guard let rooms, rooms.isLoaded else { return [] }
+        return rooms.roomSessionIDs
+    }
+
     func hubSnapshot() async -> RemoteHubSnapshot {
-        let roots = store.sessions.filter { !$0.isSubagent && !store.isSideQuestionSession($0.id) }
-        return RemoteHubSnapshot(sessions: roots.map(summary), permissions: store.sessions.flatMap(\.pendingPermissions))
+        let hidden = roomAgentSessionIDs
+        let roots = store.sessions.filter { !$0.isSubagent && !store.isSideQuestionSession($0.id) && !hidden.contains($0.id) }
+        var permissions = store.sessions.flatMap(\.pendingPermissions)
+        let known = Set(permissions.map(\.id))
+        // Prompts the rooms know about that the session list has not loaded (subagents of room agents).
+        permissions += (rooms?.permissions.values.flatMap { $0 } ?? []).filter { !known.contains($0.id) }
+        return RemoteHubSnapshot(sessions: roots.map(summary) + remoteRooms().map(\.row), permissions: permissions)
     }
 
     func transcript(sessionID: String) async throws -> RemoteTranscript {
+        if let mapped = remoteRoom(sessionID: sessionID) { return RemoteRoomBridge.transcript(mapped.state, room: mapped.room) }
         guard let s = session(sessionID) else { throw MacRemoteHostError.sessionNotFound }
         if !s.transcriptLoaded { await store.loadSession(sessionID) }
         return RemoteTranscript(sessionID: s.id, title: s.title, items: s.items, activity: s.activity,
                                 permissionMode: s.permissionMode)
     }
 
-    func rooms() async -> [RemoteRoom] { [] }
+    func rooms() async -> [RemoteRoom] { remoteRooms().map(\.room) }
+
+    /// Every room as the phone sees it, with its Hub row.
+    private func remoteRooms() -> [(room: RemoteRoom, state: RoomState, row: SessionSummary)] {
+        guard let rooms, rooms.isLoaded else { return [] }
+        return rooms.rooms.map { state in
+            let room = remoteRoom(state, rooms: rooms)
+            return (room, state, RemoteRoomBridge.hubRow(room, pausedForUser: state.isPaused && !state.cappedAgents.isEmpty))
+        }
+    }
+
+    private func remoteRoom(_ state: RoomState, rooms: RoomsController) -> RemoteRoom {
+        var activity: [UUID: AgentActivity] = [:]
+        // Saved rooms that are not open have no live engine: their agents are idle (or capped).
+        if let engine = rooms.engines[state.id] {
+            for agent in state.spec.agents { activity[agent.id] = rooms.activity(of: agent.id, in: engine) }
+        }
+        let permissions = state.sessions.values.flatMap { rooms.permissions[$0] ?? [] }
+        return RemoteRoomBridge.room(state, activity: activity, permissions: permissions, running: rooms.isRunning(state.id))
+    }
+
+    /// The room whose Hub row or transcript id this is.
+    private func remoteRoom(sessionID: String) -> (room: RemoteRoom, state: RoomState)? {
+        guard let id = UUID(uuidString: sessionID), let rooms, rooms.isLoaded, let state = rooms.state(id) else { return nil }
+        return (remoteRoom(state, rooms: rooms), state)
+    }
 
     func usageSummary() async -> RemoteUsageSummary {
         let today = Calendar.current.startOfDay(for: Date())
@@ -109,14 +149,80 @@ final class MacRemoteHost: RemoteHost {
     func updates() async -> AsyncStream<RemoteUpdate> {
         let events = store.engine.events()
         return AsyncStream { continuation in
-            let task = Task { @MainActor [weak self] in
+            let eventTask = Task { @MainActor [weak self] in
                 for await event in events {
                     guard let self else { break }
-                    for update in await self.translate(event) { continuation.yield(update) }
+                    let hidden = self.roomAgentSessionIDs
+                    for update in await self.translate(event) {
+                        // Room agents' sessions are part of their room's row.
+                        if case .sessionUpserted(let s) = update, hidden.contains(s.id) { continue }
+                        continuation.yield(update)
+                    }
                 }
                 continuation.finish()
             }
-            continuation.onTermination = { _ in task.cancel() }
+            let roomTask = Task { @MainActor [weak self] in
+                await self?.watchRooms { continuation.yield($0) }
+            }
+            continuation.onTermination = { _ in
+                eventTask.cancel()
+                roomTask.cancel()
+            }
+        }
+    }
+
+    /// What the phone has of the rooms, to send only what changed.
+    private struct RoomsSeen {
+        var rooms: [UUID: RemoteRoom] = [:]
+        var rows: [String: SessionSummary] = [:]
+        var items: [String: [TranscriptItem]] = [:]
+    }
+
+    private func roomsSeen() -> RoomsSeen {
+        var seen = RoomsSeen()
+        for (room, state, row) in remoteRooms() {
+            seen.rooms[room.id] = room
+            seen.rows[row.id] = row
+            seen.items[room.sessionID] = RemoteRoomBridge.transcriptItems(state, permissions: room.permissions)
+        }
+        return seen
+    }
+
+    /// Follows the rooms (state, decisions, agents, prompts, board) and yields what changed: room upserts, their Hub
+    /// rows, and new or changed rows of each room's transcript (the server sends those only to phones that have the
+    /// room open). Runs until the task is cancelled.
+    private func watchRooms(_ yield: @escaping @MainActor (RemoteUpdate) -> Void) async {
+        var last = roomsSeen()
+        while !Task.isCancelled {
+            await Self.waitForChange(timeout: .seconds(5)) { [weak self] in _ = self?.roomsSeen() }
+            // Let a burst of changes (a turn ending posts, saves and updates activity) settle into one update.
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            let next = roomsSeen()
+            for (id, room) in next.rooms where last.rooms[id] != room { yield(.roomUpserted(room: room)) }
+            for (id, room) in last.rooms where next.rooms[id] == nil {
+                yield(.roomRemoved(roomID: id))
+                yield(.sessionRemoved(sessionID: room.sessionID))
+            }
+            for (id, row) in next.rows where last.rows[id] != row { yield(.sessionUpserted(session: row)) }
+            for (sessionID, items) in next.items {
+                let before = Dictionary((last.items[sessionID] ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+                for item in items where before[item.id] != item { yield(.transcriptUpsert(sessionID: sessionID, item: item)) }
+            }
+            last = next
+        }
+    }
+
+    /// Returns once anything `read` reads changes, or after `timeout` (so cancellation is noticed).
+    private static func waitForChange(timeout: Duration, _ read: @escaping @MainActor () -> Void) async {
+        let gate = ChangeGate()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            gate.arm(continuation)
+            withObservationTracking { read() } onChange: { gate.open() }
+            Task {
+                try? await Task.sleep(for: timeout)
+                gate.open()
+            }
         }
     }
 
@@ -167,33 +273,95 @@ final class MacRemoteHost: RemoteHost {
 
     // MARK: Actions
 
+    /// A room's engine, opening a saved room the first time. Refuses an id that is not one of this Mac's rooms.
+    private func roomEngine(_ roomID: UUID) throws -> RoomEngine {
+        guard let rooms, rooms.isLoaded, rooms.state(roomID) != nil, let engine = rooms.engine(for: roomID) else {
+            throw RemoteError(.notFound, "That room is not on this Mac anymore.")
+        }
+        return engine
+    }
+
     func sendMessage(_ text: String, to target: RemoteTarget, agent: String?) async throws {
-        guard case .session(let id) = target else { throw MacRemoteHostError.roomsNotAvailable }
-        guard session(id) != nil else { throw MacRemoteHostError.sessionNotFound }
-        await store.send(text, to: id)
+        switch target {
+        case .room(let roomID):
+            try await sendToRoom(roomID, text: text, agent: agent)
+        case .session(let id):
+            // A phone may address a room by its Hub row id.
+            if let mapped = remoteRoom(sessionID: id) {
+                try await sendToRoom(mapped.room.id, text: text, agent: agent)
+                return
+            }
+            guard session(id) != nil else { throw MacRemoteHostError.sessionNotFound }
+            await store.send(text, to: id)
+        }
+    }
+
+    /// The user's words to the whole room, or to one agent by name. A name the room does not have is refused rather
+    /// than sent to everyone.
+    private func sendToRoom(_ roomID: UUID, text: String, agent: String?) async throws {
+        let engine = try roomEngine(roomID)
+        guard let agent else {
+            await engine.send(text)
+            return
+        }
+        guard let spec = engine.agents.first(where: { $0.name.compare(agent, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }) else {
+            throw RemoteError(.badRequest, "This room has no agent named \(agent).")
+        }
+        await engine.send(text, to: [spec.id])
     }
 
     func replyPermission(sessionID: String, requestID: String, decision: PermissionDecision) async throws {
         if let request = session(sessionID)?.pendingPermissions.first(where: { $0.id == requestID }) {
             if request.isInteraction, decision != .reject { throw MacRemoteHostError.needsOwnAnswer(plan: request.isPlan) }
             await store.reply(to: request, decision: decision)
+        } else if let rooms, let request = rooms.permissions.values.flatMap({ $0 }).first(where: { $0.id == requestID && $0.sessionID == sessionID }) {
+            // A room agent's subagent the session list has not loaded.
+            await rooms.reply(to: request, decision: decision)
         } else {
             try await store.engine.replyPermission(sessionID: sessionID, requestID: requestID, decision: decision, message: nil)
         }
     }
 
     func setPermissionMode(_ mode: PermissionMode, for target: RemoteTarget) async throws {
-        guard case .session(let id) = target else { throw MacRemoteHostError.roomsNotAvailable }
-        await store.setPermissionMode(mode, for: id)
+        switch target {
+        case .room:
+            throw RemoteError(.badRequest, "A room keeps the permission mode it was made with.")
+        case .session(let id):
+            if remoteRoom(sessionID: id) != nil { throw RemoteError(.badRequest, "A room keeps the permission mode it was made with.") }
+            await store.setPermissionMode(mode, for: id)
+        }
     }
 
     func interrupt(_ target: RemoteTarget) async throws {
-        guard case .session(let id) = target else { throw MacRemoteHostError.roomsNotAvailable }
-        try await store.engine.interrupt(id)
+        switch target {
+        case .room(let roomID):
+            // Stopping a room's turn from the phone pauses the room, like Pause on the Mac.
+            try await roomEngine(roomID).pause()
+        case .session(let id):
+            if let mapped = remoteRoom(sessionID: id) {
+                try await roomEngine(mapped.room.id).pause()
+                return
+            }
+            try await store.engine.interrupt(id)
+        }
     }
 
     func controlRoom(_ roomID: UUID, action: RemoteRoomAction) async throws {
-        throw MacRemoteHostError.roomsNotAvailable
+        let engine = try roomEngine(roomID)
+        switch action {
+        case .pause:
+            await engine.pause()
+        case .resume:
+            guard engine.state.isPaused else { throw RemoteError(.badRequest, "The room is not paused.") }
+            await engine.resume()
+            if engine.state.isPaused { throw RemoteError(.failed, engine.lastError ?? "The room could not resume.") }
+        case .stop:
+            await engine.stop()
+        }
+    }
+
+    func decideRoom(_ reply: RemoteRoomDecisionReply) async throws {
+        try await RemoteRoomBridge.decide(reply, engine: roomEngine(reply.roomID))
     }
 
     func answerQuestion(sessionID: String, requestID: String, answers: [AgentQuestionAnswer]) async throws {
@@ -208,5 +376,18 @@ final class MacRemoteHost: RemoteHost {
         guard request.isPlan else { throw MacRemoteHostError.requestNotOpen }
         // The store also refuses a mode the plan card does not offer.
         guard await store.respondToPlan(request, decision: decision) else { throw MacRemoteHostError.notAnswered(store.lastError) }
+    }
+}
+
+/// Resumes a waiting task once, from whichever comes first: an observed change or the timeout.
+private final class ChangeGate: Sendable {
+    private let waiting = Mutex<CheckedContinuation<Void, Never>?>(nil)
+
+    func arm(_ continuation: CheckedContinuation<Void, Never>) {
+        waiting.withLock { $0 = continuation }
+    }
+
+    func open() {
+        waiting.withLock { $0.take() }?.resume()
     }
 }

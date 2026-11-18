@@ -197,15 +197,18 @@ public struct WorkingRow: View {
 
     @ViewBuilder private var elapsed: some View {
         if let since {
+            // The time keeps its width in a narrow pane; the step's text is the part that shortens.
             if isSnapshot {
                 Text(Self.elapsed(from: since, to: Date()))
                     .font(theme.font(size: 13).monospacedDigit())
                     .foregroundStyle(theme.textTertiary)
+                    .fixedSize()
             } else {
                 TimelineView(.periodic(from: since, by: 1)) { context in
                     Text(Self.elapsed(from: since, to: context.date))
                         .font(theme.font(size: 13).monospacedDigit())
                         .foregroundStyle(theme.textTertiary)
+                        .fixedSize()
                 }
             }
         }

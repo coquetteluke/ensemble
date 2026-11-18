@@ -22,6 +22,14 @@ final class RemoteAppModel {
     private(set) var client: RemoteClient?
     private(set) var isDemo = false
     private let store = RemotePairingStore()
+    /// Local notifications for what needs you, from the live connection.
+    @ObservationIgnored private var notifier: RemoteNotifier!
+    /// True while the app is in front (notifications for the chat on screen are not shown then).
+    @ObservationIgnored private var isActive = true
+    @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    @ObservationIgnored private var backgroundStop: Task<Void, Never>?
+    /// How long the connection stays up after the app leaves the screen, for alerts. iOS gives about 30 seconds.
+    static let backgroundAlertTime: Duration = .seconds(25)
 
     // MARK: Navigation and per-chat UI state
 
@@ -48,6 +56,22 @@ final class RemoteAppModel {
     func open(_ route: ChatRoute, from list: RemoteTab) {
         if list == .rooms { roomsPath = [route] } else { hubPath = [route] }
         tab = list == .rooms ? .rooms : .hub
+        notifier?.clear(sessionID: route.sessionID)
+    }
+
+    /// Opens the chat a notification is about: a room from the Rooms tab, a session from the Hub.
+    func openFromNotification(_ sessionID: String) {
+        guard let client else { return }
+        if let room = client.rooms.first(where: { $0.sessionID == sessionID }) {
+            open(ChatRoute(sessionID: room.sessionID, title: room.title), from: .rooms)
+        } else {
+            open(ChatRoute(sessionID: sessionID, title: client.sessions.first { $0.id == sessionID }?.title ?? ""), from: .hub)
+        }
+    }
+
+    /// True when that chat is on screen in the app in front.
+    func isShowing(_ sessionID: String) -> Bool {
+        isActive && (tab == .hub || tab == .rooms) && selectedChat?.sessionID == sessionID
     }
 
     /// Switches the sidebar between Hub and Rooms (inner screen).
@@ -56,6 +80,9 @@ final class RemoteAppModel {
     }
 
     init() {
+        notifier = RemoteNotifier(isShowing: { [weak self] id in self?.isShowing(id) ?? false },
+                                  open: { [weak self] id in self?.openFromNotification(id) })
+        notifier.install()
         let args = ProcessInfo.processInfo.arguments
         #if DEBUG
         // Launch arguments for screenshots without tapping: -tab rooms, -open <sessionID>, -pairingCode <code>.
@@ -106,30 +133,73 @@ final class RemoteAppModel {
     func startDemo() {
         client?.stop()
         if client != nil { resetNavigation() }
-        let demo = RemoteClient(inProcessHost: DemoRemoteHost(), macName: "Demo Mac")
+        let demo = RemoteClient(inProcessHost: DemoRemoteHost(data: .showcase()), macName: "Demo Mac")
+        watchAlerts(demo)
         demo.start()
         client = demo
         isDemo = true
     }
 
     func scenePhaseChanged(_ phase: ScenePhase) {
+        isActive = phase == .active
         guard let client, !client.isInProcess else { return }
         switch phase {
         case .active:
+            endBackgroundTime()
             if !client.state.isConnected { client.reconnectNow() }
         case .background:
-            // iOS suspends sockets in the background; close cleanly and reconnect on return.
-            client.stop()
+            // iOS suspends sockets in the background. With alerts on, stay connected for the short time iOS allows so
+            // what needs you still arrives as a notification; then close cleanly and reconnect on return.
+            if RemoteNotifier.enabled && client.state.isConnected {
+                keepConnectedBriefly()
+            } else {
+                client.stop()
+            }
         default:
             break
         }
     }
 
+    private func keepConnectedBriefly() {
+        guard backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Ensemble alerts") { [weak self] in
+            MainActor.assumeIsolated { self?.stopForBackground() }
+        }
+        let time = Self.backgroundAlertTime
+        backgroundStop = Task { [weak self] in
+            try? await Task.sleep(for: time)
+            guard !Task.isCancelled else { return }
+            self?.stopForBackground()
+        }
+    }
+
+    /// The background time is up: close the connection and let iOS suspend the app.
+    private func stopForBackground() {
+        client?.stop()
+        endBackgroundTime()
+    }
+
+    private func endBackgroundTime() {
+        backgroundStop?.cancel()
+        backgroundStop = nil
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
+    }
+
+    /// Shows what newly needs you as a notification.
+    private func watchAlerts(_ client: RemoteClient) {
+        client.onAlert = { [weak self] alert in self?.notifier.post(alert) }
+    }
+
     private func connect(_ pairing: RemotePairing) {
         client?.stop()
         let c = RemoteClient(pairing: pairing, deviceName: UIDevice.current.name, deviceID: Self.deviceID())
+        watchAlerts(c)
         c.start()
         client = c
+        if RemoteNotifier.enabled { Task { await RemoteNotifier.requestAuthorization() } }
     }
 
     private static func deviceID() -> String {

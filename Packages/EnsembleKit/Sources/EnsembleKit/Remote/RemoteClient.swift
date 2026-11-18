@@ -38,6 +38,8 @@ public final class RemoteClient {
     public private(set) var usage: RemoteUsageSummary?
     public private(set) var openSessionID: String?
     public private(set) var openTranscript: RemoteTranscript?
+    /// Room decisions this phone answered, until the Mac's update replaces them.
+    public private(set) var answeredDecisionIDs: Set<String> = []
     /// Last connection or request problem, for the status screen.
     public private(set) var lastError: String?
     public let deviceName: String
@@ -48,6 +50,12 @@ public final class RemoteClient {
     @ObservationIgnored public var requestTimeout: Duration = .seconds(15)
     @ObservationIgnored public var pingInterval: Duration = .seconds(20)
     @ObservationIgnored public var maxBackoffSeconds: Double = 30
+    /// Told about everything new that needs the user, as it arrives over the live connection (never for what was
+    /// already waiting when the phone connected). The app shows these as local notifications.
+    @ObservationIgnored public var onAlert: (@MainActor (RemoteAlert) -> Void)?
+    /// How long a new prompt waits before its alert, so the session or room it belongs to has arrived too.
+    @ObservationIgnored public var alertDelay: Duration = .milliseconds(400)
+    @ObservationIgnored private var alertedIDs: Set<String> = []
 
     @ObservationIgnored private let urlSession: URLSession
     @ObservationIgnored private let localHost: (any RemoteHost)?
@@ -503,10 +511,28 @@ public final class RemoteClient {
         try await request(.roomControl(RemoteRoomControl(roomID: roomID, action: action)))
     }
 
+    /// Answers what a room waits on. `text` goes with choices that take it.
+    public func decide(_ decision: RemoteRoomDecision, in roomID: UUID, choice: RemoteRoomChoice, text: String? = nil) async throws {
+        try await request(.decideRoom(RemoteRoomDecisionReply(roomID: roomID, decisionID: decision.id, choice: choice.id,
+                                                              text: choice.input == .none ? nil : text)))
+        answeredDecisionIDs.insert(decision.id)
+    }
+
     // MARK: - Lookups for the UI
 
     public func pendingPermissions(for sessionID: String) -> [PermissionRequest] {
         permissions.filter { $0.sessionID == sessionID }
+    }
+
+    /// Open prompts from a room's agents and their subagents, oldest first.
+    public func pendingPermissions(inRoom roomID: UUID) -> [PermissionRequest] {
+        room(id: roomID)?.permissions.filter { !answeredPermissionIDs.contains($0.id) } ?? []
+    }
+
+    /// The room's decision while it is still open (not answered from this phone yet).
+    public func openDecision(inRoom roomID: UUID) -> RemoteRoomDecision? {
+        guard let decision = room(id: roomID)?.decision, !answeredDecisionIDs.contains(decision.id) else { return nil }
+        return decision
     }
 
     public func room(id: UUID?) -> RemoteRoom? {
@@ -529,7 +555,12 @@ public final class RemoteClient {
     private func apply(_ update: RemoteUpdate) {
         switch update {
         case .sessionUpserted(let s):
+            let before = sessions.first { $0.id == s.id }
             if let i = sessions.firstIndex(where: { $0.id == s.id }) { sessions[i] = s } else { sessions.append(s) }
+            if s.activity == .failed, before?.activity != .failed, s.roomID == nil {
+                alert(RemoteAlert(id: "failed-\(s.id)-\(s.lastActivity.timeIntervalSinceReferenceDate)", kind: .failed,
+                                  sessionID: s.id, title: s.title, body: "The last turn failed"))
+            }
         case .sessionRemoved(let id):
             sessions.removeAll { $0.id == id }
         case .transcriptUpsert(let sid, let item):
@@ -554,11 +585,17 @@ public final class RemoteClient {
                 }
             }
         case .permissionAsked(let p):
-            if !permissions.contains(where: { $0.id == p.id }) { permissions.append(p) }
+            if !permissions.contains(where: { $0.id == p.id }) {
+                permissions.append(p)
+                schedulePermissionAlert(p)
+            }
             answeredPermissionIDs.remove(p.id)
             if openTranscript?.sessionID == p.sessionID { upsertTranscriptItem(.permission(p)) }
         case .permissionReplied(_, let requestID, let decision):
             markAnswered(requestID, decision: decision)
+            for r in rooms.indices where rooms[r].permissions.contains(where: { $0.id == requestID }) {
+                rooms[r].permissions.removeAll { $0.id == requestID }
+            }
         case .permissionModeChanged(let target, let mode):
             switch target {
             case .session(let id):
@@ -570,7 +607,12 @@ public final class RemoteClient {
         case .usage(let sid, let u):
             if let i = sessions.firstIndex(where: { $0.id == sid }) { sessions[i].usage = u }
         case .roomUpserted(let room):
+            let before = rooms.first { $0.id == room.id }
             if let i = rooms.firstIndex(where: { $0.id == room.id }) { rooms[i] = room } else { rooms.append(room) }
+            if let decision = room.decision, decision.needsYou, decision.id != before?.decision?.id {
+                alert(RemoteAlert(id: "room-\(room.id.uuidString)-\(decision.id)", kind: .roomDecision, sessionID: room.sessionID,
+                                  title: room.title, body: decision.title))
+            }
             if openTranscript?.roomID == room.id {
                 openTranscript?.permissionMode = room.permissionMode
                 openTranscript?.agents = room.agents
@@ -580,6 +622,51 @@ public final class RemoteClient {
         case .usageSummary(let summary):
             usage = summary
         }
+    }
+
+    // MARK: - Alerts
+
+    private func alert(_ alert: RemoteAlert) {
+        guard onAlert != nil, alertedIDs.insert(alert.id).inserted else { return }
+        if alertedIDs.count > 2000 { alertedIDs = [alert.id] }
+        onAlert?(alert)
+    }
+
+    /// Alerts for a new prompt a moment later, once the session row or room it belongs to has arrived, and only if it is
+    /// still open by then.
+    private func schedulePermissionAlert(_ request: PermissionRequest) {
+        guard onAlert != nil, !answeredPermissionIDs.contains(request.id) else { return }
+        let delay = alertDelay
+        Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard let self, self.permissions.contains(where: { $0.id == request.id }) else { return }
+            self.alert(self.permissionAlert(request))
+        }
+    }
+
+    /// Who asks, in a few words, without the command itself (notifications can show on the lock screen).
+    func permissionAlert(_ request: PermissionRequest) -> RemoteAlert {
+        let room = rooms.first { r in
+            r.permissions.contains { $0.id == request.id } || r.agents.contains { $0.sessionID == request.sessionID }
+        }
+        let session = sessions.first { $0.id == request.sessionID }
+        let agent = room?.agents.first { $0.sessionID == request.sessionID }?.name
+        let kind: RemoteAlert.Kind = request.isPlan ? .plan : request.isQuestion ? .question : .permission
+        var body: String
+        switch kind {
+        case .plan: body = "The plan is ready"
+        case .question: body = "Has a question"
+        default:
+            switch request.kind {
+            case "bash", "shell", "command": body = "Wants to run a command"
+            case "edit", "write", "patch", "multiedit": body = "Wants to edit a file"
+            case "webfetch", "fetch", "websearch": body = "Wants to open a web page"
+            default: body = "Asks for permission"
+            }
+        }
+        if let agent { body = "\(agent): \(body)" }
+        return RemoteAlert(id: "permission-\(request.id)", kind: kind, sessionID: room?.sessionID ?? request.sessionID,
+                           title: room?.title ?? session?.title ?? "A session", body: body)
     }
 
     private func upsertTranscriptItem(_ item: TranscriptItem) {
@@ -619,5 +706,34 @@ public final class RemoteClient {
             }
         }
         return error.localizedDescription
+    }
+}
+
+/// Something new that needs the user, from the live connection.
+public struct RemoteAlert: Hashable, Sendable, Identifiable {
+    public enum Kind: String, Sendable {
+        case permission
+        case plan
+        case question
+        case roomDecision
+        case failed
+    }
+
+    /// Stable per event, so the same one is never shown twice.
+    public var id: String
+    public var kind: Kind
+    /// The chat to open: a session, or a room's transcript.
+    public var sessionID: String
+    /// The session or room title.
+    public var title: String
+    /// What it waits on, in a few words.
+    public var body: String
+
+    public init(id: String, kind: Kind, sessionID: String, title: String, body: String) {
+        self.id = id
+        self.kind = kind
+        self.sessionID = sessionID
+        self.title = title
+        self.body = body
     }
 }
