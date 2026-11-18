@@ -99,10 +99,11 @@ struct HubView: View {
     private func quickActions(_ s: SessionSummary, bucket: HubBucket) -> some View {
         if let ask = client.pendingPermissions(for: s.id).first, PermissionDisplay.fitsQuickApproval(ask) {
             VStack(alignment: .leading, spacing: 8) {
+                // Never truncated: everything a one-tap approval covers is on screen.
                 Text(ask.title)
                     .font(.system(.footnote, design: .monospaced))
                     .foregroundStyle(RemoteTheme.primaryText)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RemoteTheme.cardRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
