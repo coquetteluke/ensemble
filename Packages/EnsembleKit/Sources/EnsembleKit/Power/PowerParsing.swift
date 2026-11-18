@@ -95,9 +95,10 @@ public enum PowerSudoers {
         !user.isEmpty && user.count <= 255 && user.wholeMatch(of: /[A-Za-z0-9._][A-Za-z0-9._-]*/) != nil
     }
 
-    /// The sudoers line: only `pmset disablesleep`, only as root, no password.
+    /// The sudoers line: exactly `pmset disablesleep 1` and `pmset disablesleep 0`, only as root, no
+    /// password. No wildcard, so no other pmset arguments can ride along.
     public static func ruleLine(user: String) -> String {
-        "\(user) ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep *"
+        "\(user) ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0"
     }
 
     /// Shell script run as root. It writes the rule to a temporary file next to the target (sudo skips

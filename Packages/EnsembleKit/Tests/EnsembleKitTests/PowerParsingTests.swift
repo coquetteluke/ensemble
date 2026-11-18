@@ -87,7 +87,7 @@ import Testing
     }
 
     @Test func ruleMatchesTheLidlockRule() {
-        #expect(PowerSudoers.ruleLine(user: "luke") == "luke ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep *")
+        #expect(PowerSudoers.ruleLine(user: "luke") == "luke ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0")
     }
 
     @Test func installScriptChecksBeforeInstalling() throws {
@@ -103,7 +103,7 @@ import Testing
         let move = try index("/bin/mv -f")
         #expect(write < check && check < owner && owner < mode && mode < move)
         #expect(lines[0] == "set -e")
-        #expect(script.contains("'luke ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep *'"))
+        #expect(script.contains("'luke ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0'"))
         #expect(script.contains("'/private/etc/sudoers.d/ensemble-pmset'"))
         // The temporary file has a dot in its name, so sudo never reads it.
         #expect(script.contains("/private/etc/sudoers.d/.ensemble-pmset.XXXXXX"))
