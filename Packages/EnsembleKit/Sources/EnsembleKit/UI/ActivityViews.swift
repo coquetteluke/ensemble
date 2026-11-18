@@ -91,39 +91,117 @@ public struct ActivityGroupView: View {
 
 // MARK: - Working row
 
-/// Four dots turning, shown while an agent works.
-public struct DotsSpinner: View {
+/// The app icon's constellation, alive: four stars drift on small orbits and the links between them draw one after
+/// another, so the shape keeps connecting while an agent works. Still in snapshots and with Reduce Motion.
+public struct ConstellationSpinner: View {
     var size: CGFloat
-    var color: Color?
+    /// A fixed moment to draw instead of animating (snapshots of single frames).
+    var frozenAt: Double?
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
-    @State private var turning = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
-    public init(size: CGFloat = 14, color: Color? = nil) {
+    public init(size: CGFloat = 16, frozenAt: Double? = nil) {
         self.size = size
-        self.color = color
+        self.frozenAt = frozenAt
     }
+
+    /// Where the icon's stars sit, in a unit square: white, teal, amber, pink.
+    static let stars: [(x: Double, y: Double)] = [(0.20, 0.22), (0.80, 0.30), (0.33, 0.80), (0.81, 0.74)]
+    /// The icon's five links.
+    static let links: [(from: Int, to: Int)] = [(0, 1), (1, 3), (3, 2), (2, 0), (1, 2)]
+    /// One full round of links, in seconds.
+    public static let period = 2.8
+    /// Each star's own drift: frequencies (cycles a second) and phases, so they never move in step.
+    static let drift: [(fx: Double, fy: Double, phase: Double)] = [(0.31, 0.23, 0.0), (0.27, 0.35, 1.7), (0.37, 0.29, 3.1), (0.24, 0.33, 4.6)]
 
     public var body: some View {
         let side = theme.z(size)
-        let dot = side * 0.3
-        ZStack {
-            ForEach(0..<4, id: \.self) { index in
-                let angle = Double(index) * .pi / 2 + .pi / 4
-                Circle()
-                    .fill(color ?? theme.accent)
-                    .frame(width: dot, height: dot)
-                    .opacity([1, 0.8, 0.55, 0.35][index])
-                    .offset(x: cos(angle) * side * 0.32, y: sin(angle) * side * 0.32)
+        Group {
+            if let frozenAt {
+                frame(at: frozenAt)
+            } else if isSnapshot || reduceMotion {
+                frame(at: 1.1)
+            } else {
+                TimelineView(.animation) { context in
+                    frame(at: context.date.timeIntervalSinceReferenceDate)
+                }
             }
         }
         .frame(width: side, height: side)
-        .rotationEffect(.degrees(turning ? 360 : 0))
-        .onAppear {
-            guard !isSnapshot else { return }
-            withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) { turning = true }
-        }
         .accessibilityHidden(true)
+    }
+
+    private func frame(at time: Double) -> some View {
+        let dark = colorScheme == .dark
+        let colors: [Color] = [
+            dark ? Color(red: 0.96, green: 0.96, blue: 0.99) : theme.accent,
+            Color(red: 0.18, green: 0.84, blue: 0.70),
+            Color(red: 0.98, green: 0.67, blue: 0.20),
+            Color(red: 0.96, green: 0.40, blue: 0.67),
+        ]
+        let line = dark ? Color(red: 0.68, green: 0.63, blue: 1.0) : theme.accent
+        return Canvas { context, canvas in
+            let side = min(canvas.width, canvas.height)
+            let points = Self.positions(at: time, side: side)
+            let lineWidth = max(0.8, side * 0.05)
+            var glow = [Double](repeating: 0, count: Self.stars.count)
+            for (index, link) in Self.links.enumerated() {
+                let a = points[link.from], b = points[link.to]
+                var base = Path()
+                base.move(to: a)
+                base.addLine(to: b)
+                context.stroke(base, with: .color(line.opacity(0.25)), lineWidth: lineWidth)
+                let state = Self.linkState(index: index, time: time)
+                guard state.alpha > 0 else { continue }
+                var drawn = Path()
+                drawn.move(to: a)
+                drawn.addLine(to: CGPoint(x: a.x + (b.x - a.x) * state.progress, y: a.y + (b.y - a.y) * state.progress))
+                context.stroke(drawn, with: .color(line.opacity(state.alpha)), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                glow[link.to] = max(glow[link.to], state.arrival)
+            }
+            let radius = side * 0.085
+            for (index, point) in points.enumerated() {
+                let pulse = glow[index]
+                let halo = radius * (1.6 + 0.3 * pulse)
+                context.fill(Path(ellipseIn: CGRect(x: point.x - halo, y: point.y - halo, width: halo * 2, height: halo * 2)),
+                             with: .color(colors[index].opacity(0.14 + 0.16 * pulse)))
+                let core = radius * (1 + 0.18 * pulse)
+                context.fill(Path(ellipseIn: CGRect(x: point.x - core, y: point.y - core, width: core * 2, height: core * 2)),
+                             with: .color(colors[index]))
+            }
+        }
+    }
+
+    /// Each star's place at `time`: its spot in the icon plus a small drift.
+    static func positions(at time: Double, side: CGFloat) -> [CGPoint] {
+        let reach = 0.035
+        return stars.indices.map { index in
+            let star = stars[index], move = drift[index]
+            let x = star.x + reach * sin(2 * .pi * move.fx * time + move.phase)
+            let y = star.y + reach * cos(2 * .pi * move.fy * time + move.phase * 0.7)
+            return CGPoint(x: x * side, y: y * side)
+        }
+    }
+
+    /// How far a link has drawn (0 to 1), how bright it is, and how much its end star glows as it arrives.
+    /// Each link draws in the first 40% of its turn, holds, then fades back to the faint base line.
+    static func linkState(index: Int, time: Double) -> (progress: Double, alpha: Double, arrival: Double) {
+        let offset = Double(index) / Double(links.count)
+        var local = (time / period - offset).truncatingRemainder(dividingBy: 1)
+        if local < 0 { local += 1 }
+        let ease = { (x: Double) in x * x * (3 - 2 * x) }
+        switch local {
+        case ..<0.4:
+            return (ease(local / 0.4), 0.9, 0)
+        case ..<0.75:
+            let fade = (local - 0.4) / 0.35
+            let arrival = max(0, 1 - fade * 2)
+            return (1, 0.9 - 0.65 * ease(fade), arrival)
+        default:
+            return (0, 0, 0)
+        }
     }
 }
 
@@ -158,7 +236,7 @@ public struct WorkingRow: View {
                             .foregroundStyle(theme.warning)
                             .frame(width: theme.z(16))
                     } else {
-                        DotsSpinner(size: 14).frame(width: theme.z(16))
+                        ConstellationSpinner(size: 16).frame(width: theme.z(16))
                     }
                     Text(Self.currentStep(items, waiting: waitingForPermission, baseDirectory: baseDirectory))
                         .font(theme.font(size: 13))
