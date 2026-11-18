@@ -165,6 +165,144 @@
     },
     {
       "match": [
+        "write mixed case git hook"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": ".GiT/hooks/pre-commit",
+          "content": "#!/bin/sh\nexit 0\n"
+        }
+      },
+      "then": "Wrote the hook."
+    },
+    {
+      "match": [
+        "write nested dot config"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "sub/.HuSkY/pre-commit",
+          "content": "#!/bin/sh\nexit 0\n"
+        }
+      },
+      "then": "Wrote the husky hook."
+    },
+    {
+      "match": [
+        "write absolute dot config"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "__PROJECT_DIR__/.GitHub/workflows/ci.yml",
+          "content": "on: push\n"
+        }
+      },
+      "then": "Wrote the workflow."
+    },
+    {
+      "match": [
+        "write gitlab ci"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": ".gitlab-ci.yml",
+          "content": "test:\n  script: echo hi\n"
+        }
+      },
+      "then": "Wrote the CI file."
+    },
+    {
+      "match": [
+        "write mixed case package json"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "PaCkAgE.json",
+          "content": "{\"scripts\": {\"test\": \"echo planted\"}}\n"
+        }
+      },
+      "then": "Wrote PaCkAgE.json."
+    },
+    {
+      "match": [
+        "write lowercase makefile"
+      ],
+      "tool": {
+        "name": "write",
+        "arguments": {
+          "path": "makefile",
+          "content": "all:\n"
+        }
+      },
+      "then": "Wrote makefile."
+    },
+    {
+      "match": [
+        "run npm test"
+      ],
+      "tool": {
+        "name": "shell",
+        "arguments": {
+          "command": "npm test"
+        }
+      },
+      "then": "Ran npm test."
+    },
+    {
+      "match": [
+        "run make test"
+      ],
+      "tool": {
+        "name": "shell",
+        "arguments": {
+          "command": "make test"
+        }
+      },
+      "then": "Ran make test."
+    },
+    {
+      "match": [
+        "run swift build"
+      ],
+      "tool": {
+        "name": "shell",
+        "arguments": {
+          "command": "swift build"
+        }
+      },
+      "then": "Ran swift build."
+    },
+    {
+      "match": [
+        "run git show"
+      ],
+      "tool": {
+        "name": "shell",
+        "arguments": {
+          "command": "git show HEAD"
+        }
+      },
+      "then": "Ran git show."
+    },
+    {
+      "match": [
+        "cd and git show"
+      ],
+      "tool": {
+        "name": "shell",
+        "arguments": {
+          "command": "cd sub && git show HEAD"
+        }
+      },
+      "then": "Ran git show in sub."
+    },
+    {
+      "match": [
         "write plain notes"
       ],
       "tool": {

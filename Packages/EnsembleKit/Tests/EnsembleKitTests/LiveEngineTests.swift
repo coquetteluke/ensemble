@@ -518,6 +518,82 @@ struct LiveEngineTests {
         }
     }
 
+    /// macOS disks ignore case, OpenCode's matching does not: every path segment that starts with a dot asks, in any
+    /// spelling, at the top, nested and given as an absolute path.
+    @Test func dotPathsAskInAnyCase() async throws {
+        try await withHarness { h in
+            for mode in [PermissionMode.auto, .acceptEdits] {
+                let session = try await h.createSession(mode)
+                for (prompt, resource) in [("write mixed case git hook", ".GiT/hooks/pre-commit"),
+                                           ("write nested dot config", "sub/.HuSkY/pre-commit"),
+                                           ("write absolute dot config", ".GitHub/workflows/ci.yml"),
+                                           ("write gitlab ci", ".gitlab-ci.yml")] {
+                    let result = try await h.promptUntilAskOrEnd(session.id, "please \(prompt)")
+                    guard case .asked(let request) = result else {
+                        Issue.record("\(prompt) did not ask in \(mode): \(result)")
+                        continue
+                    }
+                    #expect(request.kind == "edit")
+                    #expect(request.title == resource)
+                    try await h.reject(request)
+                }
+            }
+            // The case-insensitive disk would have put the hook in the real .git folder.
+            for name in [".git/hooks/pre-commit", "sub/.husky/pre-commit", ".github/workflows/ci.yml", ".gitlab-ci.yml"] {
+                #expect(!FileManager.default.fileExists(atPath: h.directory.appendingPathComponent(name).path), "\(name) was written")
+            }
+        }
+    }
+
+    /// OpenCode cannot match a build file name in every case, so `PaCkAgE.json` can be edited in Auto; every command
+    /// that would run it asks instead, including `git show` after a `cd`, which OpenCode does not check.
+    @Test func autoAsksBeforeRunningProjectCode() async throws {
+        try await withHarness { h in
+            let session = try await h.createSession(.auto)
+            #expect(try await h.promptUntilAskOrEnd(session.id, "please write mixed case package json") == .ended("succeeded"))
+            #expect(FileManager.default.fileExists(atPath: h.directory.appendingPathComponent("PaCkAgE.json").path))
+            try FileManager.default.createDirectory(at: h.directory.appendingPathComponent("sub"), withIntermediateDirectories: true)
+            for (prompt, resource) in [("run npm test", "npm test"), ("run make test", "make test"),
+                                       ("run swift build", "swift build"), ("run git show", "git show HEAD"),
+                                       ("cd and git show", "git show HEAD")] {
+                let result = try await h.promptUntilAskOrEnd(session.id, "please \(prompt)")
+                guard case .asked(let request) = result else {
+                    Issue.record("\(prompt) did not ask: \(result)")
+                    continue
+                }
+                #expect(request.kind == "shell")
+                #expect(request.title == resource)
+                try await h.reject(request)
+            }
+            // Read-only commands still run.
+            #expect(try await h.promptUntilAskOrEnd(session.id, "auto safe please") == .ended("succeeded"))
+        }
+    }
+
+    /// Evidence for the rules above: OpenCode treats `[` and `]` as plain text and compares case exactly.
+    @Test func engineWildcardsHaveNoCharacterClassesOrCaseFolding() async throws {
+        try await withHarness { h in
+            let session = try await h.createSession(.ask)
+            let rules = [PermissionRule("*", "*", "ask"), PermissionRule("edit", "*", "allow"),
+                         PermissionRule("edit", "[Mm]akefile", "ask"), PermissionRule("edit", "Makefile", "ask")]
+            try await h.client.sendIgnoringBody("PATCH", "/api/session/\(session.id)", body: ["permissions": try JSONValue(encoding: rules)])
+            #expect(try await h.client.permissionRules(session.id) == rules)
+
+            // Control: the exact spelling asks.
+            let control = try await h.promptUntilAskOrEnd(session.id, "please write root makefile")
+            guard case .asked(let request) = control else {
+                Issue.record("Makefile did not ask: \(control)")
+                return
+            }
+            #expect(request.title == "Makefile")
+            try await h.reject(request)
+
+            // Neither `[Mm]akefile` nor `Makefile` matches `makefile`, so the edit runs.
+            #expect(try await h.promptUntilAskOrEnd(session.id, "please write lowercase makefile") == .ended("succeeded"))
+            #expect(FileManager.default.fileExists(atPath: h.directory.appendingPathComponent("makefile").path))
+        }
+    }
+
     @Test func subagentsCopyTheParentsRules() async throws {
         try await withHarness { h in
             let parent = try await h.createSession(.ask)

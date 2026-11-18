@@ -17,6 +17,56 @@ import Testing
         "opencode_read_mcp_resource", "opencode_watch_mcp_event", "github_create_issue", "some_future_tool",
     ]
 
+    /// Commands that run code the project defines. Auto must ask before each of them.
+    static let projectCodeCommands = [
+        "npm test", "npm test -- --watch=false", "npm run build", "npm run test", "pnpm test", "pnpm run build",
+        "pnpm build", "yarn test", "yarn run build", "yarn build", "bun test", "bun run build", "bun run dev",
+        "make", "make all", "make build", "make test", "make check", "make lint", "make -j8", "just", "just test",
+        "task build", "rake", "rake test", "bundle exec rspec", "bundle exec rake",
+        "pytest", "pytest -q", "python -m pytest", "python3 -m pytest tests", "tox", "tox -e py312", "nox",
+        "cargo build", "cargo build --release", "cargo test", "cargo run", "cargo check",
+        "swift build", "swift build -c release", "swift test", "swift run", "xcodebuild -scheme App build",
+        "go test ./...", "go build ./...", "go run .", "go vet ./...", "gradle build", "./gradlew test", "gradlew build",
+        "mvn test", "./mvnw package",
+        // Run helpers named in a repository's config; a planted bare repository makes these run code.
+        "git diff", "git diff HEAD~1", "git log --oneline -5", "git log -p", "git show HEAD", "git show --stat",
+    ]
+
+    /// Dot paths in many spellings, at the top, nested and absolute.
+    static let dotPaths = [
+        ".git/hooks/pre-commit", ".GiT/hooks/pre-commit", ".GIT/config", ".git/info/attributes", "sub/.GiT/hooks/post-merge",
+        "/Users/me/repo/.GiT/hooks/post-merge", "/Users/me/repo/.git/config",
+        ".github/workflows/ci.yml", ".GitHub/Workflows/CI.yml", "sub/.GITHUB/workflows/x.yaml", ".github/dependabot.yml",
+        ".husky/pre-commit", ".HUSKY/pre-commit", "apps/web/.husky/pre-push", ".vscode/tasks.json", ".VSCode/settings.json",
+        ".devcontainer/devcontainer.json", ".idea/workspace.xml", ".circleci/config.yml", ".buildkite/pipeline.yml",
+        ".travis.yml", ".gitlab-ci.yml", ".GitLab-CI.yml", "sub/.gitlab-ci.yml",
+        ".envrc", ".EnvRc", "apps/web/.envrc", ".pre-commit-config.yaml", ".Pre-Commit-Config.YAML", ".lefthook.yml",
+        ".lefthook-local.yml", ".lintstagedrc", ".lintstagedrc.json", ".LintStagedRC.js", ".gitmodules", ".GitModules",
+        ".gitattributes", "sub/dir/.GitAttributes", ".npmrc", ".NPMRC", "web/.npmrc", ".yarnrc", ".yarnrc.yml",
+        ".pnpmfile.cjs", ".tool-versions", ".python-version", ".node-version", ".nvmrc", ".mise.toml",
+        ".cargo/config", ".cargo/config.toml", ".Cargo/Config.toml", "crates/a/.cargo/config.toml",
+        ".gitignore", ".env.example", "a/b/c/.d/e.txt",
+    ]
+
+    /// Non-dot build and hook files in their usual spellings.
+    static let protectedBuildFiles = [
+        "Makefile", "makefile", "MAKEFILE", "GNUmakefile", "rules.mk", "sub/dir/Makefile", "/Users/me/elsewhere/Makefile",
+        "CMakeLists.txt", "src/CMakeLists.txt", "cmake/tools.cmake", "meson.build", "BUILD.bazel", "WORKSPACE",
+        "MODULE.bazel", "tools/defs.bzl",
+        "package.json", "web/package.json", "Package.json", "PACKAGE.JSON", "pnpm-workspace.yaml", "lint-staged.config.js",
+        "deno.json", "bunfig.toml",
+        "pyproject.toml", "setup.py", "setup.cfg", "tests/conftest.py", "tox.ini", "noxfile.py", "pytest.ini",
+        "Cargo.toml", "crates/a/Cargo.toml", "crates/a/build.rs", "rust-toolchain", "rust-toolchain.toml", "go.mod", "go.work",
+        "Package.swift", "PACKAGE.SWIFT", "Packages/EnsembleKit/Package.swift", "App.xcodeproj/project.pbxproj",
+        "App.xcodeproj/xcshareddata/xcschemes/App.xcscheme", "Config/Base.xcconfig", "project.yml",
+        "Podfile", "Gemfile", "app.gemspec", "Rakefile", "composer.json", "justfile", "Justfile", "Taskfile.yml",
+        "build.gradle", "app/build.gradle.kts", "settings.gradle.kts", "gradle.properties", "gradlew",
+        "gradle/wrapper/gradle-wrapper.properties", "pom.xml", "mvnw",
+        "lefthook.yml", "Lefthook.yml", "LEFTHOOK.YML", "lefthook-local.yaml", "Jenkinsfile", "azure-pipelines.yml",
+        "bitbucket-pipelines.yml",
+        "mise.toml", "Brewfile", "flake.nix", "shell.nix", "devbox.json",
+    ]
+
     @Test func onlyBypassStartsFromAllowAll() {
         for mode in [PermissionMode.ask, .acceptEdits, .auto] {
             let rules = PermissionRules.ruleset(for: mode)
@@ -59,38 +109,73 @@ import Testing
             "rm -r -f x", "rm -rf x", "/bin/rm -rf x", "python3 -c \"import os; os.remove('x')\"", "node -e \"1\"", "perl -e 1",
             "find . -delete", "find . -name '*.tmp' -delete", "find . -exec rm {} ;", "git push origin +main", "git push --force",
             "git reset --hard", "git branch -D main", "sudo ls", "curl https://example.com", "sh", "echo hi > out.txt",
-            "git log --output=/tmp/x", "rg --pre ./script foo", "make install", "npm install", "chmod -R 777 .",
+            "git status --output=/tmp/x", "rg --pre ./script foo", "make install", "npm install", "chmod -R 777 .",
+            "git -c core.fsmonitor=./x status", "git --git-dir=evil status", "git -C evil show HEAD", "env GIT_DIR=evil git status",
+            "sh ./script.sh", "./script.sh", "bash -c 'ls'", "npx vitest", "node scripts/build.js",
         ] {
             #expect(shell(command, .auto) == "ask", "\(command) should ask in Auto")
         }
     }
 
-    @Test func autoRunsSafeCommands() {
+    /// OpenCode keeps `VAR=value` prefixes in the checked command, so they never match the allow list.
+    @Test func autoAsksForCommandsWithEnvironmentPrefixes() {
+        for command in ["GIT_EXTERNAL_DIFF=./x git status", "GIT_DIR=evil git status", "FOO=1 ls", "PAGER=./x git branch"] {
+            #expect(shell(command, .auto) == "ask", "\(command) should ask in Auto")
+        }
+    }
+
+    @Test func autoAsksBeforeCommandsThatRunProjectCode() {
+        for command in Self.projectCodeCommands {
+            #expect(shell(command, .auto) == "ask", "\(command) runs project code and should ask in Auto")
+            #expect(shell(command, .acceptEdits) == "ask")
+            #expect(shell(command, .ask) == "ask")
+        }
+        // Nothing on the allow list is a build, test or task runner.
+        for pattern in PermissionRules.autoAllowedShell {
+            let tool = pattern.split(separator: " ").first.map(String.init) ?? ""
+            #expect(["ls", "pwd", "which", "cat", "head", "tail", "wc", "echo", "grep", "rg", "find", "git"].contains(tool), "\(pattern)")
+            if tool == "git" {
+                #expect(pattern.hasPrefix("git status") || pattern.hasPrefix("git branch"), "\(pattern)")
+            }
+        }
+    }
+
+    @Test func autoRunsReadOnlyCommands() {
         for command in [
-            "git status", "git status --short", "git diff", "git log --oneline -5", "git show HEAD", "git branch",
-            "swift test", "swift build -c release", "xcodebuild -scheme App build", "ls", "ls -la", "pwd", "cat README.md",
-            "grep -rn foo .", "rg foo", "find . -name '*.swift'", "npm test", "npm run build", "cargo test", "go test ./...",
-            "pytest -q", "make", "make test", "echo hello", "wc -l file.txt", "which swift",
+            "git status", "git status --short", "git branch", "git branch -a", "git branch --show-current", "ls", "ls -la",
+            "pwd", "cat README.md", "head -5 a.txt", "tail -n 2 a.txt", "grep -rn foo .", "rg foo", "find . -name '*.swift'",
+            "echo hello", "wc -l file.txt", "which swift",
         ] {
             #expect(shell(command, .auto) == "allow", "\(command) should run in Auto")
         }
     }
 
-    /// Edit resources are relative to the session folder (`sub/Makefile`); outside it they are absolute.
-    @Test func protectedBuildFilesAskWhenEditsAreAllowed() {
-        let protected = [
-            "Makefile", "makefile", "GNUmakefile", "rules.mk", "sub/dir/Makefile", "/Users/me/elsewhere/Makefile", "MAKEFILE",
-            "package.json", "web/package.json", ".npmrc", ".yarnrc", ".yarnrc.yml", "pyproject.toml", "setup.py", "setup.cfg",
-            "tests/conftest.py", "tox.ini", "noxfile.py", "pytest.ini", "Cargo.toml", "crates/a/build.rs", ".cargo/config",
-            ".cargo/config.toml", "Package.swift", "Packages/EnsembleKit/Package.swift", "App.xcodeproj/project.pbxproj",
-            "App.xcodeproj/xcshareddata/xcschemes/App.xcscheme", "Config/Base.xcconfig", "project.yml", "Podfile", "Gemfile",
-            "Rakefile", "justfile", "Taskfile.yml", "build.gradle", "app/build.gradle.kts", "settings.gradle.kts",
-            "gradle.properties", "pom.xml", ".git/hooks/pre-commit", ".git/config", "/Users/me/repo/.git/hooks/post-merge",
-            ".github/workflows/ci.yml", "sub/.github/workflows/x.yaml", ".husky/pre-commit", ".envrc", ".tool-versions",
-            "Brewfile", "go.mod", "rust-toolchain.toml", ".python-version", "mise.toml", "PACKAGE.SWIFT", "Package.swift",
-        ]
+    @Test func dotPathsAskInEveryCaseWhenEditsAreAllowed() {
         for mode in [PermissionMode.acceptEdits, .auto] {
-            for path in protected {
+            for path in Self.dotPaths {
+                #expect(effect("edit", path, mode) == "ask", "\(path) should ask in \(mode)")
+            }
+            // A dot inside a name, or a folder with a dot in the middle, is not a dot path.
+            for path in ["Sources/App.swift", "src/v1.2/x.txt", "a.b/c.txt", "file.", "docs/dot.md", "notes/env.txt"] {
+                #expect(effect("edit", path, mode) == "allow", "\(path) should be editable in \(mode)")
+            }
+        }
+    }
+
+    /// HFS+ drops these characters from names, so `\u{200C}.git` is `.git` there.
+    @Test func pathsWithInvisibleCharactersAsk() {
+        #expect(PermissionRules.ignorableCharacterEditPatterns.count == 16)
+        for mode in [PermissionMode.acceptEdits, .auto] {
+            for path in ["\u{200C}.git/hooks/pre-commit", "sub/\u{200D}.github/workflows/x.yml", "Make\u{200E}file",
+                         "\u{FEFF}.envrc", "a/\u{202E}b.txt", "\u{206A}package.json"] {
+                #expect(effect("edit", path, mode) == "ask", "\(path.unicodeScalars.map { String($0.value, radix: 16) }) should ask")
+            }
+        }
+    }
+
+    @Test func protectedBuildFilesAskInTheirUsualSpellings() {
+        for mode in [PermissionMode.acceptEdits, .auto] {
+            for path in Self.protectedBuildFiles {
                 #expect(effect("edit", path, mode) == "ask", "\(path) should ask in \(mode)")
             }
             for path in ["Sources/App.swift", "README.md", "notes/Makefile.txt", "mypackage.json.bak", "src/setup.pyc",
@@ -100,22 +185,45 @@ import Testing
         }
     }
 
+    /// OpenCode has no character classes and no case folding, so some spellings of build files are editable in
+    /// Auto. Each one still needs a command to run it, and those commands ask.
+    @Test func mixedCaseBuildFilesCannotRunWithoutAsking() {
+        let pairs: [(file: String, command: String)] = [
+            ("PaCkAgE.json", "npm test"), ("web/pAcKaGe.json", "npm run build"), ("MaKeFiLe", "make"),
+            ("Ma\u{212A}efile", "make test"), ("sub/CaRgO.toml", "cargo test"), ("PyProject.TOML", "pytest -q"),
+            ("cOnFtEsT.py", "python3 -m pytest"), ("PaCkAgE.swift", "swift build"), ("JuStFiLe", "just test"),
+            ("bUiLd.GrAdLe", "./gradlew test"), ("PoM.xml", "mvn test"), ("gO.mod", "go test ./..."),
+        ]
+        for (file, command) in pairs {
+            #expect(effect("edit", file, .auto) == "allow", "\(file): if this asks now, update this test")
+            #expect(shell(command, .auto) == "ask", "\(command) would run \(file) without asking")
+        }
+        // `[Mm]` is literal text to OpenCode, so a pattern like this never helps.
+        #expect(!PermissionRules.engineMatch("[Mm]akefile", "makefile"))
+        #expect(!PermissionRules.protectedEditPatterns.contains { $0.contains("[") })
+    }
+
     @Test func askModeAsksForEveryEdit() {
         #expect(effect("edit", "Sources/App.swift", .ask) == "ask")
         #expect(effect("edit", "Makefile", .ask) == "ask")
+        #expect(effect("edit", ".GiT/hooks/pre-commit", .ask) == "ask")
+        #expect(effect("edit", "PaCkAgE.json", .ask) == "ask")
         #expect(shell("git status", .ask) == "ask")
     }
 
     @Test func acceptEditsRunsEditsAndAsksForEveryCommand() {
         #expect(effect("edit", "a.txt", .acceptEdits) == "allow")
+        #expect(effect("edit", ".GiT/hooks/pre-commit", .acceptEdits) == "ask")
         #expect(shell("git status", .acceptEdits) == "ask")
         #expect(shell("ls", .acceptEdits) == "ask")
     }
 
     @Test func bypassAllowsEverything() {
         #expect(shell("rm -rf /tmp/x", .bypass) == "allow")
+        #expect(shell("make", .bypass) == "allow")
         #expect(effect("edit", "/etc/hosts", .bypass) == "allow")
         #expect(effect("edit", "Makefile", .bypass) == "allow")
+        #expect(effect("edit", ".git/hooks/pre-commit", .bypass) == "allow")
         #expect(effect("read", ".env", .bypass) == "allow")
         #expect(effect("github_create_issue", "*", .bypass) == "allow")
     }
@@ -123,8 +231,27 @@ import Testing
     @Test func recognisesItsOwnRulesets() {
         for mode in PermissionMode.allCases {
             #expect(PermissionRules.mode(for: PermissionRules.ruleset(for: mode)) == mode)
+            #expect(PermissionRules.outdatedMode(for: PermissionRules.ruleset(for: mode)) == nil)
         }
         #expect(PermissionRules.mode(for: []) == nil)
+    }
+
+    /// Rulesets from before the dot-path rule and the shorter Auto list are recognised so the client can reapply them.
+    @Test func recognisesOutdatedRulesets() {
+        let newEditRules = Set((PermissionRules.dotPathEditPatterns + PermissionRules.ignorableCharacterEditPatterns)
+            .map { PermissionRule("edit", $0, "ask") })
+        let oldAcceptEdits = PermissionRules.ruleset(for: .acceptEdits).filter { !newEditRules.contains($0) }
+        let oldAuto = PermissionRules.ruleset(for: .auto).filter { !newEditRules.contains($0) }
+            + ["make", "npm test *", "swift build *", "git diff *"].map { PermissionRule("shell", $0, "allow") }
+        let oldAsk = PermissionRules.ruleset(for: .ask) + [PermissionRule("edit", "Makefile", "ask")]
+        #expect(PermissionRules.mode(for: oldAuto) == nil)
+        #expect(PermissionRules.outdatedMode(for: oldAuto) == .auto)
+        #expect(PermissionRules.outdatedMode(for: oldAcceptEdits) == .acceptEdits)
+        #expect(PermissionRules.outdatedMode(for: oldAsk) == .ask)
+        // Rules Ensemble did not write are left alone.
+        #expect(PermissionRules.outdatedMode(for: []) == nil)
+        #expect(PermissionRules.outdatedMode(for: [PermissionRule("*", "*", "allow"), PermissionRule("shell", "rm *", "deny")]) == nil)
+        #expect(PermissionRules.outdatedMode(for: [PermissionRule("*", "*", "ask"), PermissionRule("edit", "*", "allow")]) == nil)
     }
 
     @Test func wildcardMatching() {
@@ -136,7 +263,18 @@ import Testing
         #expect(!PermissionRules.wildcardMatch("*/Makefile", "sub/NotMakefile"))
         #expect(PermissionRules.wildcardMatch("a?c", "abc"))
         #expect(!PermissionRules.wildcardMatch("a?c", "ac"))
-        // A trailing " *" also matches the bare command for shell rules.
+        // Case matters and brackets are literal, as in OpenCode.
+        #expect(!PermissionRules.wildcardMatch("Makefile", "makefile"))
+        #expect(PermissionRules.wildcardMatch("[Mm]akefile", "[Mm]akefile"))
+        #expect(!PermissionRules.wildcardMatch("[Mm]akefile", "Makefile"))
+        // Dot-path patterns.
+        #expect(PermissionRules.wildcardMatch(".*", ".GiT/hooks/x"))
+        #expect(PermissionRules.wildcardMatch("*/.*", "/Users/me/repo/.GiT/hooks/x"))
+        #expect(!PermissionRules.wildcardMatch("*/.*", "src/v1.2/x"))
+        // Backslashes count as `/`, and a trailing " *" also matches the bare command.
+        #expect(PermissionRules.engineMatch("*/.*", "sub\\.git\\config"))
+        #expect(PermissionRules.engineMatch("ls *", "ls"))
+        #expect(!PermissionRules.engineMatch("ls *", "lsof"))
         #expect(PermissionRules.effect(action: "shell", resource: "ls", rules: [PermissionRule("shell", "ls *", "allow")]) == "allow")
         #expect(PermissionRules.effect(action: "shell", resource: "lsof", rules: [PermissionRule("shell", "ls *", "allow")]) == "agent")
     }

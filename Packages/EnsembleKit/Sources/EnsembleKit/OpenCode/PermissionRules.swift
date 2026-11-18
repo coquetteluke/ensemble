@@ -18,7 +18,7 @@ public struct PermissionRule: Codable, Hashable, Sendable {
 
 /// The session rulesets behind Ensemble's permission modes.
 ///
-/// OpenCode 2.3 facts these rely on (checked against the running engine):
+/// OpenCode 2.3 facts these rely on (checked against the running engine and its binary):
 /// - The built-in agents start from `{"*", "*", allow}`, so any tool a session ruleset does not mention runs
 ///   without asking. Every ruleset except Bypass therefore starts with `{"*", "*", ask}` and then names each
 ///   tool, so unknown tools and MCP tools (action `<server>_<tool>`) ask.
@@ -27,35 +27,46 @@ public struct PermissionRule: Codable, Hashable, Sendable {
 ///   `experimental_image_generate`, `browser`, `opencode_list_mcp_resources`, `opencode_read_mcp_resource`,
 ///   `opencode_watch_mcp_event`, and `<server>_<tool>` for MCP tools.
 /// - `edit` resources are paths relative to the session's folder (`Makefile`, `sub/Makefile`, `.git/hooks/x`), even
-///   when the model passes an absolute path inside the folder. Paths outside the folder are absolute and also trigger
-///   `external_directory`.
-/// - `*` matches any run of characters including `/`. Matching is case-sensitive on macOS.
+///   when the model passes an absolute path inside the folder. They are normalised (`./a` is `a`, `sub/../Makefile`
+///   is `Makefile`) but keep the model's spelling (`.GiT/hooks/x` stays `.GiT/hooks/x`). Paths outside the folder
+///   are absolute and also trigger `external_directory`.
+/// - Matching turns the pattern into a regular expression: `*` is any run of characters including `/`, `?` is one
+///   character, and everything else is literal, `[` and `]` included, so there are no character classes. It is
+///   case-sensitive on every platform. macOS disks usually ignore case (and fold a few other letters, such as the
+///   Kelvin sign, into ASCII ones), so no list of spellings covers a file name. Only rules that do not depend on
+///   letters hold: a path segment that starts with a dot, for example.
+/// - The shell tool checks each command of a line on its own (`a && b`, `a | b`, and commands inside `$(...)` and
+///   `<(...)`), against the command text with any `VAR=value` prefix kept. It never checks `cd` (only whether the
+///   folder is outside the project) or the tool's `workdir` argument, so a command can run in any project subfolder.
 /// - Code Mode (`execute`) is only blocked by `deny`; with `ask` it runs, and each tool it calls is checked on its own
 ///   (its `fetch` asks as `webfetch`).
 /// - A subagent's child session copies the parent's ruleset when it is created (no race), but does not follow later
 ///   changes to the parent, so `OpenCodeClient.setPermissionMode` updates child sessions too.
 public enum PermissionRules {
-    /// Shell commands Auto mode runs without asking: read-only commands plus common build and test commands.
-    /// Every other command asks. This is a convenience list, not a security boundary: build and test commands
-    /// run project code.
+    /// Shell commands Auto mode runs without asking: commands that only read, and never run code that the project
+    /// (or an agent's edit) controls. Every other command asks.
     ///
-    /// OpenCode checks each command of a compound line (`a && b`, `a | b`) on its own, against the scanned
-    /// command text. `*` matches anything, and a pattern ending in ` *` also matches the bare command.
+    /// Left out on purpose:
+    /// - Build, test and task runners (`make`, `npm test`, `swift build`, `xcodebuild`, `pytest`, `cargo test`,
+    ///   `go test`, `gradle`, ...). They run code the project defines, and an edit to their build file is allowed
+    ///   in Auto when the name is spelt in a case `protectedFileNames` does not list (`PaCkAgE.json`), so the
+    ///   command is where Ensemble asks.
+    /// - `git diff`, `git log` and `git show`. They run helpers named in the repository config (textconv, external
+    ///   diff, signature checks). Ordinary files (`HEAD`, `config`, `refs/`, `objects/info/alternates`,
+    ///   `info/attributes`) make any folder a bare repository, and `cd folder && git show` then runs its helpers.
+    ///   `git status` stays: in such a folder it stops for lack of a work tree before running anything (checked with
+    ///   git 2.54 and 2.56). Neither it nor the listed `git branch` forms run diff or signature helpers.
+    ///
+    /// A pattern ending in ` *` also matches the bare command.
     public static let autoAllowedShell: [String] = [
-        // Read-only
         "ls *", "pwd", "which *", "cat *", "head *", "tail *", "wc *", "echo *", "grep *", "rg *", "find *",
-        "git status *", "git diff *", "git log *", "git show *",
+        "git status *",
         "git branch", "git branch -a", "git branch -r", "git branch -v", "git branch -vv", "git branch --list",
         "git branch --show-current",
-        // Build and test
-        "swift build *", "swift test *", "xcodebuild *",
-        "npm test *", "npm run *", "pnpm test *", "pnpm run *", "pnpm build *", "yarn test *", "yarn run *", "yarn build *",
-        "cargo build *", "cargo test *", "cargo check *", "go build *", "go test *", "go vet *",
-        "pytest *", "python -m pytest *", "python3 -m pytest *",
-        "make", "make all", "make build", "make test", "make check", "make lint",
     ]
 
-    /// Forms of the allowed commands that can still change things; these ask again (checked after the allow list).
+    /// Forms of the allowed commands that can still change things or run other programs; these ask again (checked
+    /// after the allow list).
     public static let autoAskAgainShell: [String] = [
         "find * -delete*", "find * -exec*", "find * -execdir*", "find * -ok*", "find * -okdir*",
         "find * -fprint*", "find * -fls*",
@@ -65,35 +76,50 @@ public enum PermissionRules {
         "*$(*", "*`*",
     ]
 
-    /// Files whose edits ask even when edits are allowed: they change what the allowed build and test commands run,
-    /// or run code later outside the agent (git hooks, CI, direnv, toolchain pins).
+    /// `edit` patterns for any path with a segment that starts with a dot: `.git`, `.github`, `.husky`, `.vscode`,
+    /// `.devcontainer`, `.idea`, `.circleci`, `.cargo`, `.envrc`, `.gitlab-ci.yml`, `.pre-commit-config.yaml`,
+    /// `.lefthook.yml`, `.lintstagedrc*`, `.gitmodules`, `.gitattributes`, `.npmrc`, `.yarnrc*`, `.tool-versions`
+    /// and every dot-config yet to come. A dot has no case, so a mixed-case spelling (`.GiT/hooks/pre-commit`) is
+    /// still caught. `.*` covers the top of the folder, `*/.*` any subfolder and absolute paths.
+    public static let dotPathEditPatterns: [String] = [".*", "*/.*"]
+
+    /// `edit` patterns for paths containing a character that HFS+ disks drop from file names (zero-width and
+    /// direction marks, the byte order mark), so `\u{200C}.git` is `.git` there. Nobody names files this way.
+    public static let ignorableCharacterEditPatterns: [String] = (
+        Array(0x200C...0x200F) + Array(0x202A...0x202E) + Array(0x206A...0x206F) + [0xFEFF]
+    ).compactMap { code in Unicode.Scalar(code).map { scalar in "*\(Character(scalar))*" } }
+
+    /// Build and hook files without a leading dot whose edits ask even when edits are allowed: they change what build
+    /// and test commands run, or run code later outside the agent (git hook managers, CI, toolchain pins).
+    ///
+    /// This is a heads-up for the usual spellings, not a boundary. OpenCode cannot match a name in any case, so
+    /// `PaCkAgE.json` is not caught; Auto asks before every command that runs project code instead.
     public static let protectedFileNames: [String] = [
-        // make
-        "Makefile", "makefile", "GNUmakefile", "*.mk",
+        // make, CMake, Meson, Bazel
+        "Makefile", "makefile", "GNUmakefile", "*.mk", "CMakeLists.txt", "*.cmake", "meson.build",
+        "BUILD.bazel", "WORKSPACE", "MODULE.bazel", "*.bzl",
         // JavaScript
-        "package.json", ".npmrc", ".yarnrc*", "pnpm-workspace.yaml", ".pnpmfile.cjs",
+        "package.json", "pnpm-workspace.yaml", "lint-staged.config.*", "deno.json", "deno.jsonc", "bunfig.toml",
         // Python
         "pyproject.toml", "setup.py", "setup.cfg", "conftest.py", "tox.ini", "noxfile.py", "pytest.ini",
         // Rust and Go
         "Cargo.toml", "build.rs", "rust-toolchain", "rust-toolchain.toml", "go.mod", "go.work",
         // Swift and Xcode
         "Package.swift", "*.pbxproj", "*.xcscheme", "*.xcconfig", "project.yml",
-        // Ruby, JVM, task runners
-        "Podfile", "Gemfile", "Rakefile", "justfile", "Justfile", "Taskfile*", "build.gradle*", "settings.gradle*",
-        "gradle.properties", "pom.xml",
+        // Ruby, PHP, JVM, task runners
+        "Podfile", "Gemfile", "*.gemspec", "Rakefile", "composer.json", "justfile", "Justfile", "Taskfile*",
+        "build.gradle*", "settings.gradle*", "gradle.properties", "gradlew", "gradle-wrapper.properties",
+        "pom.xml", "mvnw",
+        // Git hook managers and CI without a dot
+        "lefthook.yml", "lefthook.yaml", "lefthook-local.yml", "lefthook-local.yaml", "Jenkinsfile",
+        "azure-pipelines.yml", "bitbucket-pipelines.yml",
         // Environment and toolchain managers
-        ".envrc", ".tool-versions", ".python-version", ".node-version", "mise.toml", ".mise.toml", "Brewfile",
-    ]
-
-    /// Folders whose contents are protected the same way.
-    public static let protectedFolders: [String] = [
-        ".git", ".github/workflows", ".husky", ".cargo/config", ".cargo/config.toml",
+        "mise.toml", "Brewfile", "flake.nix", "shell.nix", "devbox.json",
     ]
 
     /// `edit` patterns for the protected files: each name at the top of the folder and in any subfolder (the
-    /// `*/` form also covers absolute paths), plus capitalised and all-caps spellings, because macOS file systems
-    /// usually ignore case while OpenCode's matching does not.
-    public static var protectedEditPatterns: [String] {
+    /// `*/` form also covers absolute paths), in its usual, lower-case, upper-case and capitalised spellings.
+    public static let protectedEditPatterns: [String] = {
         var patterns: [String] = []
         func add(_ pattern: String) {
             if !patterns.contains(pattern) { patterns.append(pattern) }
@@ -104,36 +130,21 @@ public enum PermissionRules {
         }
         for name in protectedFileNames {
             for spelling in spellings(name) {
-                if spelling.hasPrefix("*") {
-                    add(spelling)
-                } else {
-                    add(spelling)
-                    add("*/" + spelling)
-                }
-            }
-        }
-        for folder in protectedFolders {
-            for spelling in spellings(folder) {
-                if folder.hasPrefix(".cargo/config") {
-                    // A file, not a folder: `.cargo/config` and `.cargo/config.toml`.
-                    add(spelling)
-                    add("*/" + spelling)
-                } else {
-                    add(spelling + "/*")
-                    add("*/" + spelling + "/*")
-                }
+                add(spelling)
+                if !spelling.hasPrefix("*") { add("*/" + spelling) }
             }
         }
         return patterns
-    }
+    }()
 
     /// The session ruleset for a permission mode.
     ///
     /// - Ask: reads and searches run; edits, commands, web access, Code Mode, image generation, work outside the
     ///   project folder and any other tool (MCP included) ask.
-    /// - Accept edits: as Ask, but file edits inside the project run, except the protected build files.
-    /// - Auto: safe commands run, everything else asks. As Accept edits, plus the commands in `autoAllowedShell`
-    ///   run (minus the forms in `autoAskAgainShell`).
+    /// - Accept edits: as Ask, but file edits inside the project run, except paths with a segment that starts with a
+    ///   dot and the protected build files.
+    /// - Auto: safe commands run, everything else asks. As Accept edits, plus the read-only commands in
+    ///   `autoAllowedShell` run (minus the forms in `autoAskAgainShell`).
     /// - Bypass: everything runs.
     ///
     /// All modes except Bypass allow `subagent`; the child session copies the ruleset, so children follow the same mode.
@@ -182,7 +193,8 @@ public enum PermissionRules {
             PermissionRule("external_directory", "*", "ask"),
         ]
         if editsAllowed {
-            rules += protectedEditPatterns.map { PermissionRule("edit", $0, "ask") }
+            rules += (dotPathEditPatterns + ignorableCharacterEditPatterns + protectedEditPatterns)
+                .map { PermissionRule("edit", $0, "ask") }
         }
         return rules
     }
@@ -193,20 +205,40 @@ public enum PermissionRules {
         return PermissionMode.allCases.first { ruleset(for: $0) == rules }
     }
 
+    /// The mode of a ruleset that an earlier Ensemble version wrote for Ask, Accept edits or Auto (it starts with a
+    /// catch-all ask and allows subagents) but that differs from today's ruleset for that mode. Such a session keeps
+    /// its old rules until its mode is set again, so the caller should reapply `ruleset(for:)` with this mode.
+    /// `nil` for current rulesets and for rules Ensemble did not write.
+    public static func outdatedMode(for rules: [PermissionRule]) -> PermissionMode? {
+        guard mode(for: rules) == nil, rules.first == PermissionRule("*", "*", "ask"),
+              rules.contains(PermissionRule("subagent", "*", "allow")),
+              let edit = rules.last(where: { $0.action == "edit" && $0.resource == "*" }) else { return nil }
+        if edit.effect == "ask" { return .ask }
+        guard edit.effect == "allow" else { return nil }
+        return rules.contains { $0.action == "shell" && $0.effect == "allow" } ? .auto : .acceptEdits
+    }
+
     /// What a ruleset decides for one action and resource, using OpenCode's matching: the last matching rule wins,
-    /// `*` matches any run of characters (including `/` and spaces), `?` matches one character, and for `shell`
-    /// a pattern ending in ` *` also matches the bare command. With no match the engine falls back to the agent's
-    /// rules, which allow everything for the built-in agents; this returns `"agent"` then.
+    /// `*` matches any run of characters (including `/` and spaces), `?` matches one character, every other
+    /// character is literal and case matters, backslashes count as `/`, and a pattern ending in ` *` also matches
+    /// without the tail. With no match the engine falls back to the agent's rules, which allow everything for the
+    /// built-in agents; this returns `"agent"` then.
     /// Used to preview and test rulesets; the engine makes the real decision.
     public static func effect(action: String, resource: String, rules: [PermissionRule]) -> String {
         var result = "agent"
-        for rule in rules where wildcardMatch(rule.action, action) {
-            if wildcardMatch(rule.resource, resource)
-                || (action == "shell" && rule.resource.hasSuffix(" *") && resource == String(rule.resource.dropLast(2))) {
-                result = rule.effect
-            }
+        for rule in rules where engineMatch(rule.action, action) && engineMatch(rule.resource, resource) {
+            result = rule.effect
         }
         return result
+    }
+
+    /// OpenCode's `Wildcard.match`: backslashes become `/` on both sides, then `wildcardMatch`, where a pattern ending
+    /// in ` *` also matches the value without that tail (`ls *` matches `ls`).
+    static func engineMatch(_ pattern: String, _ value: String) -> Bool {
+        let pattern = pattern.replacingOccurrences(of: "\\", with: "/")
+        let value = value.replacingOccurrences(of: "\\", with: "/")
+        if wildcardMatch(pattern, value) { return true }
+        return pattern.hasSuffix(" *") && wildcardMatch(String(pattern.dropLast(2)), value)
     }
 
     static func wildcardMatch(_ pattern: String, _ value: String) -> Bool {
