@@ -7,8 +7,14 @@ import Darwin
 /// The session a tool call comes from, as the server established it (never from the call's own arguments).
 public struct AgentToolsCaller: Equatable, Sendable {
     public var sessionID: String
+    /// The bridge is tied to the exact engine process its key was issued to (`AgentToolsBinding`), so "Always for this
+    /// site" grants may be used. False for bridges of engines that serve several sessions from one process.
+    public var canUseSiteGrants: Bool
 
-    public init(sessionID: String) { self.sessionID = sessionID }
+    public init(sessionID: String, canUseSiteGrants: Bool = true) {
+        self.sessionID = sessionID
+        self.canUseSiteGrants = canUseSiteGrants
+    }
 }
 
 /// One line in a session's transcript about a tool call.
@@ -33,6 +39,8 @@ public protocol AgentToolsHost: AnyObject, Sendable {
     func handle(_ call: AgentToolCall, caller: AgentToolsCaller) async -> AgentToolResult
     /// For folder bridges (OpenCode): whether `sessionID` is one of Ensemble's sessions in `folder` on that server.
     func session(_ sessionID: String, isIn folder: String, server: String) async -> Bool
+    /// The top-level session above a subagent (itself for a top-level session), or nil when Ensemble does not know it.
+    func rootSession(of sessionID: String) async -> String?
     /// Every call, refused ones included, for the session's transcript.
     func record(_ entry: AgentToolsLogEntry) async
 }
@@ -90,6 +98,12 @@ public final class AgentToolsServer: AgentToolsAttaching, Sendable {
         var targetKeys: [AgentToolsTarget: String] = [:]
         var connections: [ObjectIdentifier: AgentToolsConnection] = [:]
         var calls: [String: [ContinuousClock.Instant]] = [:]
+        /// Who checks peers (`AgentToolsPeerCheck`).
+        var processes: (any AgentToolsProcesses)?
+        /// The engine process each session key belongs to; a session key with none is `.appChild`.
+        var bindings: [AgentToolsTarget: AgentToolsBinding] = [:]
+        /// The OpenCode sessions each folder key may speak for: sessions Ensemble prompted on that server, in that folder.
+        var openCodeSessions: [AgentToolsTarget: Set<String>] = [:]
     }
 
     public let limits: Limits
@@ -107,9 +121,17 @@ public final class AgentToolsServer: AgentToolsAttaching, Sendable {
 
     #if canImport(Darwin)
     /// Opens the socket in a new private folder under the user's temporary folder and starts accepting bridges.
-    /// `executable` is the helper engines start (`Ensemble.app/Contents/MacOS/ensemble-agent-tools`).
-    public func start(host: any AgentToolsHost, executable: String, parent: URL = FileManager.default.temporaryDirectory) throws {
+    /// `executable` is the helper engines start (`Ensemble.app/Contents/MacOS/ensemble-agent-tools`); every peer must be
+    /// that signed binary, started by the engine process its key belongs to. `processes` replaces the system lookups
+    /// (tests only).
+    public func start(host: any AgentToolsHost, executable: String, parent: URL = FileManager.default.temporaryDirectory,
+                      processes: (any AgentToolsProcesses)? = nil) throws {
         stop()
+        #if os(macOS)
+        let checker: any AgentToolsProcesses = processes ?? SystemAgentToolsProcesses(helperPath: executable)
+        #else
+        guard let checker = processes else { throw StartError.socket("no process checks on this system") }
+        #endif
         let fm = FileManager.default
         let folder = parent.appendingPathComponent("ensemble-tools-\(UUID().uuidString.prefix(8).lowercased())", isDirectory: true)
         try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -141,6 +163,7 @@ public final class AgentToolsServer: AgentToolsAttaching, Sendable {
         }
         state.withLock {
             $0.host = host
+            $0.processes = checker
             $0.executable = executable
             $0.folder = folder
             $0.socketPath = path
@@ -194,9 +217,30 @@ public final class AgentToolsServer: AgentToolsAttaching, Sendable {
         state.withLock { $0.targetKeys.keys.compactMap { if case .session(let id) = $0 { id } else { nil } } }
     }
 
+    /// Ties a key to the engine process it was issued to (a Claude session's `--mcp-config` file).
+    public func expect(_ binding: AgentToolsBinding, for target: AgentToolsTarget) {
+        state.withLock { $0.bindings[target] = binding }
+    }
+
+    /// Lets a folder key speak for this OpenCode session (called by the OpenCode client before each prompt).
+    public func allow(openCodeSession sessionID: String, on target: AgentToolsTarget) {
+        guard case .folder = target else { return }
+        state.withLock { _ = $0.openCodeSessions[target, default: []].insert(sessionID) }
+    }
+
+    /// The binding a peer of this target must satisfy.
+    func binding(for target: AgentToolsTarget) -> AgentToolsBinding {
+        switch target {
+        case .session: state.withLock { $0.bindings[target] } ?? .appChild
+        case .folder(_, let server): .openCode(url: server)
+        }
+    }
+
     /// Forgets a target's key and closes its bridges (a session that was deleted or archived).
     public func revoke(_ target: AgentToolsTarget) {
         let closing = state.withLock { state -> [AgentToolsConnection] in
+            state.bindings[target] = nil
+            state.openCodeSessions[target] = nil
             if let key = state.targetKeys.removeValue(forKey: target) { state.keys[key] = nil }
             if case .session(let id) = target { state.calls[id] = nil }
             return state.connections.values.filter { $0.target == target }
@@ -269,6 +313,9 @@ public final class AgentToolsServer: AgentToolsAttaching, Sendable {
             var noSignal: Int32 = 1
             setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
             let connection = AgentToolsConnection(fd: client, maxInFlight: limits.maxInFlight)
+            #if os(macOS)
+            connection.peer = SystemAgentToolsProcesses.peer(of: client)
+            #endif
             let accepted = state.withLock { state -> Bool in
                 guard state.listener == listener else { return false }
                 state.connections[ObjectIdentifier(connection)] = connection
@@ -313,7 +360,7 @@ public final class AgentToolsServer: AgentToolsAttaching, Sendable {
                 let line = buffer[buffer.startIndex..<newline]
                 buffer.removeSubrange(buffer.startIndex...newline)
                 if connection.target == nil {
-                    guard let target = authenticate(Data(line)) else { return }
+                    guard let target = authenticate(Data(line)), verify(connection, for: target) else { return }
                     connection.target = target
                 } else if !line.allSatisfy({ $0 == 32 || $0 == 13 || $0 == 9 }) {
                     receive(Data(line), on: connection)
@@ -323,6 +370,15 @@ public final class AgentToolsServer: AgentToolsAttaching, Sendable {
         }
     }
     #endif
+
+    /// Whether the connection's peer may use a key for `target`: the signed helper, started by the key's engine process.
+    private func verify(_ connection: AgentToolsConnection, for target: AgentToolsTarget) -> Bool {
+        guard let peer = connection.peer, let processes = state.withLock({ $0.processes }) else { return false }
+        let binding = binding(for: target)
+        guard AgentToolsPeerCheck.refusal(peer, binding: binding, processes: processes) == nil else { return false }
+        connection.siteGrants = binding.isExact
+        return true
+    }
 
     private func receive(_ line: Data, on connection: AgentToolsConnection) {
         guard let message = JSONValue.parse(data: line) else {
@@ -361,20 +417,20 @@ public final class AgentToolsServer: AgentToolsAttaching, Sendable {
             connection.listedTools = true
             return AgentToolsMCP.result(id: id, AgentToolsMCP.toolsList)
         case "tools/call":
-            return await callTool(id: id, params: message["params"], target: connection.target)
+            return await callTool(id: id, params: message["params"], target: connection.target, siteGrants: connection.siteGrants)
         default:
             return AgentToolsMCP.error(id: id, code: -32601,
                                        message: "Ensemble's agent tools answer only initialize, ping, tools/list and tools/call.")
         }
     }
 
-    func callTool(id: JSONValue, params: JSONValue?, target: AgentToolsTarget?) async -> JSONValue {
+    func callTool(id: JSONValue, params: JSONValue?, target: AgentToolsTarget?, siteGrants: Bool = false) async -> JSONValue {
         let name = params?["name"]?.stringValue ?? ""
         let host = state.withLock { $0.host }
         guard let target, let host else {
             return AgentToolsMCP.result(id: id, AgentToolResult.refused("Ensemble's agent tools are not running.").mcpValue)
         }
-        guard let caller = await resolveCaller(target, meta: params?["_meta"], host: host) else {
+        guard let caller = await resolveCaller(target, meta: params?["_meta"], host: host, siteGrants: siteGrants) else {
             return AgentToolsMCP.result(id: id, AgentToolResult.refused("This call does not come from one of Ensemble's sessions.").mcpValue)
         }
         let shownName = AgentToolText.clean(name, limit: 60)
@@ -402,15 +458,20 @@ public final class AgentToolsServer: AgentToolsAttaching, Sendable {
     }
 
     /// The session a call belongs to. A session bridge always speaks for its own session. A folder bridge (OpenCode)
-    /// speaks for the session OpenCode names in `_meta`, if that session is Ensemble's own in that folder.
-    func resolveCaller(_ target: AgentToolsTarget, meta: JSONValue?, host: any AgentToolsHost) async -> AgentToolsCaller? {
+    /// speaks for the session OpenCode names in `_meta` only if that is an OpenCode session Ensemble prompted on this
+    /// exact server in this folder (`allow(openCodeSession:on:)`), or a subagent of one; Claude and ACP sessions in the
+    /// same folder, and OpenCode sessions on another server, are refused.
+    func resolveCaller(_ target: AgentToolsTarget, meta: JSONValue?, host: any AgentToolsHost, siteGrants: Bool) async -> AgentToolsCaller? {
         switch target {
         case .session(let id):
-            return AgentToolsCaller(sessionID: id)
+            return AgentToolsCaller(sessionID: id, canUseSiteGrants: siteGrants)
         case .folder(let folder, let server):
-            guard let sessionID = meta?["ai.opencode/sessionID"]?.stringValue, !sessionID.isEmpty, sessionID.count < 200,
-                  await host.session(sessionID, isIn: folder, server: server) else { return nil }
-            return AgentToolsCaller(sessionID: sessionID)
+            guard let sessionID = meta?["ai.opencode/sessionID"]?.stringValue, !sessionID.isEmpty, sessionID.count < 200 else { return nil }
+            let allowed = state.withLock { $0.openCodeSessions[target] ?? [] }
+            var known = allowed.contains(sessionID)
+            if !known, let root = await host.rootSession(of: sessionID), root != sessionID { known = allowed.contains(root) }
+            guard known, await host.session(sessionID, isIn: folder, server: server) else { return nil }
+            return AgentToolsCaller(sessionID: sessionID, canUseSiteGrants: siteGrants)
         }
     }
 }
@@ -439,6 +500,19 @@ final class AgentToolsConnection: @unchecked Sendable {
     }
 
     var isClosed: Bool { lock.withLock { closed } }
+
+    private var peerInfo: AgentToolsPeer?
+    private var exact = false
+    /// The process on the other end, read when the connection was accepted.
+    var peer: AgentToolsPeer? {
+        get { lock.withLock { peerInfo } }
+        set { lock.withLock { peerInfo = newValue } }
+    }
+    /// The key's binding is tied to one engine process (`AgentToolsBinding.isExact`).
+    var siteGrants: Bool {
+        get { lock.withLock { exact } }
+        set { lock.withLock { exact = newValue } }
+    }
 
     private var listed = false
     /// The engine has fetched the tool list on this connection.

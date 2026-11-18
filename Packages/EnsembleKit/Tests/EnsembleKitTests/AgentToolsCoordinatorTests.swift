@@ -390,6 +390,135 @@ final class AgentToolsTestApp {
         #expect(await back.value.isError == false)
     }
 
+    static let button = """
+    <!doctype html><html><head><title>Button</title></head><body>
+    <button id="go" onclick="window.clicked = (window.clicked || 0) + 1; document.getElementById('out').textContent = 'clicked'">Go</button>
+    <p id="out"></p><p>Local page text</p>
+    </body></html>
+    """
+    static let elsewhere = """
+    <!doctype html><html><body><button id="go" onclick="window.clicked = 1">Go</button><p>Other origin secret</p></body></html>
+    """
+
+    /// Answers the next card with `answer` once it appears.
+    func answerNextCard(_ coordinator: AgentToolsCoordinator, _ answer: BrowserPermissionAnswer) async throws -> BrowserPermissionRequest {
+        try await agentToolsWait("a card") { !coordinator.permissionRequests.isEmpty }
+        let request = try #require(coordinator.permissionRequests.first)
+        coordinator.answer(request.id, answer)
+        return request
+    }
+
+    @Test func anApprovedActionDoesNotRunAfterThePageMoves() async throws {
+        let app = AgentToolsTestApp()
+        app.add("A", folder: "/tmp")
+        let surface = AgentToolsTestSurface()
+        defer { surface.close() }
+        app.surface = surface
+        try await surface.show(Self.button, at: URL(string: "http://localhost:5173/")!)
+        let coordinator = app.coordinator()
+        let caller = AgentToolsCaller(sessionID: "A")
+        let read = Task { await coordinator.handle(.browser(.snapshot), caller: caller) }
+        _ = try await answerNextCard(coordinator, .once)
+        let go = try #require(Self.ref("\"Go\"", in: await read.value.text))
+
+        // The user approves a click on localhost:5173, but while the card waits the page goes to another origin.
+        let click = Task { await coordinator.handle(.browser(.click(ref: go)), caller: caller) }
+        try await agentToolsWait("a card") { coordinator.permissionRequests.count == 1 }
+        #expect(coordinator.permissionRequests.first?.origin == "http://localhost:5173")
+        try await surface.show(Self.elsewhere, at: URL(string: "http://127.0.0.1:8000/")!)
+        coordinator.answer(try #require(coordinator.permissionRequests.first).id, .once)
+        let clicked = await click.value
+        #expect(clicked.isError)
+        #expect(clicked.text == "The page changed to http://127.0.0.1:8000/ while waiting; the action was not run.")
+        #expect(try await surface.agentWebView.evaluateJavaScript("String(window.clicked)") as? String == "undefined")
+
+        // A read approved for one site never returns another site's text.
+        try await surface.show(Self.button, at: URL(string: "http://localhost:5173/")!)
+        let snapshot = Task { await coordinator.handle(.browser(.snapshot), caller: caller) }
+        try await agentToolsWait("a card") { coordinator.permissionRequests.count == 1 }
+        try await surface.show(Self.elsewhere, at: URL(string: "http://localhost:5174/")!)
+        coordinator.answer(try #require(coordinator.permissionRequests.first).id, .once)
+        let text = await snapshot.value
+        #expect(text.isError)
+        #expect(!text.text.contains("Other origin secret"))
+    }
+
+    @Test func scriptsCheckTheOriginInsideThePage() async throws {
+        let surface = AgentToolsTestSurface()
+        defer { surface.close() }
+        try await surface.show(Self.button, at: URL(string: "http://localhost:5173/")!)
+        let read = try await BrowserAgentDriver.run(BrowserAgentScripts.snapshot, on: surface,
+                                                    arguments: ["maxText": 2000, "maxItems": 50, "expectedOrigin": "http://localhost:5173"])
+        #expect(read["error"] == nil)
+        let go = try #require(Self.ref("\"Go\"", in: read["elements"]?.stringValue ?? ""))
+        // Another origin than the page's: the script refuses before it touches anything.
+        for origin in ["http://localhost:5174", "http://127.0.0.1:5173", "https://localhost:5173", "http://localhost:80"] {
+            let refused = try await BrowserAgentDriver.run(BrowserAgentScripts.click, on: surface, arguments: ["ref": go, "expectedOrigin": origin])
+            #expect(refused["error"] == "origin")
+            #expect(refused["href"] == "http://localhost:5173/")
+        }
+        let scrolled = try await BrowserAgentDriver.run(BrowserAgentScripts.scroll, on: surface,
+                                                        arguments: ["direction": "down", "ref": NSNull(), "expectedOrigin": "http://localhost:9"])
+        #expect(scrolled["error"] == "origin")
+        let typed = try await BrowserAgentDriver.run(BrowserAgentScripts.type, on: surface,
+                                                     arguments: ["ref": go, "text": "x", "submit": false, "expectedOrigin": "http://localhost:9"])
+        #expect(typed["error"] == "origin")
+        let otherRead = try await BrowserAgentDriver.run(BrowserAgentScripts.snapshot, on: surface,
+                                                         arguments: ["maxText": 2000, "maxItems": 50, "expectedOrigin": "http://localhost:9"])
+        #expect(otherRead["error"] == "origin" && otherRead["text"] == nil)
+        // Through the driver, the refusal is the agent's message.
+        let performed = await BrowserAgentDriver.perform(.click(ref: go), on: surface, expectedOrigin: "http://localhost:9")
+        #expect(performed.result.text == "The page changed to http://localhost:5173/ while waiting; the action was not run.")
+        // Leaving the origin out fails closed.
+        await #expect(throws: (any Error).self) {
+            _ = try await BrowserAgentDriver.run(BrowserAgentScripts.click, on: surface, arguments: ["ref": go])
+        }
+        #expect(try await surface.agentWebView.evaluateJavaScript("String(window.clicked)") as? String == "undefined")
+        // The matching origin works.
+        let ok = await BrowserAgentDriver.perform(.click(ref: go), on: surface, expectedOrigin: "http://localhost:5173")
+        #expect(ok.result.isError == false)
+        #expect(try await surface.agentWebView.evaluateJavaScript("String(window.clicked)") as? String == "1")
+        // Default ports are written out on both sides.
+        try await surface.show(Self.button, at: URL(string: "http://localhost/")!)
+        let defaultPort = try await BrowserAgentDriver.run(BrowserAgentScripts.snapshot, on: surface,
+                                                           arguments: ["maxText": 100, "maxItems": 5, "expectedOrigin": "http://localhost:80"])
+        #expect(defaultPort["error"] == nil)
+        #expect(BrowserAgentOrigin.origin(of: URL(string: "http://localhost/")) == "http://localhost:80")
+    }
+
+    @Test func alwaysCoversOnlyItsOriginAndOnlyExactBridges() async throws {
+        let app = AgentToolsTestApp()
+        app.add("A", folder: "/tmp")
+        let surface = AgentToolsTestSurface()
+        defer { surface.close() }
+        app.surface = surface
+        try await surface.show(Self.button, at: URL(string: "http://localhost:5173/")!)
+        let coordinator = app.coordinator()
+        let exact = AgentToolsCaller(sessionID: "A")
+        let first = Task { await coordinator.handle(.browser(.snapshot), caller: exact) }
+        _ = try await answerNextCard(coordinator, .always)
+        #expect(await first.value.isError == false)
+        #expect(await coordinator.handle(.browser(.snapshot), caller: exact).isError == false)
+        #expect(coordinator.permissionRequests.isEmpty)
+
+        // Another port is another site: it asks.
+        try await surface.show(Self.button, at: URL(string: "http://localhost:5174/")!)
+        let other = Task { await coordinator.handle(.browser(.snapshot), caller: exact) }
+        #expect(try await answerNextCard(coordinator, .deny).site == "localhost:5174")
+        #expect(await other.value.isError)
+
+        // A bridge not tied to one engine process neither uses nor offers Always.
+        try await surface.show(Self.button, at: URL(string: "http://localhost:5173/")!)
+        let loose = AgentToolsCaller(sessionID: "A", canUseSiteGrants: false)
+        for _ in 0..<2 {
+            let call = Task { await coordinator.handle(.browser(.snapshot), caller: loose) }
+            let request = try await answerNextCard(coordinator, .always)
+            #expect(!request.allowsAlways)
+            #expect(await call.value.isError == false)
+        }
+        #expect(coordinator.grants.origins(for: "A") == ["http://localhost:5173"])
+    }
+
     @Test func cancelledCallsCloseTheirCard() async throws {
         let app = AgentToolsTestApp()
         app.add("A", folder: "/tmp")

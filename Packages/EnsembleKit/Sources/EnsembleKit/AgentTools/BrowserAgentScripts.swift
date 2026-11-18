@@ -7,8 +7,14 @@ import Foundation
 ///
 /// Refs (`e1`, `e2`, ...) are handed out by the snapshot and kept in the world's own `window.__ensembleAgent`, holding
 /// elements weakly; an element keeps its ref across snapshots while it stays in the page.
+///
+/// Every script takes `expectedOrigin`: the origin the user approved (`BrowserAgentOrigin.origin(of:)`, such as
+/// `http://localhost:5173`), or null only for the sign-in check, which reads one yes or no. Before anything else the
+/// script compares it with the page it is running in and answers `{"error": "origin"}` when the page has moved, so an
+/// action approved for one site never runs on another, even if the page navigates after the app's own check. A call
+/// that leaves the argument out fails (the name is undefined), so the check cannot be skipped by accident.
 public enum BrowserAgentScripts {
-    /// Shared helpers, at the top of every script.
+    /// Shared helpers, and the origin check, at the top of every script.
     static let prelude = #"""
     const S = window.__ensembleAgent || (window.__ensembleAgent = { next: 1, refs: new Map(), ids: new WeakMap() });
     function visible(el) {
@@ -85,6 +91,15 @@ public enum BrowserAgentScripts {
       if (el instanceof HTMLInputElement && (el.getAttribute('type') || '').toLowerCase() === 'file') { return true; }
       const label = el.closest('label');
       return !!(label && label.control && (label.control.getAttribute('type') || '').toLowerCase() === 'file');
+    }
+    function pageOrigin() {
+      let host = String(location.hostname).toLowerCase();
+      if (host.indexOf(':') >= 0 && host.charAt(0) !== '[') { host = '[' + host + ']'; }
+      const scheme = String(location.protocol).replace(/:$/, '').toLowerCase();
+      return scheme + '://' + host + ':' + (location.port || (scheme === 'https' ? '443' : '80'));
+    }
+    if (expectedOrigin !== null && pageOrigin() !== expectedOrigin) {
+      return JSON.stringify({ error: 'origin', href: String(location.href).slice(0, 300) });
     }
     """#
 
@@ -222,7 +237,7 @@ public enum BrowserAgentScripts {
                             viewport: Math.round(window.innerHeight) });
     """#
 
-    /// No arguments. Returns `true` when a visible password or one-time code field is on the page.
+    /// `expectedOrigin` null. Returns `true` when a visible password or one-time code field is on the page.
     public static let signIn = prelude + "return signInPage();"
 
     public static let maxText = 12_000

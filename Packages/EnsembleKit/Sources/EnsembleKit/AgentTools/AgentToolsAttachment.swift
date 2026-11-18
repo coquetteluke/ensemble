@@ -64,4 +64,8 @@ public protocol AgentToolsAttaching: Sendable {
     /// False while nothing would be attached, so engines skip the lookups an attachment needs.
     var isAttaching: Bool { get }
     func attachment(for target: AgentToolsTarget) -> AgentToolsAttachment?
+    /// Ties a key to the engine process it is handed to (`AgentToolsBinding`).
+    func expect(_ binding: AgentToolsBinding, for target: AgentToolsTarget)
+    /// Lets a folder key speak for an OpenCode session on that server.
+    func allow(openCodeSession sessionID: String, on target: AgentToolsTarget)
 }

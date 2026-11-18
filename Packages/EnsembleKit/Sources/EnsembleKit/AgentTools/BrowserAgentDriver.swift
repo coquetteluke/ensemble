@@ -34,33 +34,44 @@ public struct BrowserAgentRefusal: Error, Equatable, Sendable {
     public var message: String
 }
 
-/// Runs one browser action on a surface. Permission and origin checks happen before this (`AgentToolsCoordinator`).
+/// Runs one browser action on a surface. Permission checks happen before this (`AgentToolsCoordinator`).
+///
+/// Every action takes the origin the user approved. Screenshots and the console are refused here when the page's live
+/// address has another origin; the page scripts check it again themselves inside the page (`BrowserAgentScripts`),
+/// which closes the gap between this check and the moment they run.
 @MainActor
 public enum BrowserAgentDriver {
     public static let consoleLines = 60
     public static let screenshotWidth: CGFloat = 1280
     public static let navigationTimeout: Duration = .seconds(20)
 
-    public static func perform(_ action: BrowserAgentAction, on surface: any AgentBrowserSurface) async -> BrowserAgentOutcome {
+    public static func perform(_ action: BrowserAgentAction, on surface: any AgentBrowserSurface,
+                               expectedOrigin origin: String) async -> BrowserAgentOutcome {
         switch action {
         case .snapshot:
-            return await snapshot(surface)
+            return await snapshot(surface, expectedOrigin: origin)
         case .screenshot:
+            if let moved = originChange(expected: origin, on: surface) { return BrowserAgentOutcome(result: .refused(moved)) }
             return await screenshot(surface)
         case .console(let errorsOnly):
+            if let moved = originChange(expected: origin, on: surface) { return BrowserAgentOutcome(result: .refused(moved)) }
             return BrowserAgentOutcome(result: console(surface.agentConsole, errorsOnly: errorsOnly, url: surface.agentURL))
         case .navigate(let url):
+            guard BrowserAgentOrigin.origin(of: url) == origin else {
+                return BrowserAgentOutcome(result: .refused(movedMessage(url.absoluteString)))
+            }
             return await navigate(to: url, on: surface)
         case .click(let ref):
-            return await act(surface, script: BrowserAgentScripts.click, arguments: ["ref": ref]) { json in
+            return await act(surface, script: BrowserAgentScripts.click, arguments: ["ref": ref, "expectedOrigin": origin]) { json in
                 "Clicked \(ref)\(json["what"]?.stringValue.map { " (\($0))" } ?? "")."
             }
         case .type(let ref, let text, let submit):
-            return await act(surface, script: BrowserAgentScripts.type, arguments: ["ref": ref, "text": text, "submit": submit]) { _ in
+            return await act(surface, script: BrowserAgentScripts.type,
+                             arguments: ["ref": ref, "text": text, "submit": submit, "expectedOrigin": origin]) { _ in
                 "Typed \(text.count) character\(text.count == 1 ? "" : "s") into \(ref)\(submit ? " and pressed Return" : "")."
             }
         case .scroll(let direction, let ref):
-            let arguments: [String: Any] = ["direction": direction.rawValue, "ref": ref ?? NSNull()]
+            let arguments: [String: Any] = ["direction": direction.rawValue, "ref": ref ?? NSNull(), "expectedOrigin": origin]
             return await act(surface, script: BrowserAgentScripts.scroll, arguments: arguments, checkSignIn: false) { json in
                 let y = json["scrollY"]?.doubleValue.map { Int($0) } ?? 0
                 let height = json["height"]?.doubleValue.map { Int($0) } ?? 0
@@ -72,15 +83,16 @@ public enum BrowserAgentDriver {
     /// Names the element an action targets (`button "Save"`) for the permission card, or refuses the action at once
     /// when the ref is stale, a file picker, or a password or payment field (clicks and typing), so no card is shown
     /// for something Ensemble would refuse anyway.
-    public static func target(of action: BrowserAgentAction, on surface: any AgentBrowserSurface) async -> Result<String?, BrowserAgentRefusal> {
+    public static func target(of action: BrowserAgentAction, on surface: any AgentBrowserSurface,
+                              expectedOrigin origin: String) async -> Result<String?, BrowserAgentRefusal> {
         guard let ref = action.ref else { return .success(nil) }
         let json: JSONValue
         do {
-            json = try await run(BrowserAgentScripts.describe, on: surface, arguments: ["ref": ref])
+            json = try await run(BrowserAgentScripts.describe, on: surface, arguments: ["ref": ref, "expectedOrigin": origin])
         } catch {
             return .failure(BrowserAgentRefusal(message: "The page did not respond: \(error.localizedDescription)"))
         }
-        if let problem = json["error"]?.stringValue { return .failure(BrowserAgentRefusal(message: refusal(problem))) }
+        if let problem = json["error"]?.stringValue { return .failure(BrowserAgentRefusal(message: refusal(problem, json))) }
         let acts: Bool
         switch action {
         case .click, .type: acts = true
@@ -91,16 +103,38 @@ public enum BrowserAgentDriver {
         return .success(json["what"]?.stringValue.map { AgentToolText.clean($0, limit: 90) })
     }
 
+    // MARK: Origin
+
+    /// The page's address as the web view has it now (the pane's own copy follows it a moment later).
+    public static func liveURL(of surface: any AgentBrowserSurface) -> URL? {
+        if let url = surface.agentWebView.url, url.absoluteString != "about:blank" { return url }
+        return surface.agentURL
+    }
+
+    /// Why an action approved for `origin` must not run on the page as it is now, or nil: the live address must be a
+    /// page agents may use and have exactly that origin.
+    public static func originChange(expected origin: String, on surface: any AgentBrowserSurface) -> String? {
+        let live = liveURL(of: surface)
+        if BrowserAgentOrigin.refusal(for: live) == nil, BrowserAgentOrigin.origin(of: live) == origin { return nil }
+        return movedMessage(live?.absoluteString)
+    }
+
+    public static func movedMessage(_ address: String?) -> String {
+        "The page changed to \(address.map { AgentToolText.clean($0, limit: 300) } ?? "no page") while waiting; the action was not run."
+    }
+
     // MARK: Reading
 
-    static func snapshot(_ surface: any AgentBrowserSurface) async -> BrowserAgentOutcome {
+    static func snapshot(_ surface: any AgentBrowserSurface, expectedOrigin origin: String) async -> BrowserAgentOutcome {
         let json: JSONValue
         do {
             json = try await run(BrowserAgentScripts.snapshot, on: surface,
-                                 arguments: ["maxText": BrowserAgentScripts.maxText, "maxItems": BrowserAgentScripts.maxItems])
+                                 arguments: ["maxText": BrowserAgentScripts.maxText, "maxItems": BrowserAgentScripts.maxItems,
+                                             "expectedOrigin": origin])
         } catch {
             return BrowserAgentOutcome(result: .refused("The page could not be read: \(error.localizedDescription)"))
         }
+        if let problem = json["error"]?.stringValue { return BrowserAgentOutcome(result: .refused(refusal(problem, json))) }
         let signIn = json["signIn"] == .bool(true)
         var block = "Title: \(json["title"]?.stringValue ?? "")\n\nElements:\n"
         let elements = json["elements"]?.stringValue ?? ""
@@ -180,7 +214,7 @@ public enum BrowserAgentDriver {
             webView.stopLoading()
             return BrowserAgentOutcome(result: .refused("The page went to \(now.absoluteString). \(refusal)"))
         }
-        let signIn = (try? await run(BrowserAgentScripts.signIn, on: surface, arguments: [:])) == .bool(true)
+        let signIn = (try? await run(BrowserAgentScripts.signIn, on: surface, arguments: ["expectedOrigin": NSNull()])) == .bool(true)
         let title = AgentToolText.clean(webView.title ?? "", limit: 120)
         var text = "Opened \(now.absoluteString)"
         if webView.isLoading { text += " (still loading)" }
@@ -198,19 +232,21 @@ public enum BrowserAgentDriver {
             return BrowserAgentOutcome(result: .refused("The page did not respond: \(error.localizedDescription)"))
         }
         if let problem = json["error"]?.stringValue {
-            return BrowserAgentOutcome(result: .refused(refusal(problem)))
+            return BrowserAgentOutcome(result: .refused(refusal(problem, json)))
         }
         // Let what the action started (a navigation, a re-render) begin before checking for a sign-in form.
         try? await Task.sleep(for: .milliseconds(150))
-        let signIn = checkSignIn ? (try? await run(BrowserAgentScripts.signIn, on: surface, arguments: [:])) == .bool(true) : false
+        let signIn = checkSignIn
+            ? (try? await run(BrowserAgentScripts.signIn, on: surface, arguments: ["expectedOrigin": NSNull()])) == .bool(true) : false
         var text = done(json)
         if surface.agentWebView.isLoading { text += " A page is loading." }
         if signIn { text += "\n" + signInNotice }
         return BrowserAgentOutcome(result: .text(text), signIn: signIn)
     }
 
-    static func refusal(_ code: String) -> String {
+    static func refusal(_ code: String, _ json: JSONValue = .null) -> String {
         switch code {
+        case "origin": movedMessage(json["href"]?.stringValue)
         case "stale": "That ref is not on the page any more. Call browser_snapshot for fresh refs."
         case "upload": "Ensemble does not choose files for uploads. Ask the user to pick the file."
         case "sensitive": "Ensemble does not type into or click password, one-time code or payment fields. Ask the user to fill them in."

@@ -11,8 +11,13 @@ final class AgentToolsRecordingHost: AgentToolsHost, @unchecked Sendable {
     private var logged: [AgentToolsLogEntry] = []
     /// Session to folder, for folder bridges.
     let folders: [String: String]
+    /// Subagent to its top-level session.
+    let roots: [String: String]
 
-    init(folders: [String: String] = [:]) { self.folders = folders }
+    init(folders: [String: String] = [:], roots: [String: String] = [:]) {
+        self.folders = folders
+        self.roots = roots
+    }
 
     var calls: [(call: AgentToolCall, caller: AgentToolsCaller)] { lock.withLock { handled } }
     var logs: [AgentToolsLogEntry] { lock.withLock { logged } }
@@ -24,6 +29,10 @@ final class AgentToolsRecordingHost: AgentToolsHost, @unchecked Sendable {
 
     func session(_ sessionID: String, isIn folder: String, server: String) async -> Bool {
         folders[sessionID] == folder
+    }
+
+    func rootSession(of sessionID: String) async -> String? {
+        folders[sessionID] == nil ? nil : (roots[sessionID] ?? sessionID)
     }
 
     func record(_ entry: AgentToolsLogEntry) async {
@@ -100,16 +109,40 @@ final class AgentToolsRawClient {
 enum AgentToolsTestError: Error { case connect, noServer }
 
 /// Starts a server with a recording host in a private folder of the test's own.
-func makeAgentToolsServer(limits: AgentToolsServer.Limits = .init(), folders: [String: String] = [:])
+/// Process lookups for tests: the peer (this test process, through a raw client) is "the helper" when `helper`, its
+/// parent is `helperParent`, and the rest of the tree is what the test says.
+struct AgentToolsFakeProcesses: AgentToolsProcesses {
+    var appPID: Int32 = 1000
+    var helper = true
+    /// The raw client's parent as the server sees it.
+    var helperParent: Int32 = 2000
+    /// Parents of other processes.
+    var parents: [Int32: Int32] = [2000: 1000]
+    var arguments: [Int32: [String]] = [:]
+    var servers: [String: Int32] = [:]
+
+    func parent(of pid: Int32) -> Int32? { pid == getpid() ? helperParent : parents[pid] }
+    func arguments(of pid: Int32) -> [String]? { arguments[pid] }
+    func isHelper(_ peer: AgentToolsPeer) -> Bool { helper && peer.pid == getpid() }
+    func openCodeServer(at url: String) -> Int32? { servers[AgentToolsPeerCheck.normalizedServer(url)] }
+}
+
+/// Starts a server with a recording host in a private folder of the test's own. By default the raw client passes the
+/// peer checks as a helper whose parent is an engine Ensemble started (session keys) or the OpenCode server at
+/// `http://127.0.0.1:4096` (folder keys).
+func makeAgentToolsServer(limits: AgentToolsServer.Limits = .init(), folders: [String: String] = [:], roots: [String: String] = [:],
+                          processes: AgentToolsFakeProcesses = AgentToolsFakeProcesses(servers: ["http://127.0.0.1:4096": 2000]))
     throws -> (server: AgentToolsServer, host: AgentToolsRecordingHost, path: String) {
     let server = AgentToolsServer(limits: limits)
-    let host = AgentToolsRecordingHost(folders: folders)
-    try server.start(host: host, executable: "/usr/bin/false")
+    let host = AgentToolsRecordingHost(folders: folders, roots: roots)
+    try server.start(host: host, executable: "/usr/bin/false", processes: processes)
     guard let path = server.socketPath else { throw AgentToolsTestError.noServer }
     return (server, host, path)
 }
 
-@Suite struct AgentToolsServerTests {
+/// Serialized: the raw client blocks its thread while it waits for the socket, and several tests doing that at once
+/// can take every thread the server's own tasks need.
+@Suite(.serialized) struct AgentToolsServerTests {
     @Test func socketIsPrivate() throws {
         let (server, _, path) = try makeAgentToolsServer()
         defer { server.stop() }
@@ -216,7 +249,10 @@ func makeAgentToolsServer(limits: AgentToolsServer.Limits = .init(), folders: [S
     @Test func folderBridgeNeedsOneOfItsOwnSessions() async throws {
         let (server, host, path) = try makeAgentToolsServer(folders: ["ses_in": "/work/app", "ses_other": "/work/other"])
         defer { server.stop() }
-        let key = try #require(server.attachment(for: .folder("/work/app", server: "http://127.0.0.1:4096"))).key
+        let target = AgentToolsTarget.folder("/work/app", server: "http://127.0.0.1:4096")
+        let key = try #require(server.attachment(for: target)).key
+        server.allow(openCodeSession: "ses_in", on: target)
+        server.allow(openCodeSession: "ses_other", on: target)
         let client = try AgentToolsRawClient(path: path)
         client.hello(key)
         // No session named: refused.
@@ -233,6 +269,109 @@ func makeAgentToolsServer(limits: AgentToolsServer.Limits = .init(), folders: [S
         client.call(4, "browser_snapshot", meta: ["ai.opencode/sessionID": "ses_in"])
         #expect(client.next()?["result"]?["isError"] == false)
         #expect(host.calls.map(\.caller.sessionID) == ["ses_in"])
+    }
+
+    @Test func folderBridgeRefusesSessionsOfOtherEnginesAndServers() async throws {
+        // A Claude session, an OpenCode session prompted on another server, and a subagent of an allowed session, all
+        // in the same folder.
+        let folders = ["claude-uuid": "/work/app", "ses_other_server": "/work/app", "ses_here": "/work/app", "ses_child": "/work/app"]
+        let processes = AgentToolsFakeProcesses(servers: ["http://127.0.0.1:4096": 2000, "http://127.0.0.1:5000": 2000])
+        let (server, host, path) = try makeAgentToolsServer(folders: folders, roots: ["ses_child": "ses_here"], processes: processes)
+        defer { server.stop() }
+        let here = AgentToolsTarget.folder("/work/app", server: "http://127.0.0.1:4096")
+        let other = AgentToolsTarget.folder("/work/app", server: "http://127.0.0.1:5000")
+        let key = try #require(server.attachment(for: here)).key
+        _ = server.attachment(for: other)
+        server.allow(openCodeSession: "ses_here", on: here)
+        server.allow(openCodeSession: "ses_other_server", on: other)
+        let client = try AgentToolsRawClient(path: path)
+        client.hello(key)
+        client.call(1, "browser_snapshot", meta: ["ai.opencode/sessionID": "claude-uuid"])
+        #expect(client.next()?["result"]?["isError"] == true)
+        client.call(2, "browser_snapshot", meta: ["ai.opencode/sessionID": "ses_other_server"])
+        #expect(client.next()?["result"]?["isError"] == true)
+        #expect(host.calls.isEmpty)
+        client.call(3, "browser_snapshot", meta: ["ai.opencode/sessionID": "ses_child"])
+        #expect(client.next()?["result"]?["isError"] == false)
+        #expect(host.calls.map(\.caller.sessionID) == ["ses_child"])
+    }
+
+    @Test func aPeerThatIsNotTheHelperIsRefused() throws {
+        // The real code signing check: this test process is not the helper binary named at start.
+        let server = AgentToolsServer()
+        let host = AgentToolsRecordingHost()
+        try server.start(host: host, executable: "/usr/bin/true")
+        defer { server.stop() }
+        let path = try #require(server.socketPath)
+        let key = try #require(server.attachment(for: .session("A"))).key
+        let client = try AgentToolsRawClient(path: path)
+        client.hello(key)
+        client.request(1, "ping")
+        #expect(client.closedByServer())
+
+        // The same with the lookups faked: a peer that is not the helper is refused.
+        let (fake, fakeHost, fakePath) = try makeAgentToolsServer(processes: AgentToolsFakeProcesses(helper: false))
+        defer { fake.stop() }
+        let second = try AgentToolsRawClient(path: fakePath)
+        second.hello(try #require(fake.attachment(for: .session("A"))).key)
+        second.call(1, "propose_session", ["title": "x", "brief": "y"])
+        #expect(second.closedByServer())
+        #expect(host.calls.isEmpty && fakeHost.calls.isEmpty)
+    }
+
+    @Test func aHelperWhoseParentIsNotTheEngineIsRefused() throws {
+        // The key's engine: claude (pid 2000, started by the app, pid 1000) with this session's config file.
+        let config = "/tmp/ensemble-claude-settings-x/agent-tools.json"
+        var processes = AgentToolsFakeProcesses(parents: [2000: 1000, 3000: 2000, 4000: 1000],
+                                                arguments: [2000: ["-p", "--mcp-config", config, "--model", "haiku"],
+                                                            4000: ["-p", "--mcp-config", "/tmp/other/agent-tools.json"]])
+        func connects(parent: Int32, binding: AgentToolsBinding?) throws -> Bool {
+            processes.helperParent = parent
+            let (server, _, path) = try makeAgentToolsServer(processes: processes)
+            defer { server.stop() }
+            let key = try #require(server.attachment(for: .session("A"))).key
+            if let binding { server.expect(binding, for: .session("A")) }
+            let client = try AgentToolsRawClient(path: path)
+            client.hello(key)
+            client.request(1, "ping")
+            return client.next(timeout: 30)?["result"] == [:]
+        }
+        // Started by the session's own claude: accepted.
+        #expect(try connects(parent: 2000, binding: .claude(configPath: config)))
+        // Started from a shell inside the agent (pid 3000, child of claude): refused.
+        #expect(try !connects(parent: 3000, binding: .claude(configPath: config)))
+        // Started by another session's claude (pid 4000, another config file): refused.
+        #expect(try !connects(parent: 4000, binding: .claude(configPath: config)))
+        // An engine that serves several sessions: any process the app started, but nothing else.
+        #expect(try connects(parent: 4000, binding: nil))
+        #expect(try !connects(parent: 3000, binding: nil))
+        // A folder key: only the OpenCode server at that address.
+        processes.servers = ["http://127.0.0.1:4096": 2000]
+        processes.helperParent = 3000
+        let (server, _, path) = try makeAgentToolsServer(processes: processes)
+        defer { server.stop() }
+        let client = try AgentToolsRawClient(path: path)
+        client.hello(try #require(server.attachment(for: .folder("/work/app", server: "http://127.0.0.1:4096/"))).key)
+        client.request(1, "ping")
+        #expect(client.closedByServer())
+    }
+
+    @Test func onlyExactBindingsMayUseSiteGrants() async throws {
+        let config = "/tmp/ensemble-claude-settings-y/agent-tools.json"
+        let processes = AgentToolsFakeProcesses(helperParent: 2000, parents: [2000: 1000], arguments: [2000: ["--mcp-config", config]])
+        let (server, host, path) = try makeAgentToolsServer(processes: processes)
+        defer { server.stop() }
+        let claudeKey = try #require(server.attachment(for: .session("claude"))).key
+        server.expect(.claude(configPath: config), for: .session("claude"))
+        let agyKey = try #require(server.attachment(for: .session("agy"))).key
+        for (index, key) in [claudeKey, agyKey].enumerated() {
+            let client = try AgentToolsRawClient(path: path)
+            client.hello(key)
+            client.call(index + 1, "browser_console")
+            _ = client.next()
+        }
+        #expect(host.calls.map(\.caller.sessionID) == ["claude", "agy"])
+        #expect(host.calls.map(\.caller.canUseSiteGrants) == [true, false])
     }
 
     @Test func unknownToolsAndMethodsAreRefused() async throws {

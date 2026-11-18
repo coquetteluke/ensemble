@@ -228,7 +228,7 @@ public final class AgentToolsCoordinator: AgentToolsHost {
         case .propose(let input):
             return propose(input, session: session)
         case .browser(let action):
-            return await browser(action, session: session)
+            return await browser(action, session: session, siteGrants: caller.canUseSiteGrants)
         }
     }
 
@@ -237,6 +237,10 @@ public final class AgentToolsCoordinator: AgentToolsHost {
         let a = WorkspaceTrust.resolvedPath(session.directory) ?? session.directory
         let b = WorkspaceTrust.resolvedPath(folder) ?? folder
         return a == b
+    }
+
+    public func rootSession(of sessionID: String) async -> String? {
+        environment.session(sessionID)?.rootID
     }
 
     public func record(_ entry: AgentToolsLogEntry) async {
@@ -316,7 +320,9 @@ public final class AgentToolsCoordinator: AgentToolsHost {
         permissionRequests.first { $0.sessionID == sessionID }
     }
 
-    func browser(_ action: BrowserAgentAction, session: AgentToolsEnvironment.Session) async -> AgentToolResult {
+    /// One browser call. `siteGrants` is false for bridges that cannot be tied to one engine process
+    /// (`AgentToolsBinding.appChild`): then "Always for this site" is neither offered nor used, and every call asks.
+    func browser(_ action: BrowserAgentAction, session: AgentToolsEnvironment.Session, siteGrants: Bool) async -> AgentToolResult {
         // One browser call at a time per session, in order.
         await acquire(session.id)
         defer { release(session.id) }
@@ -330,16 +336,17 @@ public final class AgentToolsCoordinator: AgentToolsHost {
         guard let target, let origin = BrowserAgentOrigin.origin(of: target) else { return .refused("No page is open.") }
         // Name the element for the card; stale refs, file pickers and password or payment fields are refused here.
         let element: String?
-        switch await BrowserAgentDriver.target(of: action, on: surface) {
+        switch await BrowserAgentDriver.target(of: action, on: surface, expectedOrigin: origin) {
         case .success(let described): element = described
         case .failure(let refusal): return .refused(refusal.message)
         }
         let summary = action.summary(element: element)
 
-        if !grants.allows(origin, session: session.id) {
+        // "Always" covers exactly the origin it was granted for, and only through bridges tied to their engine process.
+        if !(siteGrants && grants.allows(origin, session: session.id)) {
             let request = BrowserPermissionRequest(sessionID: session.id, tool: action.tool, summary: summary, origin: origin,
                                                    address: target.absoluteString, typedText: action.typedText,
-                                                   allowsAlways: environment.isTrusted(session.directory))
+                                                   allowsAlways: siteGrants && environment.isTrusted(session.directory))
             environment.showBrowser(session.id)
             touch(session.id, action: summary)
             let answer = await ask(request)
@@ -356,9 +363,17 @@ public final class AgentToolsCoordinator: AgentToolsHost {
             if let refusal = pauseRefusal(action, session: environment.session(session.id) ?? session) { return .refused(refusal) }
         }
 
+        // The page may have moved while the card waited or the element was looked up (a redirect, page script, a link):
+        // the action runs only on the origin the user approved. The page scripts check it again inside the page.
+        if case .navigate = action {
+        } else if let moved = BrowserAgentDriver.originChange(expected: origin, on: surface) {
+            touch(session.id, action: nil)
+            return .refused(moved)
+        }
+
         environment.showBrowser(session.id)
         touch(session.id, action: summary, running: true)
-        let outcome = await BrowserAgentDriver.perform(action, on: surface)
+        let outcome = await BrowserAgentDriver.perform(action, on: surface, expectedOrigin: origin)
         touch(session.id, action: summary, running: false)
         if outcome.signIn { browserStates[session.id, default: AgentBrowserState()].pause = .signIn }
         return outcome.result

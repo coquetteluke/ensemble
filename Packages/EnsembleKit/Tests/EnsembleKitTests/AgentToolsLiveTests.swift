@@ -7,7 +7,9 @@ import Testing
 /// `ENSEMBLE_AGENT_TOOLS_HELPER`, from an Ensemble build): OpenCode with the scripted mock model calls
 /// `ensemble_propose_session` and drives the browser tools against a page from a temporary `python3 -m http.server`;
 /// a short Claude turn on haiku calls `propose_session`. OpenCode runs with `ENSEMBLE_LIVE_TESTS=1`, Claude with
-/// `ENSEMBLE_LIVE_CLAUDE=1`. Every server, page server and session these tests start is stopped or deleted.
+/// `ENSEMBLE_LIVE_CLAUDE=1`. Every server, page server and session these tests start is stopped or deleted. The peer
+/// checks are the real ones (the helper's signature, its parent engine process), except that the helper from a Debug
+/// build is ad hoc while the test runner is not, so the team they must share is given as none.
 enum AgentToolsLive {
     static var helper: String? {
         ProcessInfo.processInfo.environment["ENSEMBLE_AGENT_TOOLS_HELPER"].flatMap {
@@ -116,7 +118,7 @@ enum AgentToolsLive {
         app.surface = surface
         let coordinator = app.coordinator()
         let server = AgentToolsServer()
-        try server.start(host: coordinator, executable: helper)
+        try server.start(host: coordinator, executable: helper, processes: SystemAgentToolsProcesses(helperPath: helper, team: .some(nil)))
         defer { server.stop() }
         let client = try OpenCodeClient.fromServiceFile()
         client.setAgentTools(server)
@@ -183,7 +185,7 @@ enum AgentToolsLive {
         let app = AgentToolsTestApp()
         let coordinator = app.coordinator()
         let server = AgentToolsServer()
-        try server.start(host: coordinator, executable: helper)
+        try server.start(host: coordinator, executable: helper, processes: SystemAgentToolsProcesses(helperPath: helper, team: .some(nil)))
         defer { server.stop() }
         var configuration = ClaudeCodeEngine.Configuration(storeURL: harness.store, trust: harness.trust)
         configuration.agentTools = server
@@ -234,7 +236,7 @@ enum AgentToolsLive {
         defer { try? FileManager.default.removeItem(at: folder) }
         let cwd = WorkspaceTrust.resolvedPath(folder.path) ?? folder.path
         let server = AgentToolsServer()
-        try server.start(host: AgentToolsTestApp().coordinator(), executable: helper)
+        try server.start(host: AgentToolsTestApp().coordinator(), executable: helper, processes: SystemAgentToolsProcesses(helperPath: helper, team: .some(nil)))
         defer { server.stop() }
         let attachment = try #require(server.attachment(for: .session("agy-session")))
 

@@ -8,8 +8,9 @@ import EnsembleKit
 /// Snapshots of Ensemble's agent tools: a proposal card (pending, answered, failed), and the browser pane with the
 /// "Agent is using the browser" bar, its permission card (trusted and untrusted folder), and the paused states after
 /// Take over and on a sign-in page, each in dark and light at the requested zoom. First drives the real browser pane
-/// page offscreen through `BrowserAgentDriver` (read, click, type, refuse a password field, detect the sign-in form) and
-/// prints what it found. Called from `SnapshotRenderer.run`.
+/// page offscreen through `BrowserAgentDriver` (read, click, type, refuse a password field, detect the sign-in form, and
+/// refuse a click approved just before the page moved to another origin) and prints what it found. Called from
+/// `SnapshotRenderer.run`.
 @MainActor
 enum AgentToolsSnapshots {
     @discardableResult
@@ -220,7 +221,8 @@ enum AgentToolsCheck {
         spin(0.2)
         let surface = Surface(page: page)
 
-        let snapshot = wait { await BrowserAgentDriver.perform(.snapshot, on: surface) }
+        let origin = "http://localhost:5173"
+        let snapshot = wait { await BrowserAgentDriver.perform(.snapshot, on: surface, expectedOrigin: origin) }
         let text = snapshot?.result.text ?? ""
         func ref(_ label: String) -> String? {
             guard let line = text.split(separator: "\n").first(where: { $0.contains(label) }),
@@ -231,21 +233,49 @@ enum AgentToolsCheck {
         let passwordRef = ref("Deploy password")
         let buttonRef = ref("Create project")
         let fenced = text.contains("untrusted data") && text.contains("```")
-        let password = wait { await BrowserAgentDriver.perform(.type(ref: passwordRef ?? "e0", text: "hunter2", submit: false), on: surface) }
+        let password = wait { await BrowserAgentDriver.perform(.type(ref: passwordRef ?? "e0", text: "hunter2", submit: false), on: surface, expectedOrigin: origin) }
         let passwordRefused = password?.result.isError == true && password?.result.text.contains("password") == true
-        let typed = wait { await BrowserAgentDriver.perform(.type(ref: nameRef ?? "e0", text: "Status page", submit: false), on: surface) }
-        let clicked = wait { await BrowserAgentDriver.perform(.click(ref: buttonRef ?? "e0"), on: surface) }
+        let typed = wait { await BrowserAgentDriver.perform(.type(ref: nameRef ?? "e0", text: "Status page", submit: false), on: surface, expectedOrigin: origin) }
+        let clicked = wait { await BrowserAgentDriver.perform(.click(ref: buttonRef ?? "e0"), on: surface, expectedOrigin: origin) }
         let result = wait { () -> String in
             (try? await webView.evaluateJavaScript("document.getElementById('out').textContent + '|' + document.getElementById('pw').value") as? String) ?? ""
         } ?? ""
         let actions = typed?.result.isError == false && clicked?.result.isError == false && result == "Created Status page|"
         let signIn = snapshot?.signIn == true
-        print("Agent tools check: snapshot refs \(nameRef != nil && passwordRef != nil && buttonRef != nil ? "ok" : "MISSING"), "
-              + "page text fenced \(fenced ? "ok" : "NO"), password field refused \(passwordRefused ? "ok" : "NO"), "
-              + "type and click \(actions ? "ok" : "FAILED (\(result))"), sign-in form noticed \(signIn ? "ok" : "NO")")
 
         // The picture of the page for the pane snapshots.
         let image = wait { () -> NSImage? in try? await webView.takeSnapshot(configuration: WKSnapshotConfiguration()) } ?? nil
+
+        // A click the user approves while the page moves to another origin is not run.
+        let coordinator = AgentToolsCoordinator(environment: AgentToolsEnvironment(
+            session: { id in
+                AgentToolsEnvironment.Session(id: id, rootID: id, directory: NSTemporaryDirectory(), model: nil, permissionMode: .ask,
+                                              archived: false, turn: "1")
+            },
+            browser: { _ in surface }, isTrusted: { _ in true }, knownFolders: { [] },
+            resolveModel: { _, session in (session.model, "", false) }, showBrowser: { _ in }, log: { _, _ in },
+            startSession: { _, _ in "" }, send: { _, _ in }))
+        let call = Task { @MainActor in
+            await coordinator.handle(.browser(.click(ref: buttonRef ?? "e0")), caller: AgentToolsCaller(sessionID: "agent-tools-check"))
+        }
+        var movedDeadline = Date().addingTimeInterval(15)
+        while coordinator.permissionRequests.isEmpty, Date() < movedDeadline { spin(0.05) }
+        let cardOrigin = coordinator.permissionRequests.first?.origin
+        page.loadForCheck(html: "<!doctype html><button onclick=\"window.moved = 'clicked'\">Create project</button>",
+                          baseURL: URL(string: "http://127.0.0.1:5174/") ?? LaunchEntry.defaultURL(port: 5174))
+        movedDeadline = Date().addingTimeInterval(15)
+        while (webView.isLoading || webView.url?.port != 5174), Date() < movedDeadline { spin(0.05) }
+        if let request = coordinator.permissionRequests.first { coordinator.answer(request.id, .once) }
+        let moved = wait { await call.value }
+        let movedClick = wait { () -> String in
+            (try? await webView.evaluateJavaScript("String(window.moved)") as? String) ?? ""
+        } ?? ""
+        let movedRefused = cardOrigin == origin && moved?.isError == true
+            && moved?.text.contains("while waiting; the action was not run") == true && movedClick == "undefined"
+        print("Agent tools check: snapshot refs \(nameRef != nil && passwordRef != nil && buttonRef != nil ? "ok" : "MISSING"), "
+              + "page text fenced \(fenced ? "ok" : "NO"), password field refused \(passwordRefused ? "ok" : "NO"), "
+              + "type and click \(actions ? "ok" : "FAILED (\(result))"), sign-in form noticed \(signIn ? "ok" : "NO"), "
+              + "click refused after the page moved \(movedRefused ? "ok" : "NO (\(moved?.text ?? "no answer"))")")
         return Result(image: image)
     }
 }

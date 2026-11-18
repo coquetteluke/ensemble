@@ -28,14 +28,17 @@ extension OpenCodeClient {
     /// tools; the prompt still goes out.
     func ensureAgentTools(sessionID: String) async {
         guard let tools = agentToolsState.withLock({ $0.tools }), tools.isAttaching else { return }
-        var directory = agentToolsState.withLock { $0.directories[sessionID] }
-        if directory == nil {
+        var known = agentToolsState.withLock { $0.directories[sessionID] }
+        if known == nil {
             guard let info = try? await session(sessionID), !info.directory.isEmpty else { return }
-            directory = info.directory
+            known = info.directory
             agentToolsState.withLock { $0.directories[sessionID] = info.directory }
         }
-        guard let directory,
-              let attachment = tools.attachment(for: .folder(directory, server: baseURL.absoluteString)) else { return }
+        guard let directory = known else { return }
+        let target = AgentToolsTarget.folder(directory, server: baseURL.absoluteString)
+        guard let attachment = tools.attachment(for: target) else { return }
+        // The folder's key speaks only for OpenCode sessions Ensemble prompts on this server.
+        tools.allow(openCodeSession: sessionID, on: target)
         if agentToolsState.withLock({ $0.attached[directory] == attachment.key }) { return }
         do {
             try await sendIgnoringBody("PUT", "/api/experimental/mcp/\(AgentToolsAttachment.serverName)",
