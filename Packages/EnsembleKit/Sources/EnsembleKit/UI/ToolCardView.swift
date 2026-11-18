@@ -93,7 +93,7 @@ public struct ToolCardView: View {
 
     public var body: some View {
         let summary = ToolSummary(tool, baseDirectory: baseDirectory)
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: theme.z(6)) {
             Button {
                 withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
             } label: {
@@ -105,56 +105,56 @@ public struct ToolCardView: View {
 
             if expanded {
                 detail
-                    .padding(.leading, 24)
+                    .padding(.leading, theme.z(24))
                     .transition(.opacity)
             }
         }
     }
 
     private func header(_ summary: ToolSummary) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: theme.z(8)) {
             Image(systemName: summary.symbol)
-                .font(.system(size: 12))
+                .font(theme.font(size: 12))
                 .foregroundStyle(theme.textTertiary)
-                .frame(width: 16)
+                .frame(width: theme.z(16))
             titleText(summary)
                 .lineLimit(1)
                 .truncationMode(.middle)
             if let add = summary.additions, let del = summary.deletions, add + del > 0 {
-                HStack(spacing: 4) {
+                HStack(spacing: theme.z(4)) {
                     Text("+\(add)").foregroundStyle(theme.diffAddText)
                     Text("-\(del)").foregroundStyle(theme.diffRemoveText)
                 }
-                .font(.system(size: 12, weight: .medium).monospacedDigit())
+                .font(theme.font(size: 12, weight: .medium).monospacedDigit())
             }
             switch tool.status {
             case .running, .pending:
                 Spinner(size: 11)
             case .failed:
                 Text("Failed")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(theme.font(size: 12, weight: .medium))
                     .foregroundStyle(theme.danger)
             case .succeeded:
                 EmptyView()
             }
             Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
+                .font(theme.font(size: 9, weight: .semibold))
                 .foregroundStyle(theme.textTertiary)
                 .rotationEffect(.degrees(expanded ? 90 : 0))
                 .opacity(hovering || expanded ? 1 : 0)
             Spacer(minLength: 0)
         }
-        .frame(minHeight: 22)
+        .frame(minHeight: theme.z(22))
         .contentShape(Rectangle())
     }
 
     private func titleText(_ summary: ToolSummary) -> Text {
         let verb = Text(summary.verb).foregroundStyle(theme.textSecondary)
-        guard !summary.subject.isEmpty else { return verb.font(.system(size: 13)) }
+        guard !summary.subject.isEmpty else { return verb.font(theme.font(size: 13)) }
         let subject = Text(summary.subject)
-            .font(summary.monospacedSubject ? .system(size: 12.5, design: .monospaced) : .system(size: 13))
+            .font(summary.monospacedSubject ? theme.font(size: 12.5, design: .monospaced) : theme.font(size: 13))
             .foregroundStyle(theme.textPrimary)
-        return Text("\(verb) \(subject)").font(.system(size: 13))
+        return Text("\(verb) \(subject)").font(theme.font(size: 13))
     }
 
     @ViewBuilder private var detail: some View {
@@ -165,9 +165,9 @@ public struct ToolCardView: View {
             }
         } else if ["bash", "shell", "run", "command"].contains(name) {
             ToolDetailBox(title: nil) {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: theme.z(8)) {
                     Text("$ \(tool.title)")
-                        .font(EFont.mono)
+                        .font(theme.font(size: 12.5, design: .monospaced))
                         .foregroundStyle(theme.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                         .selectableText()
@@ -175,24 +175,24 @@ public struct ToolCardView: View {
                         OutputText(text: output)
                     }
                 }
-                .padding(12)
+                .padding(theme.z(12))
             }
         } else {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: theme.z(8)) {
                 if !["read", "grep", "glob", "list"].contains(name), tool.inputJSON != "{}" {
                     ToolDetailBox(title: "Input") {
                         OutputText(text: prettyJSON(tool.inputJSON))
-                            .padding(12)
+                            .padding(theme.z(12))
                     }
                 }
                 if let output = tool.outputPreview, !output.isEmpty {
                     ToolDetailBox(title: name == "read" ? Format.relativePath(tool.title, base: baseDirectory) : "Output") {
                         OutputText(text: output)
-                            .padding(12)
+                            .padding(theme.z(12))
                     }
                 } else if tool.status == .running {
                     Text("Waiting for output")
-                        .font(EFont.small)
+                        .font(theme.font(size: 12))
                         .foregroundStyle(theme.textTertiary)
                 }
             }
@@ -218,21 +218,21 @@ struct ToolDetailBox<Content: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             if let title {
                 Text(title)
-                    .font(.system(size: 11.5))
+                    .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textTertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
+                    .padding(.horizontal, theme.z(12))
+                    .padding(.vertical, theme.z(7))
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HLine()
             }
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(theme.codeBackground))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(theme.separator, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .background(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).fill(theme.codeBackground))
+        .overlay(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).strokeBorder(theme.separator, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous))
     }
 }
 
@@ -245,18 +245,18 @@ struct OutputText: View {
     var body: some View {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         let limit = 14
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: theme.z(6)) {
             Text(showAll || lines.count <= limit ? text : lines.prefix(limit).joined(separator: "\n"))
-                .font(EFont.monoSmall)
+                .font(theme.font(size: 12, design: .monospaced))
                 .foregroundStyle(theme.textSecondary)
-                .lineSpacing(2)
+                .lineSpacing(theme.z(2))
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .selectableText()
             if lines.count > limit, !showAll {
                 Button("Show all \(lines.count) lines") { showAll = true }
                     .buttonStyle(.plain)
-                    .font(.system(size: 11.5))
+                    .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textSecondary)
             }
         }
@@ -266,55 +266,60 @@ struct OutputText: View {
 /// A subagent started by a tool call. "Open" shows the child session.
 public struct SubagentCardView: View {
     let tool: ToolCallInfo
+    /// Inside an activity group: no card background or border of its own.
+    var compact: Bool
     @Environment(\.theme) private var theme
     @Environment(\.transcriptActions) private var actions
     @State private var hovering = false
 
-    public init(tool: ToolCallInfo) { self.tool = tool }
+    public init(tool: ToolCallInfo, compact: Bool = false) {
+        self.tool = tool
+        self.compact = compact
+    }
 
     public var body: some View {
         Button {
             if let child = tool.childSessionID { actions.openSession(child) }
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: theme.z(10)) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
                         .fill(theme.accent.opacity(0.16))
                     Image(systemName: "person.2.fill")
-                        .font(.system(size: 11))
+                        .font(theme.font(size: 11))
                         .foregroundStyle(theme.accent)
                 }
-                .frame(width: 26, height: 26)
+                .frame(width: theme.z(26), height: theme.z(26))
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: theme.z(2)) {
                     Text("Subagent")
-                        .font(.system(size: 11.5, weight: .medium))
+                        .font(theme.font(size: 11.5, weight: .medium))
                         .foregroundStyle(theme.textTertiary)
                     Text(tool.title)
-                        .font(.system(size: 13))
+                        .font(theme.font(size: 13))
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
                 }
-                Spacer(minLength: 8)
+                Spacer(minLength: theme.z(8))
                 status
                 if tool.childSessionID != nil {
-                    HStack(spacing: 3) {
+                    HStack(spacing: theme.z(3)) {
                         Text("Open")
-                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold))
+                        Image(systemName: "chevron.right").font(theme.font(size: 9, weight: .semibold))
                     }
-                    .font(.system(size: 12, weight: .medium))
+                    .font(theme.font(size: 12, weight: .medium))
                     .foregroundStyle(hovering ? theme.textPrimary : theme.textSecondary)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.horizontal, compact ? 0 : theme.z(10))
+            .padding(.vertical, compact ? 0 : theme.z(8))
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(hovering ? theme.elevatedHover : theme.elevated)
+                RoundedRectangle(cornerRadius: theme.z(10), style: .continuous)
+                    .fill(compact ? .clear : (hovering ? theme.elevatedHover : theme.elevated))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(theme.border, lineWidth: 1)
+                RoundedRectangle(cornerRadius: theme.z(10), style: .continuous)
+                    .strokeBorder(compact ? .clear : theme.border, lineWidth: 1)
             )
             .contentShape(Rectangle())
         }
@@ -326,20 +331,20 @@ public struct SubagentCardView: View {
     @ViewBuilder private var status: some View {
         switch tool.status {
         case .running, .pending:
-            HStack(spacing: 5) {
+            HStack(spacing: theme.z(5)) {
                 Spinner(size: 10)
                 Text("Running")
             }
-            .font(.system(size: 12))
+            .font(theme.font(size: 12))
             .foregroundStyle(theme.textSecondary)
         case .succeeded:
             Label("Done", systemImage: "checkmark")
                 .labelStyle(.titleAndIcon)
-                .font(.system(size: 12))
+                .font(theme.font(size: 12))
                 .foregroundStyle(theme.textTertiary)
         case .failed:
             Label("Failed", systemImage: "xmark")
-                .font(.system(size: 12))
+                .font(theme.font(size: 12))
                 .foregroundStyle(theme.danger)
         }
     }

@@ -12,45 +12,45 @@ struct HubPlaceholderView: View {
     var body: some View {
         let waiting = store.sessions.filter { !$0.pendingPermissions.isEmpty }
         AdaptiveScroll(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: theme.z(10)) {
                 Text("Needs you")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(theme.font(size: 13, weight: .semibold))
                     .foregroundStyle(theme.textSecondary)
                 if waiting.isEmpty {
                     Text("Nothing is waiting on you.")
-                        .font(.system(size: 13))
+                        .font(theme.font(size: 13))
                         .foregroundStyle(theme.textTertiary)
                 }
                 ForEach(waiting) { session in
                     Button {
                         window.open(session.id, store: store)
                     } label: {
-                        HStack(spacing: 10) {
+                        HStack(spacing: theme.z(10)) {
                             CountBadge(session.pendingPermissions.count)
-                            VStack(alignment: .leading, spacing: 2) {
+                            VStack(alignment: .leading, spacing: theme.z(2)) {
                                 Text(session.title)
-                                    .font(.system(size: 13, weight: .medium))
+                                    .font(theme.font(size: 13, weight: .medium))
                                     .foregroundStyle(theme.textPrimary)
                                 Text(session.pendingPermissions.first.map { "Approve: \($0.title)" } ?? "")
-                                    .font(.system(size: 12, design: .monospaced))
+                                    .font(theme.font(size: 12, design: .monospaced))
                                     .foregroundStyle(theme.textSecondary)
                                     .lineLimit(1)
                             }
                             Spacer()
                             Text(Format.folderName(session.directory))
-                                .font(.system(size: 12))
+                                .font(theme.font(size: 12))
                                 .foregroundStyle(theme.textTertiary)
                         }
-                        .padding(12)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(theme.elevated))
-                        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(theme.border))
+                        .padding(theme.z(12))
+                        .background(RoundedRectangle(cornerRadius: theme.z(10)).fill(theme.elevated))
+                        .overlay(RoundedRectangle(cornerRadius: theme.z(10)).strokeBorder(theme.border))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .frame(maxWidth: 720, alignment: .leading)
-            .padding(28)
+            .frame(maxWidth: theme.z(720), alignment: .leading)
+            .padding(theme.z(28))
             .frame(maxWidth: .infinity)
         }
     }
@@ -63,40 +63,40 @@ struct ScheduledPlaceholderView: View {
 
     var body: some View {
         AdaptiveScroll(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: theme.z(10)) {
                 if store.schedules.isEmpty {
                     Text("No scheduled tasks.")
-                        .font(.system(size: 13))
+                        .font(theme.font(size: 13))
                         .foregroundStyle(theme.textTertiary)
                 }
                 ForEach(store.schedules) { schedule in
-                    HStack(spacing: 12) {
+                    HStack(spacing: theme.z(12)) {
                         Image(systemName: schedule.paused ? "pause.circle" : "clock")
                             .foregroundStyle(schedule.paused ? theme.textTertiary : theme.accent)
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: theme.z(2)) {
                             Text(schedule.title)
-                                .font(.system(size: 13, weight: .medium))
+                                .font(theme.font(size: 13, weight: .medium))
                                 .foregroundStyle(theme.textPrimary)
                             Text(schedule.prompt)
-                                .font(.system(size: 12))
+                                .font(theme.font(size: 12))
                                 .foregroundStyle(theme.textSecondary)
                                 .lineLimit(1)
                         }
                         Spacer()
                         Text(schedule.schedule)
-                            .font(.system(size: 12, design: .monospaced))
+                            .font(theme.font(size: 12, design: .monospaced))
                             .foregroundStyle(theme.textTertiary)
                         Text(schedule.paused ? "Paused" : "Active")
-                            .font(.system(size: 12))
+                            .font(theme.font(size: 12))
                             .foregroundStyle(schedule.paused ? theme.textTertiary : theme.success)
                     }
-                    .padding(12)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(theme.elevated))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(theme.border))
+                    .padding(theme.z(12))
+                    .background(RoundedRectangle(cornerRadius: theme.z(10)).fill(theme.elevated))
+                    .overlay(RoundedRectangle(cornerRadius: theme.z(10)).strokeBorder(theme.border))
                 }
             }
-            .frame(maxWidth: 720, alignment: .leading)
-            .padding(28)
+            .frame(maxWidth: theme.z(720), alignment: .leading)
+            .padding(theme.z(28))
             .frame(maxWidth: .infinity)
         }
     }

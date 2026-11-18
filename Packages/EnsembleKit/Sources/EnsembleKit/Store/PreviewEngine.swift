@@ -7,9 +7,11 @@ import Synchronization
 public final class PreviewEngine: OpenCodeAPI, Sendable {
     public enum PreviewError: LocalizedError {
         case unknownSession(String)
+        case unknownMessage(String)
         public var errorDescription: String? {
             switch self {
             case .unknownSession(let id): "No session with id \(id)."
+            case .unknownMessage(let id): "No message with id \(id)."
             }
         }
     }
@@ -31,6 +33,8 @@ public final class PreviewEngine: OpenCodeAPI, Sendable {
         var subscribers: [UUID: AsyncStream<EngineEvent>.Continuation] = [:]
         var running: [String: Task<Void, Never>] = [:]
         var counter = 0
+        var efforts: [String: EffortLevel] = [:]
+        var fastModes: [String: Bool] = [:]
     }
 
     private let state: Mutex<State>
@@ -128,7 +132,7 @@ public final class PreviewEngine: OpenCodeAPI, Sendable {
             if !files.isEmpty { shown += "\n\nAttached: " + files.map(\.lastPathComponent).joined(separator: ", ") }
             let isFirst = !(s.transcripts[sessionID] ?? []).contains { if case .user = $0 { true } else { false } }
             s.transcripts[sessionID, default: []].append(.user(id: "user-\(UUID().uuidString)", text: shown, date: Date()))
-            return (s.modes[sessionID] ?? .ask, isFirst)
+            return (s.modes[sessionID] ?? .auto, isFirst)
         }
         if isFirst {
             let title = String(text.split(separator: "\n").first ?? "New session").prefix(48)
@@ -141,7 +145,7 @@ public final class PreviewEngine: OpenCodeAPI, Sendable {
         try requireSession(sessionID)
         let mode = state.withLock { s -> PermissionMode in
             s.transcripts[sessionID, default: []].append(.notice(id: "syn-\(UUID().uuidString)", text: text))
-            return s.modes[sessionID] ?? .ask
+            return s.modes[sessionID] ?? .auto
         }
         if wake {
             start(sessionID) { engine in await engine.simulateReply(sessionID: sessionID, prompt: text, mode: mode) }
@@ -550,5 +554,128 @@ public final class PreviewEngine: OpenCodeAPI, Sendable {
     private func limit(for model: ModelRef?, in s: State) -> Int {
         guard let model else { return 200_000 }
         return s.models.first { $0.ref.providerID == model.providerID && $0.ref.id == model.id }?.contextLimit ?? 200_000
+    }
+}
+
+// MARK: - Optional abilities (so the preview exercises fork, rewind, effort, fast mode and slash commands)
+
+extension PreviewEngine: EngineHistoryControl {
+    public var rewindRestoresFiles: Bool { false }
+
+    public func fork(_ sessionID: String, atMessageID messageID: String?) async throws -> EngineSession {
+        let session = try state.withLock { s -> EngineSession in
+            guard let source = s.sessions[sessionID] else { throw PreviewError.unknownSession(sessionID) }
+            var items = s.transcripts[sessionID] ?? []
+            if let messageID {
+                guard let index = items.firstIndex(where: { $0.id == messageID }) else { throw PreviewError.unknownMessage(messageID) }
+                items = Array(items[...index])
+            }
+            items.removeAll { if case .permission = $0 { true } else { false } }
+            s.counter += 1
+            let id = "ses_fork_\(s.counter)_\(UUID().uuidString.prefix(6).lowercased())"
+            let fork = EngineSession(id: id, title: "Fork of \(source.title)", directory: source.directory,
+                                     model: source.model, agent: source.agent)
+            s.sessions[id] = fork
+            s.transcripts[id] = items
+            s.modes[id] = s.modes[sessionID]
+            s.contexts[id] = s.contexts[sessionID]
+            return fork
+        }
+        emit(.sessionCreated(session))
+        return session
+    }
+
+    public func rewind(_ sessionID: String, toBeforeMessageID messageID: String) async throws {
+        let (task, dropped) = try state.withLock { s -> (Task<Void, Never>?, [PermissionRequest]) in
+            guard var items = s.transcripts[sessionID] else { throw PreviewError.unknownSession(sessionID) }
+            guard let index = items.firstIndex(where: { $0.id == messageID }) else { throw PreviewError.unknownMessage(messageID) }
+            items.removeSubrange(index...)
+            s.transcripts[sessionID] = items
+            let kept = Set(items.map(\.id))
+            let dropped = s.permissions.filter { $0.sessionID == sessionID && !kept.contains($0.id) }
+            s.permissions.removeAll { request in dropped.contains { $0.id == request.id } }
+            return (s.running.removeValue(forKey: sessionID), dropped)
+        }
+        task?.cancel()
+        for request in dropped { emit(.permissionReplied(sessionID: sessionID, requestID: request.id)) }
+        emit(.activity(sessionID: sessionID, .idle))
+    }
+}
+
+extension PreviewEngine: EngineModelOptionsControl {
+    public func modelOptions(for model: ModelRef) async throws -> ModelOptions {
+        switch model.providerID {
+        case "anthropic":
+            if model.id.contains("haiku") { return ModelOptions(effortLevels: [.low, .medium, .high], defaultEffort: .medium) }
+            return ModelOptions(effortLevels: EffortLevel.allCases, defaultEffort: .high, supportsFastMode: model.id.contains("opus"))
+        case "openai":
+            return ModelOptions(effortLevels: [.low, .medium, .high, .xhigh], defaultEffort: .medium)
+        default:
+            return ModelOptions()
+        }
+    }
+
+    public func setEffort(_ sessionID: String, effort: EffortLevel?) async throws {
+        try requireSession(sessionID)
+        state.withLock { $0.efforts[sessionID] = effort }
+    }
+
+    public func setFastMode(_ sessionID: String, enabled: Bool) async throws {
+        try requireSession(sessionID)
+        state.withLock { $0.fastModes[sessionID] = enabled }
+    }
+}
+
+extension PreviewEngine: EngineCommandsControl {
+    public func commands(directory: String?) async throws -> [EngineCommand] {
+        [
+            EngineCommand(name: "review", summary: "Review the uncommitted changes", kind: .command, argumentHint: "[path]"),
+            EngineCommand(name: "init", summary: "Write an AGENTS.md for this project", kind: .command),
+            EngineCommand(name: "compact", summary: "Summarise the conversation to free up context", kind: .command),
+            EngineCommand(name: "test-plan", summary: "Draft a test plan for the current change", kind: .command),
+            EngineCommand(name: "frontend-design", summary: "Distinctive, intentional interface design", kind: .skill),
+            EngineCommand(name: "pdf", summary: "Read, fill and merge PDF files", kind: .skill, argumentHint: "<file>"),
+        ]
+    }
+
+    public func runCommand(_ sessionID: String, name: String, arguments: String) async throws {
+        try requireSession(sessionID)
+        state.withLock { s in
+            let shown = arguments.isEmpty ? "/\(name)" : "/\(name) \(arguments)"
+            s.transcripts[sessionID, default: []].append(.user(id: "user-\(UUID().uuidString)", text: shown, date: Date()))
+        }
+        start(sessionID) { engine in await engine.simulateCommand(sessionID: sessionID, name: name, arguments: arguments) }
+    }
+
+    func simulateCommand(sessionID: String, name: String, arguments: String) async {
+        let turn = UUID().uuidString.prefix(8).lowercased()
+        emit(.activity(sessionID: sessionID, .working))
+        if name == "compact" {
+            state.withLock { s in
+                guard var context = s.contexts[sessionID],
+                      let index = context.categories.firstIndex(where: { $0.key == "messages" }) else { return }
+                let before = context.categories[index].tokens
+                let after = max(2_000, before / 8)
+                context.categories[index].tokens = after
+                context.usedTokens -= before - after
+                if let free = context.categories.firstIndex(where: { $0.key == "free" }) { context.categories[free].tokens += before - after }
+                s.contexts[sessionID] = context
+            }
+            guard await stream(text: "Compacted the conversation. The summary keeps the plan, the files changed and the open questions.",
+                               sessionID: sessionID, itemID: "c-\(turn)") else { return }
+            finishTurn(sessionID, tokens: 1_200)
+            return
+        }
+        let target = arguments.isEmpty ? "" : " for `\(arguments)`"
+        guard await stream(text: "Running `/\(name)`\(target).", sessionID: sessionID, itemID: "c1-\(turn)") else { return }
+        var tool = ToolCallInfo(id: "cmd-\(turn)", name: "shell", title: "git diff --stat", status: .running)
+        emit(.toolUpdated(sessionID: sessionID, tool))
+        guard await pause(700) else { return }
+        tool.status = .succeeded
+        tool.outputPreview = " Sources/App/Settings.swift | 6 +++++-\n 1 file changed, 5 insertions(+), 1 deletion(-)"
+        emit(.toolUpdated(sessionID: sessionID, tool))
+        guard await stream(text: "One file changed. `Settings.isValidURL` looks right; consider a test for URLs without a scheme.",
+                           sessionID: sessionID, itemID: "c2-\(turn)") else { return }
+        finishTurn(sessionID, tokens: 2_600)
     }
 }

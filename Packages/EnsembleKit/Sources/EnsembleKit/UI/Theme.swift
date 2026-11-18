@@ -4,6 +4,9 @@ import SwiftUI
 /// Views read it with `@Environment(\.theme)`; `.ensembleTheme()` picks the palette from the colour scheme.
 public struct Theme: Sendable {
     public var isDark: Bool
+    /// Window zoom (1 = 100%). Every font size and metric goes through `font(size:)` and `z(_:)`,
+    /// so zooming re-lays out crisp text and controls instead of scaling a bitmap.
+    public var scale: CGFloat = 1
 
     // Surfaces
     public var sidebar: Color
@@ -147,6 +150,14 @@ public struct Theme: Sendable {
         contextBuffer: Color(hex: 0x8C8A86)
     )
 
+    /// System font at `size` points times the zoom.
+    public func font(size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> Font {
+        .system(size: size * scale, weight: weight, design: design)
+    }
+
+    /// A length (padding, row height, corner radius, icon size) times the zoom.
+    public func z(_ value: CGFloat) -> CGFloat { value * scale }
+
     /// Colour for a context category key (see `ContextBreakdown.Category.key`).
     public func contextColor(for key: String) -> Color {
         switch key {
@@ -198,19 +209,46 @@ public extension EnvironmentValues {
     @Entry var isSnapshot: Bool = false
     /// The session's folder, used to show paths relative to the project.
     @Entry var sessionDirectory: String = ""
+    /// Window zoom factor (1 = 100%), read by `.ensembleTheme()`.
+    @Entry var zoom: CGFloat = 1
+}
+
+/// Zoom steps for View > Zoom In / Zoom Out / Actual Size.
+public enum Zoom {
+    public static let steps: [Double] = [0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2]
+    public static let storageKey = "zoom"
+
+    public static func zoomIn(from current: Double) -> Double {
+        steps.first { $0 > current + 0.001 } ?? steps.last ?? 1
+    }
+
+    public static func zoomOut(from current: Double) -> Double {
+        steps.last { $0 < current - 0.001 } ?? steps.first ?? 1
+    }
+
+    /// Snaps a stored value to the nearest step.
+    public static func clamped(_ value: Double) -> Double {
+        steps.min { abs($0 - value) < abs($1 - value) } ?? 1
+    }
+
+    /// "125%".
+    public static func label(_ value: Double) -> String { "\(Int((value * 100).rounded()))%" }
 }
 
 private struct ThemeProvider: ViewModifier {
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.zoom) private var zoom
 
     func body(content: Content) -> some View {
-        content
-            .environment(\.theme, scheme == .dark ? .dark : .light)
+        var theme = scheme == .dark ? Theme.dark : Theme.light
+        theme.scale = zoom
+        return content
+            .environment(\.theme, theme)
             .tint(scheme == .dark ? Theme.dark.accent : Theme.light.accent)
     }
 }
 
 public extension View {
-    /// Sets `\.theme` from the current colour scheme.
+    /// Sets `\.theme` from the current colour scheme and `\.zoom`.
     func ensembleTheme() -> some View { modifier(ThemeProvider()) }
 }

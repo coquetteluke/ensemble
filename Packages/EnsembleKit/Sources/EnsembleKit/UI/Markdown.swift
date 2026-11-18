@@ -210,7 +210,7 @@ public enum MarkdownInline {
         var attributed = (try? AttributedString(markdown: source, options: options)) ?? AttributedString(source)
         for run in attributed.runs {
             if let intent = run.inlinePresentationIntent, intent.contains(.code) {
-                attributed[run.range].font = .system(size: size - 1, design: .monospaced)
+                attributed[run.range].font = theme.font(size: size - 1, design: .monospaced)
                 attributed[run.range].backgroundColor = theme.inlineCodeBackground
                 attributed[run.range].foregroundColor = theme.inlineCodeText
             }
@@ -229,17 +229,20 @@ public struct MarkdownView: View {
     let text: String
     var fontSize: CGFloat
     var textColor: Color?
+    /// While the text is still streaming, `widget` and `svg` blocks wait instead of rendering half a page.
+    var streaming: Bool
     @Environment(\.theme) private var theme
 
-    public init(_ text: String, fontSize: CGFloat = 14, textColor: Color? = nil) {
+    public init(_ text: String, fontSize: CGFloat = 14, textColor: Color? = nil, streaming: Bool = false) {
         self.text = text
         self.fontSize = fontSize
         self.textColor = textColor
+        self.streaming = streaming
     }
 
     public var body: some View {
         let blocks = MarkdownParser.parse(text)
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: theme.z(10)) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 blockView(block)
             }
@@ -253,53 +256,60 @@ public struct MarkdownView: View {
         switch block {
         case .heading(let level, let text):
             Text(MarkdownInline.attributed(text, theme: theme, size: headingSize(level)))
-                .font(.system(size: headingSize(level), weight: .semibold))
+                .font(theme.font(size: headingSize(level), weight: .semibold))
                 .foregroundStyle(color)
-                .padding(.top, level <= 2 ? 6 : 2)
+                .padding(.top, theme.z(level <= 2 ? 6 : 2))
                 .fixedSize(horizontal: false, vertical: true)
                 .selectableText()
 
         case .paragraph(let text):
             Text(MarkdownInline.attributed(text, theme: theme, size: fontSize))
-                .font(.system(size: fontSize))
+                .font(theme.font(size: fontSize))
                 .foregroundStyle(color)
-                .lineSpacing(3)
+                .lineSpacing(theme.z(3))
                 .fixedSize(horizontal: false, vertical: true)
                 .selectableText()
 
         case .list(let items):
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: theme.z(5)) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: theme.z(8)) {
                         if let checked = item.checked {
                             Image(systemName: checked ? "checkmark.square.fill" : "square")
-                                .font(.system(size: fontSize - 2))
+                                .font(theme.font(size: fontSize - 2))
                                 .foregroundStyle(checked ? theme.accent : theme.textTertiary)
                         } else {
                             Text(item.marker)
-                                .font(.system(size: fontSize).monospacedDigit())
+                                .font(theme.font(size: fontSize).monospacedDigit())
                                 .foregroundStyle(theme.textSecondary)
-                                .frame(minWidth: 12, alignment: .trailing)
+                                .frame(minWidth: theme.z(12), alignment: .trailing)
                         }
                         Text(MarkdownInline.attributed(item.text, theme: theme, size: fontSize))
-                            .font(.system(size: fontSize))
+                            .font(theme.font(size: fontSize))
                             .foregroundStyle(color)
-                            .lineSpacing(3)
+                            .lineSpacing(theme.z(3))
                             .fixedSize(horizontal: false, vertical: true)
                             .selectableText()
                     }
-                    .padding(.leading, CGFloat(item.indent) * 18)
+                    .padding(.leading, theme.z(CGFloat(item.indent) * 18))
                 }
             }
 
         case .code(let language, let code):
-            CodeBlockView(code: code, language: language)
+            switch language?.lowercased() {
+            case "widget", "html-widget":
+                WidgetBlockView(source: code, kind: .html, pending: streaming)
+            case "svg":
+                WidgetBlockView(source: code, kind: .svg, pending: streaming)
+            default:
+                CodeBlockView(code: code, language: language)
+            }
 
         case .quote(let text):
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 1).fill(theme.border).frame(width: 3)
+            HStack(spacing: theme.z(10)) {
+                RoundedRectangle(cornerRadius: theme.z(1)).fill(theme.border).frame(width: theme.z(3))
                 Text(MarkdownInline.attributed(text, theme: theme, size: fontSize))
-                    .font(.system(size: fontSize))
+                    .font(theme.font(size: fontSize))
                     .foregroundStyle(theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .selectableText()
@@ -307,7 +317,7 @@ public struct MarkdownView: View {
             .fixedSize(horizontal: false, vertical: true)
 
         case .rule:
-            HLine().padding(.vertical, 4)
+            HLine().padding(.vertical, theme.z(4))
 
         case .table(let header, let rows):
             MarkdownTable(header: header, rows: rows, fontSize: fontSize - 1)
@@ -332,11 +342,11 @@ private struct MarkdownTable: View {
 
     var body: some View {
         let columns = max(header.count, rows.map(\.count).max() ?? 0)
-        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+        Grid(alignment: .leading, horizontalSpacing: theme.z(16), verticalSpacing: theme.z(6)) {
             GridRow {
                 ForEach(0..<columns, id: \.self) { c in
                     Text(MarkdownInline.attributed(c < header.count ? header[c] : "", theme: theme, size: fontSize))
-                        .font(.system(size: fontSize, weight: .semibold))
+                        .font(theme.font(size: fontSize, weight: .semibold))
                         .foregroundStyle(theme.textPrimary)
                 }
             }
@@ -345,15 +355,15 @@ private struct MarkdownTable: View {
                 GridRow {
                     ForEach(0..<columns, id: \.self) { c in
                         Text(MarkdownInline.attributed(c < row.count ? row[c] : "", theme: theme, size: fontSize))
-                            .font(.system(size: fontSize))
+                            .font(theme.font(size: fontSize))
                             .foregroundStyle(theme.textPrimary)
                     }
                 }
             }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(theme.codeBackground))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(theme.separator))
+        .padding(theme.z(12))
+        .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(theme.codeBackground))
+        .overlay(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).strokeBorder(theme.separator))
     }
 }
 
@@ -373,7 +383,7 @@ public struct CodeBlockView: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text(language ?? "code")
-                    .font(.system(size: 11.5))
+                    .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textTertiary)
                 Spacer()
                 Button {
@@ -384,35 +394,35 @@ public struct CodeBlockView: View {
                         copied = false
                     }
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: theme.z(4)) {
                         Image(systemName: copied ? "checkmark" : "doc.on.doc")
                         Text(copied ? "Copied" : "Copy")
                     }
-                    .font(.system(size: 11.5))
+                    .font(theme.font(size: 11.5))
                     .foregroundStyle(copied ? theme.success : theme.textTertiary)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Copy code")
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .padding(.bottom, 2)
+            .padding(.horizontal, theme.z(12))
+            .padding(.top, theme.z(8))
+            .padding(.bottom, theme.z(2))
 
             AdaptiveScroll(.horizontal, snapshotAlignment: .leading) {
                 Text(SyntaxHighlighter.highlight(code, language: language, theme: theme))
-                    .font(.system(size: 12.5, design: .monospaced))
-                    .lineSpacing(2.5)
+                    .font(theme.font(size: 12.5, design: .monospaced))
+                    .lineSpacing(theme.z(2.5))
                     .fixedSize(horizontal: true, vertical: true)
                     .selectableText()
-                    .padding(.horizontal, 12)
-                    .padding(.top, 4)
-                    .padding(.bottom, 11)
+                    .padding(.horizontal, theme.z(12))
+                    .padding(.top, theme.z(4))
+                    .padding(.bottom, theme.z(11))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(theme.codeBackground))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(theme.separator, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).fill(theme.codeBackground))
+        .overlay(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).strokeBorder(theme.separator, lineWidth: 1))
     }
 }
 

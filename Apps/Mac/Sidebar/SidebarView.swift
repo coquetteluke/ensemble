@@ -18,7 +18,7 @@ struct SidebarView: View {
             // Title bar area: traffic lights and the sidebar toolbar button live here.
             Color.clear.frame(height: 52)
 
-            VStack(spacing: 1) {
+            VStack(spacing: theme.z(1)) {
                 SidebarNavRow(symbol: "plus", title: "New session", accentIcon: true, shortcut: "\u{2318}N") {
                     window.beginNewSession()
                 }
@@ -31,29 +31,29 @@ struct SidebarView: View {
                     window.route = .scheduled
                 }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, theme.z(8))
 
-            InputField("Search sessions", text: $window.searchText, icon: "magnifyingglass", height: 28)
-                .padding(.horizontal, 10)
-                .padding(.top, 12)
-                .padding(.bottom, 4)
+            InputField("Search sessions", text: $window.searchText, icon: "magnifyingglass", height: theme.z(28))
+                .padding(.horizontal, theme.z(10))
+                .padding(.top, theme.z(12))
+                .padding(.bottom, theme.z(4))
 
             AdaptiveScroll(.vertical) {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: theme.z(14)) {
                     ForEach(filteredProjects) { project in
                         projectSection(project)
                     }
                     if filteredProjects.isEmpty && store.isLoaded {
                         Text(window.searchText.isEmpty ? "No sessions yet" : "No matches")
-                            .font(.system(size: 12.5))
+                            .font(theme.font(size: 12.5))
                             .foregroundStyle(theme.textTertiary)
-                            .padding(.horizontal, 10)
-                            .padding(.top, 8)
+                            .padding(.horizontal, theme.z(10))
+                            .padding(.top, theme.z(8))
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.top, 10)
-                .padding(.bottom, 16)
+                .padding(.horizontal, theme.z(8))
+                .padding(.top, theme.z(10))
+                .padding(.bottom, theme.z(16))
             }
             .frame(maxHeight: .infinity, alignment: .top)
 
@@ -93,7 +93,7 @@ struct SidebarView: View {
 
     private func projectSection(_ project: ProjectGroup) -> some View {
         let collapsed = window.collapsedProjects.contains(project.id) && window.searchText.isEmpty
-        return VStack(alignment: .leading, spacing: 1) {
+        return VStack(alignment: .leading, spacing: theme.z(1)) {
             ProjectHeader(name: project.name, path: project.directory, collapsed: collapsed,
                           onToggle: {
                               if collapsed { window.collapsedProjects.remove(project.id) } else { window.collapsedProjects.insert(project.id) }
@@ -128,45 +128,47 @@ struct SidebarView: View {
             Divider()
             Button("Archive") { Task { await store.archive(session.id) } }
             Button("Delete", role: .destructive) { deleting = session }
+            Divider()
+            PowerMenuItems(holder: .session(session.id))
         }
     }
 
     // MARK: Footer
 
     private var footer: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: theme.z(6)) {
             Button {
                 openSettings()
             } label: {
-                HStack(spacing: 9) {
+                HStack(spacing: theme.z(9)) {
                     Image(systemName: "gearshape")
-                        .font(.system(size: 13))
+                        .font(theme.font(size: 13))
                         .foregroundStyle(theme.textSecondary)
-                        .frame(width: 18)
+                        .frame(width: theme.z(18))
                     Text("Settings")
-                        .font(.system(size: 13))
+                        .font(theme.font(size: 13))
                         .foregroundStyle(theme.textSidebar)
                 }
-                .padding(.horizontal, 8)
-                .frame(height: 30)
+                .padding(.horizontal, theme.z(8))
+                .frame(height: theme.z(30))
             }
             .buttonStyle(RowButtonStyle())
             .help("Settings (Command-,)")
 
-            Spacer(minLength: 4)
+            Spacer(minLength: theme.z(4))
 
-            HStack(spacing: 6) {
+            HStack(spacing: theme.z(6)) {
                 StatusDot(engineColor, size: 6)
                 Text(engineLabel)
-                    .font(.system(size: 11.5))
+                    .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textTertiary)
                     .lineLimit(1)
             }
             .help(store.isPreview ? "Using built-in sample data. No engine is connected." : "OpenCode engine")
-            .padding(.trailing, 6)
+            .padding(.trailing, theme.z(6))
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 8)
+        .padding(.horizontal, theme.z(8))
+        .padding(.vertical, theme.z(8))
     }
 
     private var engineLabel: String {
@@ -204,37 +206,37 @@ struct SidebarNavRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 9) {
+            HStack(spacing: theme.z(9)) {
                 if accentIcon {
                     Image(systemName: symbol)
-                        .font(.system(size: 10, weight: .bold))
+                        .font(theme.font(size: 10, weight: .bold))
                         .foregroundStyle(theme.onAccent)
-                        .frame(width: 18, height: 18)
+                        .frame(width: theme.z(18), height: theme.z(18))
                         .background(Circle().fill(theme.accent))
                 } else {
                     Image(systemName: symbol)
-                        .font(.system(size: 13))
+                        .font(theme.font(size: 13))
                         .foregroundStyle(selected ? theme.textPrimary : theme.textSecondary)
-                        .frame(width: 18)
+                        .frame(width: theme.z(18))
                 }
                 Text(title)
-                    .font(.system(size: 13, weight: accentIcon ? .medium : .regular))
+                    .font(theme.font(size: 13, weight: accentIcon ? .medium : .regular))
                     .foregroundStyle(selected ? theme.textPrimary : theme.textSidebar)
-                Spacer(minLength: 4)
+                Spacer(minLength: theme.z(4))
                 if badge > 0 {
                     CountBadge(badge)
                 } else if let shortcut, hovering {
                     Text(shortcut)
-                        .font(.system(size: 11.5))
+                        .font(theme.font(size: 11.5))
                         .foregroundStyle(theme.textTertiary)
                 } else if let trailing {
                     Text(trailing)
-                        .font(.system(size: 11.5).monospacedDigit())
+                        .font(theme.font(size: 11.5).monospacedDigit())
                         .foregroundStyle(theme.textTertiary)
                 }
             }
-            .padding(.horizontal, 8)
-            .frame(height: 30)
+            .padding(.horizontal, theme.z(8))
+            .frame(height: theme.z(30))
         }
         .buttonStyle(RowButtonStyle(selected: selected))
         .onHover { hovering = $0 }
@@ -252,15 +254,15 @@ struct ProjectHeader: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: theme.z(6)) {
             Button(action: onToggle) {
-                HStack(spacing: 6) {
+                HStack(spacing: theme.z(6)) {
                     Image(systemName: hovering ? (collapsed ? "chevron.right" : "chevron.down") : "folder")
-                        .font(.system(size: hovering ? 9 : 11, weight: hovering ? .bold : .regular))
+                        .font(theme.font(size: hovering ? 9 : 11, weight: hovering ? .bold : .regular))
                         .foregroundStyle(theme.textTertiary)
-                        .frame(width: 14)
+                        .frame(width: theme.z(14))
                     Text(name)
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(theme.font(size: 12, weight: .semibold))
                         .foregroundStyle(theme.textSecondary)
                         .lineLimit(1)
                     Spacer(minLength: 0)
@@ -273,17 +275,17 @@ struct ProjectHeader: View {
             if hovering {
                 Button(action: onNew) {
                     Image(systemName: "plus")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(theme.font(size: 11, weight: .semibold))
                         .foregroundStyle(theme.textSecondary)
-                        .frame(width: 20, height: 20)
+                        .frame(width: theme.z(20), height: theme.z(20))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("New session in \(name)")
             }
         }
-        .padding(.horizontal, 10)
-        .frame(height: 26)
+        .padding(.horizontal, theme.z(10))
+        .frame(height: theme.z(26))
         .onHover { hovering = $0 }
     }
 }
@@ -300,27 +302,27 @@ struct SessionRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: theme.z(8)) {
                 if !agentColors.isEmpty {
-                    HStack(spacing: -2) {
+                    HStack(spacing: theme.z(-2)) {
                         ForEach(Array(agentColors.prefix(4).enumerated()), id: \.offset) { _, color in
                             Circle()
                                 .fill(color)
-                                .frame(width: 7, height: 7)
+                                .frame(width: theme.z(7), height: theme.z(7))
                                 .overlay(Circle().stroke(selected ? theme.selection : theme.sidebar, lineWidth: 1.5))
                         }
                     }
                 }
                 Text(session.title)
-                    .font(.system(size: 13))
+                    .font(theme.font(size: 13))
                     .foregroundStyle(selected ? theme.textPrimary : theme.textSidebar)
                     .lineLimit(1)
-                Spacer(minLength: 6)
+                Spacer(minLength: theme.z(6))
                 trailing
             }
-            .padding(.leading, 30)
-            .padding(.trailing, 10)
-            .frame(height: 30)
+            .padding(.leading, theme.z(30))
+            .padding(.trailing, theme.z(10))
+            .frame(height: theme.z(30))
         }
         .buttonStyle(RowButtonStyle(selected: selected))
         .accessibilityLabel(accessibilityText)
@@ -333,11 +335,11 @@ struct SessionRow: View {
             Spinner(size: 11)
         } else if session.activity == .failed {
             Image(systemName: "exclamationmark.circle")
-                .font(.system(size: 11.5))
+                .font(theme.font(size: 11.5))
                 .foregroundStyle(theme.danger)
         } else {
             Text(Format.relative(session.info.updated))
-                .font(.system(size: 11.5).monospacedDigit())
+                .font(theme.font(size: 11.5).monospacedDigit())
                 .foregroundStyle(theme.textTertiary)
         }
     }

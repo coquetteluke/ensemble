@@ -4,6 +4,17 @@ import EnsembleKit
 /// Settings window: General, Providers (API keys), Models, Engine.
 struct SettingsView: View {
     let store: SessionStore
+    @AppStorage(Zoom.storageKey) private var zoom = 1.0
+
+    var body: some View {
+        SettingsTabs(store: store)
+            .ensembleTheme()
+            .environment(\.zoom, CGFloat(Zoom.clamped(zoom)))
+    }
+}
+
+private struct SettingsTabs: View {
+    let store: SessionStore
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -20,8 +31,11 @@ struct SettingsView: View {
             Tab("Engine", systemImage: "server.rack") {
                 EngineSettingsView(store: store)
             }
+            Tab("Power", systemImage: "cup.and.saucer") {
+                PowerSettingsTab()
+            }
         }
-        .frame(width: 640, height: 560)
+        .frame(width: theme.z(640), height: theme.z(560))
         .background(theme.background)
     }
 }
@@ -51,17 +65,17 @@ struct ProvidersSettingsView: View {
 
     var body: some View {
         AdaptiveScroll(.vertical) {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: theme.z(10)) {
                 Text("API keys are handed to the engine, which stores them. Ensemble never writes them to disk or logs.")
-                    .font(.system(size: 12))
+                    .font(theme.font(size: 12))
                     .foregroundStyle(theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, 4)
+                    .padding(.bottom, theme.z(4))
                 ForEach(ProviderEntry.all) { entry in
                     ProviderRow(store: store, entry: entry)
                 }
             }
-            .padding(20)
+            .padding(theme.z(20))
         }
         .background(theme.background)
     }
@@ -82,24 +96,24 @@ struct ProviderRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: theme.z(10)) {
+            HStack(spacing: theme.z(10)) {
                 LetterAvatar(entry.name, size: 22)
                 Text(entry.name)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(theme.font(size: 13, weight: .medium))
                     .foregroundStyle(theme.textPrimary)
                 Spacer()
-                HStack(spacing: 6) {
+                HStack(spacing: theme.z(6)) {
                     StatusDot(connected ? theme.success : theme.textTertiary.opacity(0.6))
                     Text(connected ? "Connected" : "No key")
-                        .font(.system(size: 12))
+                        .font(theme.font(size: 12))
                         .foregroundStyle(connected ? theme.textSecondary : theme.textTertiary)
                 }
             }
             if entry.needsBaseURL {
                 InputField("Base URL, e.g. http://localhost:11434/v1", text: $baseURL, monospaced: true)
             }
-            HStack(spacing: 8) {
+            HStack(spacing: theme.z(8)) {
                 InputField(connected ? "Replace key (\(entry.keyHint))" : entry.keyHint, text: $key, secure: true, monospaced: true)
                     .onSubmit(save)
                 Button("Save", action: save)
@@ -113,13 +127,13 @@ struct ProviderRow: View {
             }
             if let message {
                 Text(message)
-                    .font(.system(size: 11.5))
+                    .font(theme.font(size: 11.5))
                     .foregroundStyle(failed ? theme.danger : theme.textTertiary)
             }
         }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(theme.elevated))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(theme.border))
+        .padding(theme.z(14))
+        .background(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).fill(theme.elevated))
+        .overlay(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).strokeBorder(theme.border))
     }
 
     private func save() {
@@ -176,7 +190,7 @@ struct ModelsSettingsView: View {
                 }
             } footer: {
                 Text("Used for new sessions. Models without a key are disabled until you add one under Providers.")
-                    .font(.system(size: 11.5))
+                    .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textTertiary)
             }
             Section("Available models") {
@@ -185,7 +199,7 @@ struct ModelsSettingsView: View {
                         Text(model.name)
                         Spacer()
                         Text(model.ref.description)
-                            .font(.system(size: 11.5, design: .monospaced))
+                            .font(theme.font(size: 11.5, design: .monospaced))
                             .foregroundStyle(theme.textTertiary)
                         StatusDot(model.available ? theme.success : theme.textTertiary.opacity(0.5))
                     }
@@ -193,6 +207,7 @@ struct ModelsSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .zoomedForm()
         .onChange(of: defaultModel) {
             store.defaultModel = ModelRef(string: defaultModel)
         }
@@ -219,6 +234,7 @@ struct GeneralSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .zoomedForm()
         .onChange(of: defaultMode) {
             store.defaultPermissionMode = PermissionMode(rawValue: defaultMode) ?? .auto
         }
@@ -234,7 +250,7 @@ struct EngineSettingsView: View {
         Form {
             Section {
                 LabeledContent("Status") {
-                    HStack(spacing: 6) {
+                    HStack(spacing: theme.z(6)) {
                         StatusDot(store.isPreview ? theme.warning : (store.engineVersion == nil ? theme.danger : theme.success))
                         Text(store.isPreview ? "Preview data (no engine connected)" : (store.engineVersion == nil ? "Not reachable" : "Running"))
                     }
@@ -244,10 +260,35 @@ struct EngineSettingsView: View {
                 LabeledContent("Minimum version", value: EnsembleKit.minimumEngineVersion)
             } footer: {
                 Text("Ensemble runs on the OpenCode service, installed with Homebrew.")
-                    .font(.system(size: 11.5))
+                    .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textTertiary)
             }
         }
         .formStyle(.grouped)
+        .zoomedForm()
+    }
+}
+
+extension View {
+    /// Native form controls follow the window zoom through the font and control size.
+    func zoomedForm() -> some View { modifier(ZoomedForm()) }
+}
+
+private struct ZoomedForm: ViewModifier {
+    @Environment(\.theme) private var theme
+
+    func body(content: Content) -> some View {
+        content
+            .font(theme.font(size: 13))
+            .controlSize(controlSize)
+    }
+
+    private var controlSize: ControlSize {
+        switch theme.scale {
+        case ..<0.9: .small
+        case ..<1.2: .regular
+        case ..<1.6: .large
+        default: .extraLarge
+        }
     }
 }

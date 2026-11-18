@@ -4,11 +4,29 @@ import SwiftUI
 public struct TranscriptActions: Sendable {
     public var openSession: @MainActor @Sendable (String) -> Void
     public var replyPermission: @MainActor @Sendable (PermissionRequest, PermissionDecision) -> Void
+    /// Fork, rewind and edit-and-resend from one of your messages (by message id).
+    public var fork: @MainActor @Sendable (String) -> Void
+    public var rewind: @MainActor @Sendable (String) -> Void
+    public var edit: @MainActor @Sendable (String) -> Void
+    /// False when the engine cannot fork or rewind; the buttons stay visible but disabled.
+    public var historySupported: Bool
+    /// The agent's name while it is working; rewind and edit wait until it stops.
+    public var workingAgentName: String?
 
     public init(openSession: @escaping @MainActor @Sendable (String) -> Void = { _ in },
-                replyPermission: @escaping @MainActor @Sendable (PermissionRequest, PermissionDecision) -> Void = { _, _ in }) {
+                replyPermission: @escaping @MainActor @Sendable (PermissionRequest, PermissionDecision) -> Void = { _, _ in },
+                fork: @escaping @MainActor @Sendable (String) -> Void = { _ in },
+                rewind: @escaping @MainActor @Sendable (String) -> Void = { _ in },
+                edit: @escaping @MainActor @Sendable (String) -> Void = { _ in },
+                historySupported: Bool = false,
+                workingAgentName: String? = nil) {
         self.openSession = openSession
         self.replyPermission = replyPermission
+        self.fork = fork
+        self.rewind = rewind
+        self.edit = edit
+        self.historySupported = historySupported
+        self.workingAgentName = workingAgentName
     }
 
     public static let none = TranscriptActions()
@@ -24,6 +42,7 @@ public struct TranscriptList: View {
     let resolutions: [String: PermissionResolution]
     let agents: [UUID: AgentSpec]
     @Environment(\.isSnapshot) private var isSnapshot
+    @Environment(\.theme) private var theme
 
     public init(items: [TranscriptItem], resolutions: [String: PermissionResolution] = [:], agents: [UUID: AgentSpec] = [:]) {
         self.items = items
@@ -40,26 +59,50 @@ public struct TranscriptList: View {
     }
 
     private var rows: some View {
-        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-            let previous = index > 0 ? items[index - 1] : nil
-            TranscriptItemView(item: item, previous: previous, resolution: resolutions[item.id], agents: agents)
-                .padding(.top, index == 0 ? 0 : spacing(before: item, after: previous))
+        let blocks = TranscriptGrouping.blocks(items, resolutions: resolutions)
+        return ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
+            let previous = index > 0 ? blocks[index - 1] : nil
+            Group {
+                switch block {
+                case .single(let item):
+                    TranscriptItemView(item: item, previous: previous?.lastItem, resolution: resolutions[item.id], agents: agents)
+                case .activity(_, let steps):
+                    ActivityGroupView(items: steps, resolutions: resolutions)
+                }
+            }
+            .padding(.top, index == 0 ? 0 : spacing(before: block, after: previous))
         }
     }
 
-    private func kind(_ item: TranscriptItem) -> TranscriptRowKind {
-        if case .permission = item, resolutions[item.id] != nil { return .resolvedPermission }
-        return item.kind
+    private func kind(_ block: TranscriptBlock) -> TranscriptRowKind {
+        switch block {
+        case .activity: return .tool
+        case .single(let item):
+            if case .permission = item, resolutions[item.id] != nil { return .resolvedPermission }
+            return item.kind
+        }
     }
 
-    /// Tool rows sit close together; everything else gets room to breathe.
-    private func spacing(before item: TranscriptItem, after previous: TranscriptItem?) -> CGFloat {
+    /// Steps sit close together; everything else gets room to breathe. Your messages carry their own
+    /// hover toolbar underneath, which takes most of the gap after them.
+    private func spacing(before block: TranscriptBlock, after previous: TranscriptBlock?) -> CGFloat {
         guard let previous else { return 0 }
-        switch (kind(previous), kind(item)) {
-        case (.tool, .tool), (.tool, .resolvedPermission), (.resolvedPermission, .tool): return 6
-        case (.reasoning, .tool), (.tool, .reasoning): return 8
-        case (_, .user), (.user, _): return 22
-        default: return 14
+        switch (kind(previous), kind(block)) {
+        case (.user, _): return theme.z(2)
+        case (.tool, .tool), (.tool, .resolvedPermission), (.resolvedPermission, .tool): return theme.z(6)
+        case (.reasoning, .tool), (.tool, .reasoning): return theme.z(8)
+        case (_, .user): return theme.z(22)
+        default: return theme.z(14)
+        }
+    }
+}
+
+extension TranscriptBlock {
+    /// The newest item in the block (used to decide whether a room message repeats its agent name).
+    var lastItem: TranscriptItem? {
+        switch self {
+        case .single(let item): item
+        case .activity(_, let items): items.last
         }
     }
 }
@@ -74,7 +117,7 @@ extension TranscriptItem {
         case .user: .user
         case .agentText: .text
         case .reasoning: .reasoning
-        case .tool(let tool): ["task", "agent", "subagent"].contains(tool.name.lowercased()) ? .card : .tool
+        case .tool(let tool): ToolCategory(tool.name) == .subagent ? .card : .tool
         case .permission: .card
         case .board: .card
         case .error, .notice: .other
@@ -98,14 +141,14 @@ public struct TranscriptItemView: View {
 
     public var body: some View {
         switch item {
-        case .user(_, let text, _):
-            UserBubble(text: text)
+        case .user(let id, let text, let date):
+            UserBubble(id: id, text: text, date: date)
         case .agentText(_, let text, let agentID, let streaming):
             AgentTextRow(text: text, agent: agentID.flatMap { agents[$0] }, showHeader: showsAgentHeader(agentID), streaming: streaming)
         case .reasoning(_, let text, let streaming):
             ReasoningRow(text: text, streaming: streaming)
         case .tool(let tool):
-            if ["task", "agent", "subagent"].contains(tool.name.lowercased()) {
+            if ToolCategory(tool.name) == .subagent {
                 SubagentCardView(tool: tool)
             } else {
                 ToolCardView(tool: tool)
@@ -128,29 +171,149 @@ public struct TranscriptItemView: View {
     }
 }
 
-/// The user's message, right-aligned in a soft bubble.
+/// The user's message, right-aligned in a soft bubble. Hovering near it shows when it was sent and
+/// Fork from here, Rewind, Edit and Copy.
 public struct UserBubble: View {
+    let id: String
     let text: String
+    let date: Date?
+    /// Snapshots draw the toolbar without hovering.
+    var alwaysShowActions: Bool
     @Environment(\.theme) private var theme
+    @State private var hovering = false
 
-    public init(text: String) { self.text = text }
+    public init(id: String = "", text: String, date: Date? = nil, alwaysShowActions: Bool = false) {
+        self.id = id
+        self.text = text
+        self.date = date
+        self.alwaysShowActions = alwaysShowActions
+    }
 
     public var body: some View {
+        VStack(alignment: .trailing, spacing: theme.z(4)) {
+            bubble
+            MessageActionBar(id: id, text: text, date: date)
+                .opacity(hovering || alwaysShowActions ? 1 : 0)
+                .allowsHitTesting(hovering || alwaysShowActions)
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+    }
+
+    private var bubble: some View {
         HStack {
-            Spacer(minLength: 72)
+            Spacer(minLength: theme.z(72))
             Text(text)
-                .font(EFont.transcript)
+                .font(theme.font(size: 14))
                 .foregroundStyle(theme.textPrimary)
-                .lineSpacing(3)
+                .lineSpacing(theme.z(3))
                 .fixedSize(horizontal: false, vertical: true)
                 .selectableText()
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
+                .padding(.horizontal, theme.z(14))
+                .padding(.vertical, theme.z(9))
                 .background(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: theme.z(14), style: .continuous)
                         .fill(theme.userBubble)
                 )
         }
+    }
+}
+
+/// Sent time and Fork / Rewind / Edit / Copy under one of your messages.
+struct MessageActionBar: View {
+    let id: String
+    let text: String
+    let date: Date?
+    @Environment(\.theme) private var theme
+    @Environment(\.transcriptActions) private var actions
+    @State private var copied = false
+
+    static let exactFormat: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter
+    }()
+
+    var body: some View {
+        HStack(spacing: theme.z(2)) {
+            if let date {
+                let relative = Format.relative(date)
+                Text(relative == "now" ? "Just now" : "\(relative) ago")
+                    .font(theme.font(size: 11.5))
+                    .foregroundStyle(theme.textTertiary)
+                    .padding(.trailing, theme.z(4))
+                    .help(Self.exactFormat.string(from: date))
+            }
+            MessageActionButton(symbol: "arrow.triangle.branch", help: forkHelp, enabled: actions.historySupported) {
+                actions.fork(id)
+            }
+            MessageActionButton(symbol: "arrow.counterclockwise", help: rewindHelp, enabled: canChangeHistory) {
+                actions.rewind(id)
+            }
+            MessageActionButton(symbol: "pencil", help: editHelp, enabled: canChangeHistory) {
+                actions.edit(id)
+            }
+            MessageActionButton(symbol: copied ? "checkmark" : "doc.on.doc", help: copied ? "Copied" : "Copy", enabled: true) {
+                copyToPasteboard(text)
+                copied = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(1.5))
+                    copied = false
+                }
+            }
+        }
+        .frame(height: theme.z(22))
+    }
+
+    private var canChangeHistory: Bool { actions.historySupported && actions.workingAgentName == nil }
+
+    private var forkHelp: String {
+        actions.historySupported ? "Fork from here" : "This engine does not support forking"
+    }
+
+    private var rewindHelp: String {
+        if !actions.historySupported { return "This engine does not support rewinding" }
+        if let name = actions.workingAgentName { return "Rewind is unavailable while \(name) is working" }
+        return "Rewind to before this message"
+    }
+
+    private var editHelp: String {
+        if !actions.historySupported { return "This engine does not support editing messages" }
+        if let name = actions.workingAgentName { return "Edit is unavailable while \(name) is working" }
+        return "Edit and resend"
+    }
+}
+
+/// Small icon button. When disabled it stays hoverable so its tooltip can say why.
+struct MessageActionButton: View {
+    let symbol: String
+    let help: String
+    let enabled: Bool
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        Button {
+            if enabled { action() }
+        } label: {
+            Image(systemName: symbol)
+                .font(theme.font(size: 11.5))
+                .foregroundStyle(enabled ? (hovering ? theme.textPrimary : theme.textSecondary) : theme.textTertiary.opacity(0.6))
+                .frame(width: theme.z(24), height: theme.z(22))
+                .background(
+                    RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                        .fill(hovering && enabled ? theme.hover : .clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
+        .accessibilityLabel(help)
+        .accessibilityAddTraits(enabled ? [] : .isStaticText)
     }
 }
 
@@ -170,11 +333,11 @@ public struct AgentTextRow: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: theme.z(6)) {
             if showHeader, let agent {
                 AgentNameTag(agent: agent)
             }
-            MarkdownView(text)
+            MarkdownView(text, streaming: streaming)
         }
     }
 }
@@ -187,13 +350,13 @@ public struct AgentNameTag: View {
     public init(agent: AgentSpec) { self.agent = agent }
 
     public var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: theme.z(6)) {
             StatusDot(Color(hexString: agent.colorHex), size: 8)
             Text(agent.name)
-                .font(.system(size: 12.5, weight: .semibold))
+                .font(theme.font(size: 12.5, weight: .semibold))
                 .foregroundStyle(theme.textPrimary)
             Text(agent.model.id)
-                .font(.system(size: 11.5))
+                .font(theme.font(size: 11.5))
                 .foregroundStyle(theme.textTertiary)
         }
     }
@@ -213,38 +376,38 @@ public struct ReasoningRow: View {
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: theme.z(6)) {
             Button {
                 withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
             } label: {
-                HStack(spacing: 8) {
+                HStack(spacing: theme.z(8)) {
                     Image(systemName: "lightbulb")
-                        .font(.system(size: 12))
+                        .font(theme.font(size: 12))
                         .foregroundStyle(theme.textTertiary)
-                        .frame(width: 16)
+                        .frame(width: theme.z(16))
                     Text(streaming ? "Thinking" : "Thought")
-                        .font(.system(size: 13))
+                        .font(theme.font(size: 13))
                         .foregroundStyle(theme.textSecondary)
                     if streaming { Spinner(size: 10) }
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(theme.font(size: 9, weight: .semibold))
                         .foregroundStyle(theme.textTertiary)
                         .rotationEffect(.degrees(expanded ? 90 : 0))
                         .opacity(hovering || expanded ? 1 : 0)
                     Spacer(minLength: 0)
                 }
-                .frame(minHeight: 22)
+                .frame(minHeight: theme.z(22))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .onHover { hovering = $0 }
 
             if expanded {
-                HStack(alignment: .top, spacing: 10) {
-                    RoundedRectangle(cornerRadius: 1).fill(theme.border).frame(width: 2)
+                HStack(alignment: .top, spacing: theme.z(10)) {
+                    RoundedRectangle(cornerRadius: theme.z(1)).fill(theme.border).frame(width: theme.z(2))
                     MarkdownView(text, fontSize: 13, textColor: theme.textSecondary)
                 }
-                .padding(.leading, 7)
+                .padding(.leading, theme.z(7))
                 .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -265,27 +428,27 @@ public struct BoardRow: View {
     }
 
     public var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            RoundedRectangle(cornerRadius: 1.5)
+        HStack(alignment: .top, spacing: theme.z(10)) {
+            RoundedRectangle(cornerRadius: theme.z(1.5))
                 .fill(from.map { Color(hexString: $0.colorHex) } ?? theme.border)
-                .frame(width: 3)
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 5) {
+                .frame(width: theme.z(3))
+            VStack(alignment: .leading, spacing: theme.z(5)) {
+                HStack(spacing: theme.z(5)) {
                     Image(systemName: "bubble.left.and.bubble.right")
-                        .font(.system(size: 11))
+                        .font(theme.font(size: 11))
                     Text(from?.name ?? "Agent").fontWeight(.semibold)
                     if !to.isEmpty {
-                        Image(systemName: "arrow.right").font(.system(size: 9, weight: .semibold))
+                        Image(systemName: "arrow.right").font(theme.font(size: 9, weight: .semibold))
                         Text(to.map(\.name).joined(separator: ", "))
                     }
                 }
-                .font(.system(size: 12))
+                .font(theme.font(size: 12))
                 .foregroundStyle(theme.textSecondary)
                 MarkdownView(text, fontSize: 13.5, textColor: theme.textPrimary)
             }
         }
         .fixedSize(horizontal: false, vertical: true)
-        .padding(.vertical, 2)
+        .padding(.vertical, theme.z(2))
     }
 }
 
@@ -296,21 +459,21 @@ public struct ErrorRow: View {
     public init(message: String) { self.message = message }
 
     public var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: theme.z(8)) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 12))
+                .font(theme.font(size: 12))
                 .foregroundStyle(theme.danger)
             Text(message)
-                .font(.system(size: 13))
+                .font(theme.font(size: 13))
                 .foregroundStyle(theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .selectableText()
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(theme.danger.opacity(0.09)))
-        .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(theme.danger.opacity(0.3)))
+        .padding(.horizontal, theme.z(12))
+        .padding(.vertical, theme.z(9))
+        .background(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).fill(theme.danger.opacity(0.09)))
+        .overlay(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).strokeBorder(theme.danger.opacity(0.3)))
     }
 }
 
@@ -322,57 +485,14 @@ public struct NoticeRow: View {
     public init(text: String) { self.text = text }
 
     public var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: theme.z(8)) {
             Image(systemName: "info.circle")
-                .font(.system(size: 11.5))
-                .frame(width: 16)
+                .font(theme.font(size: 11.5))
+                .frame(width: theme.z(16))
             Text(text)
-                .font(.system(size: 12.5))
+                .font(theme.font(size: 12.5))
         }
         .foregroundStyle(theme.textTertiary)
-        .frame(minHeight: 20)
-    }
-}
-
-/// Shown under the transcript while the agent works.
-public struct WorkingRow: View {
-    let since: Date?
-    let waitingForPermission: Bool
-    @Environment(\.theme) private var theme
-    @Environment(\.isSnapshot) private var isSnapshot
-
-    public init(since: Date?, waitingForPermission: Bool) {
-        self.since = since
-        self.waitingForPermission = waitingForPermission
-    }
-
-    public var body: some View {
-        HStack(spacing: 8) {
-            if waitingForPermission {
-                Image(systemName: "hand.raised")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(theme.warning)
-                    .frame(width: 16)
-                Text("Waiting for you")
-            } else {
-                Spinner(size: 11, color: theme.accent)
-                    .frame(width: 16)
-                if let since, !isSnapshot {
-                    TimelineView(.periodic(from: since, by: 1)) { context in
-                        Text("Working \(Self.elapsed(from: since, to: context.date))")
-                    }
-                } else {
-                    Text("Working")
-                }
-            }
-        }
-        .font(.system(size: 12.5))
-        .foregroundStyle(theme.textSecondary)
-        .frame(minHeight: 22)
-    }
-
-    static func elapsed(from start: Date, to now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince(start)))
-        return seconds < 60 ? "\(seconds)s" : "\(seconds / 60)m \(seconds % 60)s"
+        .frame(minHeight: theme.z(20))
     }
 }

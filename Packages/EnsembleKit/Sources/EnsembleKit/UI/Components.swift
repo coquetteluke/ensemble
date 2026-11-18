@@ -25,8 +25,8 @@ public struct Spinner: View {
     public var body: some View {
         Circle()
             .trim(from: 0.18, to: 1)
-            .stroke(color ?? theme.textSecondary, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
-            .frame(width: size, height: size)
+            .stroke(color ?? theme.textSecondary, style: StrokeStyle(lineWidth: theme.z(lineWidth), lineCap: .round))
+            .frame(width: theme.z(size), height: theme.z(size))
             .rotationEffect(.degrees(spinning ? 360 : 0))
             .onAppear {
                 guard !isSnapshot else { return }
@@ -49,7 +49,7 @@ public struct CompactSwitchStyle: ToggleStyle {
         @Environment(\.theme) private var theme
 
         var body: some View {
-            HStack(spacing: 8) {
+            HStack(spacing: theme.z(8)) {
                 configuration.label
                 Spacer(minLength: 0)
                 ZStack(alignment: configuration.isOn ? .trailing : .leading) {
@@ -57,10 +57,10 @@ public struct CompactSwitchStyle: ToggleStyle {
                         .fill(configuration.isOn ? theme.accent : theme.track)
                     Circle()
                         .fill(Color.white)
-                        .shadow(color: .black.opacity(0.25), radius: 0.5, y: 0.5)
-                        .padding(2)
+                        .shadow(color: .black.opacity(0.25), radius: theme.z(0.5), y: theme.z(0.5))
+                        .padding(theme.z(2))
                 }
-                .frame(width: 28, height: 16)
+                .frame(width: theme.z(28), height: theme.z(16))
                 .contentShape(Capsule())
                 .onTapGesture {
                     withAnimation(.easeOut(duration: 0.15)) { configuration.isOn.toggle() }
@@ -91,12 +91,12 @@ public struct PrimaryButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
-                .font(.system(size: 12.5, weight: .medium))
+                .font(theme.font(size: 12.5, weight: .medium))
                 .foregroundStyle(theme.onAccent)
-                .padding(.horizontal, 12)
-                .frame(height: 28)
+                .padding(.horizontal, theme.z(12))
+                .frame(height: theme.z(28))
                 .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: theme.z(7), style: .continuous)
                         .fill(tint ?? theme.accent)
                         .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.4)
                 )
@@ -123,16 +123,16 @@ public struct SecondaryButtonStyle: ButtonStyle {
 
         var body: some View {
             configuration.label
-                .font(.system(size: 12.5, weight: .medium))
+                .font(theme.font(size: 12.5, weight: .medium))
                 .foregroundStyle(foreground ?? theme.textPrimary)
-                .padding(.horizontal, 12)
-                .frame(height: 28)
+                .padding(.horizontal, theme.z(12))
+                .frame(height: theme.z(28))
                 .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: theme.z(7), style: .continuous)
                         .fill(hovering || configuration.isPressed ? theme.elevatedHover : theme.elevated)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: theme.z(7), style: .continuous)
                         .strokeBorder(theme.border, lineWidth: 1)
                 )
                 .opacity(isEnabled ? 1 : 0.45)
@@ -195,11 +195,11 @@ public struct IconButton: View {
     public var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 14, weight: .regular))
+                .font(theme.font(size: 14, weight: .regular))
                 .foregroundStyle(active ? theme.textPrimary : theme.textSecondary)
-                .frame(width: size, height: size)
+                .frame(width: theme.z(size), height: theme.z(size))
                 .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    RoundedRectangle(cornerRadius: theme.z(7), style: .continuous)
                         .fill(hovering ? theme.hover : .clear)
                 )
                 .contentShape(Rectangle())
@@ -224,11 +224,11 @@ public struct LetterAvatar: View {
 
     public var body: some View {
         Text(text)
-            .font(.system(size: size * 0.6, weight: .medium))
+            .font(theme.font(size: size * 0.6, weight: .medium))
             .foregroundStyle(theme.textSecondary)
-            .frame(width: size, height: size)
+            .frame(width: theme.z(size), height: theme.z(size))
             .background(
-                RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
+                RoundedRectangle(cornerRadius: theme.z(size * 0.28), style: .continuous)
                     .strokeBorder(theme.isDark ? Color(hex: 0x2A2A2A) : theme.border, lineWidth: 1)
             )
     }
@@ -237,12 +237,13 @@ public struct LetterAvatar: View {
 public struct StatusDot: View {
     let color: Color
     var size: CGFloat
+    @Environment(\.theme) private var theme
     public init(_ color: Color, size: CGFloat = 7) {
         self.color = color
         self.size = size
     }
     public var body: some View {
-        Circle().fill(color).frame(width: size, height: size)
+        Circle().fill(color).frame(width: theme.z(size), height: theme.z(size))
     }
 }
 
@@ -257,11 +258,11 @@ public struct CountBadge: View {
     }
     public var body: some View {
         Text("\(count)")
-            .font(.system(size: 10.5, weight: .semibold))
+            .font(theme.font(size: 10.5, weight: .semibold))
             .monospacedDigit()
             .foregroundStyle(theme.onAccent)
-            .padding(.horizontal, 5)
-            .frame(minWidth: 17, minHeight: 17)
+            .padding(.horizontal, theme.z(5))
+            .frame(minWidth: theme.z(17), minHeight: theme.z(17))
             .background(Capsule().fill(color ?? theme.accent))
             .accessibilityLabel("\(count) waiting for you")
     }
@@ -336,28 +337,28 @@ public struct InputField: View {
     }
 
     public var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: theme.z(6)) {
             if let icon {
                 Image(systemName: icon)
-                    .font(.system(size: 11.5))
+                    .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textTertiary)
             }
             field
         }
-        .padding(.horizontal, 9)
-        .frame(height: height)
+        .padding(.horizontal, theme.z(9))
+        .frame(height: theme.z(height))
         .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: theme.z(7), style: .continuous)
                 .fill(theme.isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.035))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
+            RoundedRectangle(cornerRadius: theme.z(7), style: .continuous)
                 .strokeBorder(theme.border, lineWidth: 1)
         )
     }
 
     private var font: Font {
-        monospaced ? .system(size: 12.5, design: .monospaced) : .system(size: 13)
+        monospaced ? theme.font(size: 12.5, design: .monospaced) : theme.font(size: 13)
     }
 
     @ViewBuilder private var field: some View {

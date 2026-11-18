@@ -8,6 +8,14 @@ import EnsembleKit
 /// Lets the look be checked without screen recording permission and without opening windows.
 @MainActor
 enum SnapshotRenderer {
+    /// `--zoom <percent>` (for example 80, 100, 150); defaults to 100.
+    static var requestedZoom: CGFloat {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--zoom"), index + 1 < arguments.count,
+              let percent = Double(arguments[index + 1]) else { return 1 }
+        return CGFloat(percent / 100)
+    }
+
     static func requestedDirectory() -> URL? {
         let arguments = CommandLine.arguments
         guard let index = arguments.firstIndex(of: "--render-snapshots") else { return nil }
@@ -16,6 +24,7 @@ enum SnapshotRenderer {
     }
 
     static func run(outputDirectory: URL) {
+        let zoom = requestedZoom
         _ = NSApplication.shared
         do {
             try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
@@ -35,11 +44,17 @@ enum SnapshotRenderer {
         }
 
         var written: [String] = []
-        func save<V: View>(_ name: String, width: CGFloat, height: CGFloat?, scheme: ColorScheme = .dark, @ViewBuilder _ view: () -> V) {
+        func save<V: View>(_ name: String, width baseWidth: CGFloat, height baseHeight: CGFloat?, scheme: ColorScheme = .dark,
+                           @ViewBuilder _ view: () -> V) {
+            // Whole windows keep their size and zoom their content; single views grow with the zoom.
+            let isWindow = baseWidth == 1440
+            let width = isWindow ? baseWidth : baseWidth * zoom
+            let height = isWindow ? baseHeight : baseHeight.map { $0 * zoom }
             let content = SnapshotCanvas(width: width, height: height) { view() }
                 .ensembleTheme()
                 .environment(\.colorScheme, scheme)
                 .environment(\.isSnapshot, true)
+                .environment(\.zoom, zoom)
             let renderer = ImageRenderer(content: content)
             renderer.scale = 2
             renderer.proposedSize = ProposedViewSize(width: width, height: height)
@@ -58,10 +73,10 @@ enum SnapshotRenderer {
 
         // Full window, dark and light.
         save("main-window-dark", width: 1440, height: 900) {
-            MainView(store: store, window: window, remoteControlOverride: true)
+            MainView(store: store, window: window, remoteControlOverride: true, zoomOverride: zoom)
         }
         save("main-window-light", width: 1440, height: 900, scheme: .light) {
-            MainView(store: store, window: window, remoteControlOverride: true)
+            MainView(store: store, window: window, remoteControlOverride: true, zoomOverride: zoom)
         }
 
         // Context panel alone, collapsed and with connectors open.
@@ -127,7 +142,7 @@ enum SnapshotRenderer {
         // A subagent's own transcript, opened from its card.
         store.select(PreviewData.childSessionID)
         save("subagent-session", width: 1440, height: 900) {
-            MainView(store: store, window: window, remoteControlOverride: true)
+            MainView(store: store, window: window, remoteControlOverride: true, zoomOverride: zoom)
         }
         store.select(PreviewData.mainSessionID)
 
@@ -205,7 +220,7 @@ private final class LiveWindow {
     private let offscreen: NSWindow
 
     init(store: SessionStore) {
-        let root = MainView(store: store, window: window, remoteControlOverride: true)
+        let root = MainView(store: store, window: window, remoteControlOverride: true, zoomOverride: SnapshotRenderer.requestedZoom)
             .ensembleTheme()
             .environment(\.colorScheme, .dark)
         hosting = NSHostingView(rootView: AnyView(root))

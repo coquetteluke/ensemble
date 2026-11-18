@@ -169,6 +169,15 @@ import Testing
         #expect(store.needsYouCount("s1") == 1)
     }
 
+    @Test func newSessionsDefaultToAutoMode() async throws {
+        let store = makeStore()
+        #expect(store.defaultPermissionMode == .auto)
+        store.apply(.sessionCreated(EngineSession(id: "fromEvent", title: "New", directory: Self.dir)))
+        #expect(store.session("fromEvent")?.permissionMode == .auto)
+        let created = try await store.newSession(directory: Self.dir, model: nil, permissionMode: store.defaultPermissionMode)
+        #expect(created.permissionMode == .auto)
+    }
+
     @Test func sessionUpdatedAndDeleted() throws {
         let store = makeStore(sessions: [
             EngineSession(id: "s1", title: "One", directory: Self.dir, updated: Date()),
@@ -181,6 +190,53 @@ import Testing
         store.apply(.sessionDeleted(sessionID: "s1"))
         #expect(store.session("s1") == nil)
         #expect(store.selectedSessionID == "s2", "selection moves to the next session")
+    }
+
+    // Events arrive through the stream after the store's own optimistic edits. A late echo of an
+    // earlier change must not undo a newer local change or bring a deleted session back.
+
+    @Test func lateEventCannotUndoALocalArchive() async throws {
+        let store = makeStore()
+        // The engine's echo of an earlier rename: built before the archive, so it predates it.
+        let earlierEcho = EngineSession(id: "s1", title: "Renamed", directory: Self.dir, updated: Date(), archived: false)
+        await store.archive("s1")
+        store.apply(.sessionUpdated(earlierEcho))
+        let session = try #require(store.session("s1"))
+        #expect(session.info.archived, "the late echo must not unarchive")
+        #expect(session.title == "Renamed", "fields the user did not change still follow the engine")
+        #expect(!store.sidebarOrder.contains { $0.id == "s1" })
+    }
+
+    @Test func newerEngineChangeStillWinsOverAnOlderLocalEdit() async throws {
+        let store = makeStore()
+        await store.archive("s1")
+        // Unarchived somewhere else after the local change.
+        let later = EngineSession(id: "s1", title: "One", directory: Self.dir, updated: Date().addingTimeInterval(1), archived: false)
+        store.apply(.sessionUpdated(later))
+        #expect(store.session("s1")?.info.archived == false)
+    }
+
+    @Test func lateEventCannotBringBackADeletedSession() async throws {
+        let store = makeStore()
+        let echo = EngineSession(id: "s1", title: "One", directory: Self.dir)
+        await store.delete("s1")
+        #expect(store.session("s1") == nil)
+        store.apply(.sessionUpdated(echo))
+        store.apply(.sessionCreated(echo))
+        #expect(store.session("s1") == nil)
+        #expect(store.sessions.isEmpty)
+    }
+
+    @Test func lateEventCannotUndoALocalRenameOrModelSwitch() async throws {
+        let store = makeStore()
+        let earlierEcho = EngineSession(id: "s1", title: "One", directory: Self.dir,
+                                        model: ModelRef(providerID: "openai", id: "gpt-5.5"), updated: Date())
+        let opus = ModelRef(providerID: "anthropic", id: "claude-opus-5-5")
+        await store.rename("s1", to: "Two")
+        await store.switchModel(opus, for: "s1")
+        store.apply(.sessionUpdated(earlierEcho))
+        #expect(store.session("s1")?.title == "Two")
+        #expect(store.session("s1")?.info.model == opus)
     }
 
     @Test func roomSessionsTagAgentText() throws {

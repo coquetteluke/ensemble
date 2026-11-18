@@ -12,13 +12,13 @@ struct StatusLine: View {
     var body: some View {
         let usage = session.usage
         let context = store.contextBreakdown(for: session)
-        HStack(spacing: 12) {
+        HStack(spacing: theme.z(12)) {
             Button {
                 showUsage.toggle()
             } label: {
-                HStack(spacing: 5) {
+                HStack(spacing: theme.z(5)) {
                     Image(systemName: "chart.bar")
-                        .font(.system(size: 10.5))
+                        .font(theme.font(size: 10.5))
                     Text("\(Format.usd(usage.costUSD))  \(Format.tokens(usage.inputTokens + usage.outputTokens)) tokens")
                         .monospacedDigit()
                 }
@@ -26,17 +26,25 @@ struct StatusLine: View {
             }
             .buttonStyle(.plain)
             .help("Usage for this session")
+            .onChange(of: window.showUsage) {
+                if window.showUsage {
+                    window.showUsage = false
+                    showUsage = true
+                }
+            }
             .popover(isPresented: $showUsage, arrowEdge: .top) {
                 UsagePopover(usage: usage, title: session.title)
                     .ensembleTheme()
             }
 
-            Spacer(minLength: 8)
+            PowerStatusChip(store: store)
+
+            Spacer(minLength: theme.z(8))
 
             Button {
                 if !window.showContextPanel { window.toggleContextPanel() }
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: theme.z(6)) {
                     ContextRing(fraction: context.fractionUsed)
                     Text("\(Format.wholePercent(context.fractionUsed)) context")
                         .monospacedDigit()
@@ -46,10 +54,10 @@ struct StatusLine: View {
             .buttonStyle(.plain)
             .help("\(Format.tokens(context.usedTokens)) of \(Format.tokens(context.limitTokens)) tokens used")
         }
-        .font(.system(size: 11.5))
+        .font(theme.font(size: 11.5))
         .foregroundStyle(theme.textTertiary)
-        .padding(.horizontal, 10)
-        .frame(height: 30)
+        .padding(.horizontal, theme.z(10))
+        .frame(height: theme.z(30))
     }
 }
 
@@ -66,7 +74,7 @@ struct ContextRing: View {
                 .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 .rotationEffect(.degrees(-90))
         }
-        .frame(width: 11, height: 11)
+        .frame(width: theme.z(11), height: theme.z(11))
     }
 
     private var color: Color {
@@ -81,14 +89,14 @@ struct UsagePopover: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: theme.z(10)) {
             Text("This session")
-                .font(.system(size: 12, weight: .semibold))
+                .font(theme.font(size: 12, weight: .semibold))
                 .foregroundStyle(theme.textSecondary)
             Text(Format.usd(usage.costUSD))
-                .font(.system(size: 22, weight: .semibold).monospacedDigit())
+                .font(theme.font(size: 22, weight: .semibold).monospacedDigit())
                 .foregroundStyle(theme.textPrimary)
-            Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 6) {
+            Grid(alignment: .leading, horizontalSpacing: theme.z(24), verticalSpacing: theme.z(6)) {
                 row("Input", usage.inputTokens)
                 row("Output", usage.outputTokens)
                 row("Reasoning", usage.reasoningTokens)
@@ -96,8 +104,8 @@ struct UsagePopover: View {
                 row("Cache write", usage.cacheWriteTokens)
             }
         }
-        .padding(16)
-        .frame(width: 240, alignment: .leading)
+        .padding(theme.z(16))
+        .frame(width: theme.z(240), alignment: .leading)
         .background(theme.popover)
     }
 
@@ -109,6 +117,6 @@ struct UsagePopover: View {
                 .foregroundStyle(theme.textPrimary)
                 .gridColumnAlignment(.trailing)
         }
-        .font(.system(size: 12.5))
+        .font(theme.font(size: 12.5))
     }
 }

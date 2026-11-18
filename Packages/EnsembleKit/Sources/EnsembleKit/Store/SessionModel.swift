@@ -24,8 +24,11 @@ public final class SessionModel: Identifiable {
     public internal(set) var revision = 0
     /// Set for room sessions: new agent text is tagged with this agent so the UI can show its name and colour.
     public var agentID: UUID?
+    /// Effort for the next turn, when the engine and model support it (nil = the model's default).
+    public internal(set) var effort: EffortLevel?
+    public internal(set) var fastMode = false
 
-    public init(info: EngineSession, permissionMode: PermissionMode = .ask) {
+    public init(info: EngineSession, permissionMode: PermissionMode = .auto) {
         self.id = info.id
         self.info = info
         self.usage = info.usage

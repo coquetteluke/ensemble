@@ -16,15 +16,15 @@ struct NewSessionSheet: View {
     @State private var error: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: theme.z(18)) {
             Text("New session")
-                .font(.system(size: 15, weight: .semibold))
+                .font(theme.font(size: 15, weight: .semibold))
                 .foregroundStyle(theme.textPrimary)
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: theme.z(8)) {
                 label("Folder")
-                HStack(spacing: 8) {
-                    HStack(spacing: 8) {
+                HStack(spacing: theme.z(8)) {
+                    HStack(spacing: theme.z(8)) {
                         Image(systemName: "folder")
                             .foregroundStyle(theme.textSecondary)
                         Text(directory.isEmpty ? "Choose a project folder" : Format.abbreviatedPath(directory))
@@ -33,31 +33,31 @@ struct NewSessionSheet: View {
                             .truncationMode(.head)
                         Spacer(minLength: 0)
                     }
-                    .font(.system(size: 13))
-                    .padding(.horizontal, 10)
-                    .frame(height: 30)
-                    .background(RoundedRectangle(cornerRadius: 7).fill(theme.elevated))
-                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(theme.border))
+                    .font(theme.font(size: 13))
+                    .padding(.horizontal, theme.z(10))
+                    .frame(height: theme.z(30))
+                    .background(RoundedRectangle(cornerRadius: theme.z(7)).fill(theme.elevated))
+                    .overlay(RoundedRectangle(cornerRadius: theme.z(7)).strokeBorder(theme.border))
                     Button("Choose...", action: chooseFolder)
                         .buttonStyle(SecondaryButtonStyle())
                 }
                 if !recentFolders.isEmpty {
-                    HStack(spacing: 6) {
+                    HStack(spacing: theme.z(6)) {
                         ForEach(recentFolders.prefix(4), id: \.self) { folder in
                             Button(Format.folderName(folder)) { directory = folder }
                                 .buttonStyle(.plain)
-                                .font(.system(size: 12))
+                                .font(theme.font(size: 12))
                                 .foregroundStyle(directory == folder ? theme.textPrimary : theme.textSecondary)
-                                .padding(.horizontal, 8)
-                                .frame(height: 24)
-                                .background(RoundedRectangle(cornerRadius: 6).fill(directory == folder ? theme.selection : theme.hover))
+                                .padding(.horizontal, theme.z(8))
+                                .frame(height: theme.z(24))
+                                .background(RoundedRectangle(cornerRadius: theme.z(6)).fill(directory == folder ? theme.selection : theme.hover))
                                 .help(folder)
                         }
                     }
                 }
             }
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: theme.z(8)) {
                 label("Model")
                 Picker("Model", selection: $modelID) {
                     ForEach(store.models) { model in
@@ -69,7 +69,7 @@ struct NewSessionSheet: View {
                 .labelsHidden()
             }
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: theme.z(8)) {
                 label("Permissions")
                 Picker("Permissions", selection: $mode) {
                     ForEach(PermissionMode.allCases, id: \.self) { mode in
@@ -78,13 +78,13 @@ struct NewSessionSheet: View {
                 }
                 .labelsHidden()
                 Text(mode.summary)
-                    .font(.system(size: 11.5))
+                    .font(theme.font(size: 11.5))
                     .foregroundStyle(mode.isDangerous ? theme.danger : theme.textTertiary)
             }
 
             if let error {
                 Text(error)
-                    .font(.system(size: 12))
+                    .font(theme.font(size: 12))
                     .foregroundStyle(theme.danger)
             }
 
@@ -99,8 +99,8 @@ struct NewSessionSheet: View {
                     .disabled(directory.isEmpty || creating)
             }
         }
-        .padding(22)
-        .frame(width: 460)
+        .padding(theme.z(22))
+        .frame(width: theme.z(460))
         .background(theme.background)
         .onAppear {
             directory = window.newSessionDirectory ?? store.selected?.directory ?? recentFolders.first ?? ""
@@ -113,7 +113,7 @@ struct NewSessionSheet: View {
 
     private func label(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 12, weight: .medium))
+            .font(theme.font(size: 12, weight: .medium))
             .foregroundStyle(theme.textSecondary)
     }
 

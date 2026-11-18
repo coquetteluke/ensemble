@@ -29,11 +29,23 @@ public final class SessionStore {
     public var extraFolders: [String: [String]] = [:]
     /// Used for new sessions when nothing else is chosen.
     public var defaultModel: ModelRef?
-    public var defaultPermissionMode: PermissionMode = .ask
+    public var defaultPermissionMode: PermissionMode = .auto
 
-    @ObservationIgnored private var byID: [String: SessionModel] = [:]
+    /// Effort and fast-mode options per model (`ModelRef.description`), from `EngineModelOptionsControl`.
+    public internal(set) var modelOptions: [String: ModelOptions] = [:]
+    /// The engine's slash commands and skills per project folder, from `EngineCommandsControl`.
+    public internal(set) var engineCommands: [String: [EngineCommand]] = [:]
+
+    @ObservationIgnored var byID: [String: SessionModel] = [:]
     @ObservationIgnored private var eventTask: Task<Void, Never>?
     @ObservationIgnored private var loadTasks: [String: Task<Void, Never>] = [:]
+    /// When the user last changed a field of a session here. Events stamped earlier are echoes of older
+    /// changes that arrived late through the stream; they must not undo the newer local value.
+    @ObservationIgnored private var localEdits: [String: [EditableField: Date]] = [:]
+    /// Sessions deleted here or by the engine. Late events for them are dropped so they cannot reappear.
+    @ObservationIgnored private var deletedSessionIDs: Set<String> = []
+
+    private enum EditableField: Hashable { case title, archived, model }
 
     public init(engine: any OpenCodeAPI) {
         self.engine = engine
@@ -92,11 +104,14 @@ public final class SessionStore {
     }
 
     public func reloadSessions() async {
+        // Only sessions known before the request can be missing from its answer; one created by a live
+        // event while the list was in flight must stay.
+        let knownBefore = Set(byID.keys)
         do {
             let list = try await engine.listSessions()
-            for info in list { upsertSession(info) }
-            let ids = Set(list.map(\.id))
-            for session in sessions where !ids.contains(session.id) { removeSession(session.id) }
+            for info in list where !deletedSessionIDs.contains(info.id) { upsertSession(info) }
+            let listed = Set(list.map(\.id))
+            for id in knownBefore.subtracting(listed) { removeSession(id, remember: false) }
         } catch {
             lastError = "Could not load sessions: \(error.localizedDescription)"
         }
@@ -105,7 +120,7 @@ public final class SessionStore {
     /// Fills the store synchronously (previews and snapshot rendering).
     public func seed(_ seed: StoreSeed) {
         for info in seed.sessions {
-            let model = SessionModel(info: info, permissionMode: seed.modes[info.id] ?? .ask)
+            let model = SessionModel(info: info, permissionMode: seed.modes[info.id] ?? defaultPermissionMode)
             model.items = seed.transcripts[info.id] ?? []
             model.transcriptLoaded = true
             model.activity = seed.activities[info.id] ?? .idle
@@ -224,7 +239,7 @@ public final class SessionStore {
             model.touch()
         }
         if let kids = try? await engine.children(sessionID) {
-            for child in kids { upsertSession(child) }
+            for child in kids where !deletedSessionIDs.contains(child.id) { upsertSession(child) }
         }
         await refreshPanels(sessionID)
     }
@@ -250,6 +265,7 @@ public final class SessionStore {
     public func apply(_ event: EngineEvent) {
         switch event {
         case .sessionCreated(let info), .sessionUpdated(let info):
+            guard !deletedSessionIDs.contains(info.id) else { return }
             upsertSession(info)
 
         case .sessionDeleted(let sessionID):
@@ -404,7 +420,9 @@ public final class SessionStore {
         guard let session = sessionID.flatMap({ byID[$0] }) ?? selected else { return }
         let previous = session.info.model
         session.info.model = model
+        let edit = noteLocalEdit(session.id, .model)
         do { try await engine.switchModel(session.id, model: model) } catch {
+            dropLocalEdit(session.id, .model, at: edit)
             session.info.model = previous
             lastError = "Could not switch model: \(error.localizedDescription)"
         }
@@ -425,7 +443,9 @@ public final class SessionStore {
         guard let session = byID[sessionID], !trimmed.isEmpty else { return }
         let previous = session.info.title
         session.info.title = trimmed
+        let edit = noteLocalEdit(sessionID, .title)
         do { try await engine.renameSession(sessionID, title: trimmed) } catch {
+            dropLocalEdit(sessionID, .title, at: edit)
             session.info.title = previous
             lastError = "Could not rename: \(error.localizedDescription)"
         }
@@ -434,8 +454,10 @@ public final class SessionStore {
     public func archive(_ sessionID: String, archived: Bool = true) async {
         guard let session = byID[sessionID] else { return }
         session.info.archived = archived
+        let edit = noteLocalEdit(sessionID, .archived)
         if archived, selectedSessionID == sessionID { selectNeighbour(of: sessionID) }
         do { try await engine.setArchived(sessionID, archived: archived) } catch {
+            dropLocalEdit(sessionID, .archived, at: edit)
             session.info.archived = !archived
             lastError = "Could not archive: \(error.localizedDescription)"
         }
@@ -463,9 +485,9 @@ public final class SessionStore {
     // MARK: - Internals
 
     @discardableResult
-    private func upsertSession(_ info: EngineSession) -> SessionModel {
+    func upsertSession(_ info: EngineSession) -> SessionModel {
         if let existing = byID[info.id] {
-            existing.info = info
+            existing.info = merge(info, over: existing.info)
             if info.usage != .zero { existing.usage = info.usage }
             return existing
         }
@@ -479,7 +501,45 @@ public final class SessionStore {
         sessions.append(model)
     }
 
-    private func removeSession(_ sessionID: String) {
+    /// Takes the engine's copy of a session, except fields the user changed here after the engine
+    /// stamped it (a late echo of an older change). Edits the engine has caught up with are forgotten.
+    private func merge(_ incoming: EngineSession, over current: EngineSession) -> EngineSession {
+        var result = incoming
+        result.updated = max(incoming.updated, current.updated)
+        guard var edits = localEdits[incoming.id] else { return result }
+        for (field, editedAt) in edits {
+            // Only an event stamped strictly after the local edit may override it (equal stamps happen
+            // within the clock's resolution and carry the same value).
+            if incoming.updated <= editedAt {
+                switch field {
+                case .title: result.title = current.title
+                case .archived: result.archived = current.archived
+                case .model: result.model = current.model
+                }
+            } else {
+                edits[field] = nil
+            }
+        }
+        localEdits[incoming.id] = edits.isEmpty ? nil : edits
+        return result
+    }
+
+    private func noteLocalEdit(_ sessionID: String, _ field: EditableField) -> Date {
+        let now = Date()
+        localEdits[sessionID, default: [:]][field] = now
+        return now
+    }
+
+    /// Forgets a local edit whose engine call failed, unless a newer edit replaced it meanwhile.
+    private func dropLocalEdit(_ sessionID: String, _ field: EditableField, at time: Date) {
+        if localEdits[sessionID]?[field] == time { localEdits[sessionID]?[field] = nil }
+    }
+
+    /// Removes a session. `remember` keeps its id so late events cannot bring it back (deletes);
+    /// a session that is only missing from a list reload is not remembered.
+    private func removeSession(_ sessionID: String, remember: Bool = true) {
+        if remember { deletedSessionIDs.insert(sessionID) }
+        localEdits[sessionID] = nil
         guard byID[sessionID] != nil else { return }
         if selectedSessionID == sessionID { selectNeighbour(of: sessionID) }
         byID[sessionID] = nil

@@ -1,19 +1,27 @@
 import Foundation
+import Observation
 import Testing
 @testable import EnsembleKit
 
 /// End to end through the store and the preview engine's event stream.
 @MainActor
 @Suite struct StorePreviewEngineTests {
-    private func until(_ timeout: Duration = .seconds(5), _ condition: () -> Bool) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now + timeout
+    /// Waits until `condition` holds. It is re-checked each time an observed value it reads changes
+    /// (no polling); the test fails if that has not happened by `timeout`.
+    private func until(_ timeout: Duration = .seconds(5), _ condition: @escaping @MainActor () -> Bool) async throws {
+        let deadline = ContinuousClock.now + timeout
         while !condition() {
-            guard clock.now < deadline else {
+            guard ContinuousClock.now < deadline else {
                 Issue.record("timed out")
                 return
             }
-            try await Task.sleep(for: .milliseconds(5))
+            let gate = ResumeOnce()
+            let timer = Task { try? await Task.sleep(until: deadline, clock: .continuous); gate.resume() }
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                withObservationTracking { _ = condition() } onChange: { gate.resume() }
+                gate.wait(with: continuation)
+            }
+            timer.cancel()
         }
     }
 
@@ -131,9 +139,21 @@ import Testing
         await store.rename(id, to: "Docs pass")
         #expect(store.session(id)?.title == "Docs pass")
         await store.archive(id)
+        #expect(store.session(id)?.info.archived == true)
         #expect(!store.sidebarOrder.contains { $0.id == id })
+
+        // Barrier: the engine's events come through one ordered stream, so once an engine-side rename of
+        // another session shows up, every echo of the calls above has been applied as well.
+        try await drainEvents(store, marker: "Barrier 1")
+        #expect(store.session(id)?.title == "Docs pass")
+        #expect(store.session(id)?.info.archived == true, "late echoes did not unarchive it")
+        #expect(!store.sidebarOrder.contains { $0.id == id })
+
         await store.delete(id)
         #expect(store.session(id) == nil)
+        try await drainEvents(store, marker: "Barrier 2")
+        #expect(store.session(id) == nil, "late events did not bring the deleted session back")
+        #expect(!store.sessions.contains { $0.id == id })
 
         try await store.setAPIKey(providerID: "xai", key: "test-key-not-real")
         #expect(store.providers.first { $0.id == "xai" }?.connected == true)
@@ -142,11 +162,45 @@ import Testing
         #expect(store.providers.first { $0.id == "xai" }?.connected == false)
     }
 
+    /// Renames another session on the engine side (bypassing the store) and waits for that event.
+    private func drainEvents(_ store: SessionStore, marker: String) async throws {
+        let other = try #require(store.session("ses_astro"))
+        try await store.engine.renameSession(other.id, title: marker)
+        try await until { other.title == marker }
+    }
+
     @Test func switchModelUpdatesTheSession() async throws {
         let store = await makeStore()
         let ref = ModelRef(providerID: "openai", id: "gpt-5.5")
         await store.switchModel(ref)
         #expect(store.selected?.info.model == ref)
         #expect(store.modelName(ref) == "GPT-5.5")
+    }
+}
+
+/// Resumes a continuation exactly once, whether the change or the timeout comes first, and even if
+/// `resume()` runs before the continuation is handed over.
+private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var fired = false
+
+    func wait(with continuation: CheckedContinuation<Void, Never>) {
+        let resumeNow: Bool = lock.withLock {
+            if fired { return true }
+            self.continuation = continuation
+            return false
+        }
+        if resumeNow { continuation.resume() }
+    }
+
+    func resume() {
+        let pending: CheckedContinuation<Void, Never>? = lock.withLock {
+            guard !fired else { return nil }
+            fired = true
+            defer { continuation = nil }
+            return continuation
+        }
+        pending?.resume()
     }
 }

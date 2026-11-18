@@ -37,9 +37,9 @@ struct ContextPanelView: View {
                     PanelSeparator()
                     connectorsSection
                 }
-                .padding(.leading, 12)
-                .padding(.trailing, 14)
-                .padding(.bottom, 24)
+                .padding(.leading, theme.z(12))
+                .padding(.trailing, theme.z(14))
+                .padding(.bottom, theme.z(24))
             }
         }
         .frame(maxHeight: .infinity, alignment: .top)
@@ -87,8 +87,8 @@ struct ContextPanelView: View {
             }
             .help("Let the Ensemble iPhone app control this Mac over Tailscale")
         }
-        .padding(.top, 8)
-        .padding(.bottom, 8)
+        .padding(.top, theme.z(8))
+        .padding(.bottom, theme.z(8))
     }
 
     // MARK: Context
@@ -110,19 +110,19 @@ struct ContextPanelView: View {
                 Text("\(Format.tokens(breakdown.usedTokens)) / \(Format.tokens(breakdown.limitTokens))")
                     .foregroundStyle(theme.textSecondary)
             }
-            .font(.system(size: 13))
+            .font(theme.font(size: 13))
             .monospacedDigit()
-            .frame(height: 26)
+            .frame(height: theme.z(26))
 
             ContextBar(breakdown: breakdown)
-                .padding(.top, 1)
-                .padding(.bottom, 6)
+                .padding(.top, theme.z(1))
+                .padding(.bottom, theme.z(6))
 
             ForEach(main) { category in
                 breakdownRow(category, limit: breakdown.limitTokens)
             }
             if !reserve.isEmpty {
-                Color.clear.frame(height: main.isEmpty ? 0 : 23)
+                Color.clear.frame(height: main.isEmpty ? 0 : theme.z(23))
                 ForEach(reserve) { category in
                     breakdownRow(category, limit: breakdown.limitTokens)
                 }
@@ -130,28 +130,28 @@ struct ContextPanelView: View {
 
             let groups = disclosureGroups
             if !groups.isEmpty {
-                Color.clear.frame(height: 6)
+                Color.clear.frame(height: theme.z(6))
                 ForEach(groups, id: \.title) { group in
                     disclosureRow(group)
                 }
             }
         }
-        .padding(.top, 8)
-        .padding(.bottom, 14)
+        .padding(.top, theme.z(8))
+        .padding(.bottom, theme.z(14))
     }
 
     private func breakdownRow(_ category: ContextBreakdown.Category, limit: Int) -> some View {
         HStack(spacing: 0) {
-            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+            RoundedRectangle(cornerRadius: theme.z(2.5), style: .continuous)
                 .fill(theme.contextColor(for: category.key))
-                .frame(width: 10, height: 10)
+                .frame(width: theme.z(10), height: theme.z(10))
                 .overlay {
                     if category.key == "free" {
-                        RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                        RoundedRectangle(cornerRadius: theme.z(2.5), style: .continuous)
                             .strokeBorder(theme.isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.06), lineWidth: 1)
                     }
                 }
-            Color.clear.frame(width: 13, height: 1)
+            Color.clear.frame(width: theme.z(13), height: 1)
             Text(category.label)
                 .foregroundStyle(theme.textSecondary)
                 .lineLimit(1)
@@ -160,20 +160,20 @@ struct ContextPanelView: View {
                         DottedLine()
                             .stroke(theme.textSecondary.opacity(0.75), style: StrokeStyle(lineWidth: 1, dash: [1, 1.5]))
                             .frame(height: 1)
-                            .offset(y: 0.5)
+                            .offset(y: theme.z(0.5))
                     }
                 }
-            Spacer(minLength: 8)
+            Spacer(minLength: theme.z(8))
             Text(Format.tokens(category.tokens))
                 .foregroundStyle(theme.textSecondary)
                 .fixedSize()
             Text(Format.percent(category.tokens, of: limit))
                 .foregroundStyle(theme.textPrimary)
-                .frame(width: 54, alignment: .trailing)
+                .frame(width: theme.z(54), alignment: .trailing)
         }
-        .font(.system(size: 13))
+        .font(theme.font(size: 13))
         .monospacedDigit()
-        .frame(height: 23)
+        .frame(height: theme.z(23))
     }
 
     /// Categories whose rows carry the dotted underline in the reference (they have item lists).
@@ -217,15 +217,15 @@ struct ContextPanelView: View {
                 HStack(spacing: 0) {
                     Glyph(.chevronRight, size: 12)
                         .rotationEffect(.degrees(open ? 90 : 0))
-                        .frame(width: 10)
-                    Color.clear.frame(width: 13, height: 1)
+                        .frame(width: theme.z(10))
+                    Color.clear.frame(width: theme.z(13), height: 1)
                     Text(group.title).foregroundStyle(theme.textSecondary)
-                    Spacer(minLength: 8)
+                    Spacer(minLength: theme.z(8))
                     Text("\(group.count)").foregroundStyle(theme.textTertiary)
                 }
-                .font(.system(size: 13))
+                .font(theme.font(size: 13))
                 .monospacedDigit()
-                .frame(height: 23)
+                .frame(height: theme.z(23))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -237,13 +237,13 @@ struct ContextPanelView: View {
                     } label: {
                         HStack {
                             Text(item.name).foregroundStyle(theme.textSecondary).lineLimit(1)
-                            Spacer(minLength: 8)
+                            Spacer(minLength: theme.z(8))
                             Text(item.value).foregroundStyle(theme.textTertiary)
                         }
-                        .font(.system(size: 12.5))
+                        .font(theme.font(size: 12.5))
                         .monospacedDigit()
-                        .padding(.leading, 23)
-                        .frame(height: 22)
+                        .padding(.leading, theme.z(23))
+                        .frame(height: theme.z(22))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -262,9 +262,9 @@ struct ContextPanelView: View {
             sectionHeader("Outputs")
             if files.isEmpty {
                 Text("No files changed yet")
-                    .font(.system(size: 13))
+                    .font(theme.font(size: 13))
                     .foregroundStyle(theme.textTertiary)
-                    .frame(height: 31)
+                    .frame(height: theme.z(31))
             }
             ForEach(shown) { file in
                 Button {
@@ -289,13 +289,13 @@ struct ContextPanelView: View {
             if files.count > 5 {
                 Button(showAllOutputs ? "Show less" : "Show more") { showAllOutputs.toggle() }
                     .buttonStyle(.plain)
-                    .font(.system(size: 13))
+                    .font(theme.font(size: 13))
                     .foregroundStyle(theme.textSecondary)
-                    .frame(height: 31)
+                    .frame(height: theme.z(31))
             }
         }
-        .padding(.top, 8)
-        .padding(.bottom, 8)
+        .padding(.top, theme.z(8))
+        .padding(.bottom, theme.z(8))
     }
 
     private func diffBinding(for file: FileChange) -> Binding<FileChange?> {
@@ -314,10 +314,10 @@ struct ContextPanelView: View {
             Button {
                 withAnimation(.easeOut(duration: 0.15)) { connectorsExpanded = !isConnectorsExpanded }
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: theme.z(6)) {
                     Text("Connectors").foregroundStyle(theme.textPrimary)
                     Glyph(isConnectorsExpanded ? .chevronDown : .chevronRight, size: 13)
-                    Spacer(minLength: 8)
+                    Spacer(minLength: theme.z(8))
                     if !isConnectorsExpanded {
                         if toReconnect > 0 {
                             Text("\(toReconnect) to reconnect").foregroundStyle(theme.textSecondary)
@@ -326,8 +326,8 @@ struct ContextPanelView: View {
                         }
                     }
                 }
-                .font(.system(size: 13))
-                .frame(height: 30)
+                .font(theme.font(size: 13))
+                .frame(height: theme.z(30))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -335,9 +335,9 @@ struct ContextPanelView: View {
             if isConnectorsExpanded {
                 if connectors.isEmpty {
                     Text("No connectors")
-                        .font(.system(size: 13))
+                        .font(theme.font(size: 13))
                         .foregroundStyle(theme.textTertiary)
-                        .frame(height: 32)
+                        .frame(height: theme.z(32))
                 }
                 ForEach(shown) { connector in
                     connectorRow(connector)
@@ -345,62 +345,62 @@ struct ContextPanelView: View {
                 if connectors.count > 3 {
                     Button(showAllConnectors ? "Show less" : "Show more") { showAllConnectors.toggle() }
                         .buttonStyle(.plain)
-                        .font(.system(size: 13))
+                        .font(theme.font(size: 13))
                         .foregroundStyle(theme.textSecondary)
-                        .frame(height: 32)
+                        .frame(height: theme.z(32))
                 }
             }
         }
-        .padding(.top, 8)
-        .padding(.bottom, 8)
+        .padding(.top, theme.z(8))
+        .padding(.bottom, theme.z(8))
     }
 
     private func connectorRow(_ connector: ConnectorInfo) -> some View {
         HStack(spacing: 0) {
             LetterAvatar(connector.name, size: 16)
-            Color.clear.frame(width: 13, height: 1)
+            Color.clear.frame(width: theme.z(13), height: 1)
             Text(connector.name)
-                .font(.system(size: 13))
+                .font(theme.font(size: 13))
                 .foregroundStyle(theme.textPrimary)
                 .lineLimit(1)
-            Spacer(minLength: 8)
+            Spacer(minLength: theme.z(8))
             switch connector.state {
             case .needsAuth:
                 Button("Authenticate") {}
                     .buttonStyle(.plain)
-                    .font(.system(size: 13))
+                    .font(theme.font(size: 13))
                     .foregroundStyle(theme.warning)
                     .help("Sign in to \(connector.name)")
             case .failed:
-                HStack(spacing: 6) {
+                HStack(spacing: theme.z(6)) {
                     Text("Failed").foregroundStyle(theme.textSecondary)
                     StatusDot(theme.danger)
                 }
-                .font(.system(size: 13))
+                .font(theme.font(size: 13))
             case .connected:
-                HStack(spacing: 6) {
+                HStack(spacing: theme.z(6)) {
                     Text("\(connector.toolCount) tools").foregroundStyle(theme.textTertiary)
                     StatusDot(theme.success)
                 }
-                .font(.system(size: 12.5))
+                .font(theme.font(size: 12.5))
             case .connecting:
                 Spinner(size: 10)
             case .disabled:
                 Text("Off")
-                    .font(.system(size: 13))
+                    .font(theme.font(size: 13))
                     .foregroundStyle(theme.textTertiary)
             }
         }
-        .frame(height: 32)
+        .frame(height: theme.z(32))
     }
 
     // MARK: Pieces
 
     private func sectionHeader(_ title: String) -> some View {
         Text(title)
-            .font(.system(size: 13))
+            .font(theme.font(size: 13))
             .foregroundStyle(theme.textPrimary)
-            .frame(height: 30)
+            .frame(height: theme.z(30))
     }
 }
 
@@ -409,6 +409,7 @@ struct PanelRow<Label: View, Trailing: View>: View {
     let glyph: Glyph.Kind
     @ViewBuilder let label: Label
     @ViewBuilder let trailing: Trailing
+    @Environment(\.theme) private var theme
 
     init(glyph: Glyph.Kind, @ViewBuilder label: () -> Label, @ViewBuilder trailing: () -> Trailing) {
         self.glyph = glyph
@@ -419,14 +420,14 @@ struct PanelRow<Label: View, Trailing: View>: View {
     var body: some View {
         HStack(spacing: 0) {
             Glyph(glyph, size: 18)
-                .frame(width: 18)
-            Color.clear.frame(width: 11, height: 1)
+                .frame(width: theme.z(18))
+            Color.clear.frame(width: theme.z(11), height: 1)
             label
-            Spacer(minLength: 8)
+            Spacer(minLength: theme.z(8))
             trailing
         }
-        .font(.system(size: 13))
-        .frame(height: 31)
+        .font(theme.font(size: 13))
+        .frame(height: theme.z(31))
     }
 }
 
@@ -474,9 +475,9 @@ struct ContextBar: View {
         GeometryReader { proxy in
             let width = proxy.size.width
             let limit = max(1, breakdown.limitTokens)
-            HStack(spacing: 1) {
+            HStack(spacing: theme.z(1)) {
                 ForEach(segments) { segment in
-                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    RoundedRectangle(cornerRadius: theme.z(2), style: .continuous)
                         .fill(theme.contextColor(for: segment.key == "other" ? "skills" : segment.key))
                         .frame(width: max(3, CGFloat(segment.tokens) / CGFloat(limit) * width - 1))
                 }
@@ -485,7 +486,7 @@ struct ContextBar: View {
             .frame(width: width, alignment: .leading)
             .background(Capsule().fill(theme.track))
         }
-        .frame(height: 4)
+        .frame(height: theme.z(4))
         .accessibilityElement()
         .accessibilityLabel("Context \(Format.wholePercent(breakdown.fractionUsed)) used")
     }
@@ -517,32 +518,32 @@ struct FileDiffPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: theme.z(8)) {
                 Text(Format.relativePath(file.path, base: baseDirectory))
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(theme.font(size: 12.5, weight: .medium))
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Spacer(minLength: 8)
+                Spacer(minLength: theme.z(8))
                 Text("+\(file.additions)").foregroundStyle(theme.diffAddText)
                 Text("-\(file.deletions)").foregroundStyle(theme.diffRemoveText)
             }
-            .font(.system(size: 12, weight: .medium).monospacedDigit())
-            .padding(12)
+            .font(theme.font(size: 12, weight: .medium).monospacedDigit())
+            .padding(theme.z(12))
             HLine()
             if let diff = file.diff, !diff.isEmpty {
                 ScrollView {
                     DiffView(diff: diff, maxLines: nil)
                 }
-                .frame(maxHeight: 460)
+                .frame(maxHeight: theme.z(460))
             } else {
                 Text(file.kind == .deleted ? "File deleted" : "No diff available for this file")
-                    .font(.system(size: 12.5))
+                    .font(theme.font(size: 12.5))
                     .foregroundStyle(theme.textTertiary)
-                    .padding(16)
+                    .padding(theme.z(16))
             }
         }
-        .frame(width: 520)
+        .frame(width: theme.z(520))
         .background(theme.codeBackground)
     }
 }

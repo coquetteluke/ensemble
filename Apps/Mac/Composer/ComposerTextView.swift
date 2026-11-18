@@ -7,12 +7,15 @@ struct ComposerTextView: NSViewRepresentable {
     @Binding var text: String
     @Binding var height: CGFloat
     var focusToken: Int
+    /// Point size; follows the window zoom.
+    var fontSize: CGFloat = 14
     var textColor: NSColor
     var accentColor: NSColor
     var onSubmit: () -> Void
     var onCycleMode: () -> Void
+    /// Arrow keys, Tab, Return and Esc go here first (the slash menu uses them). Return true to consume.
+    var onKey: (ComposerKey) -> Bool = { _ in false }
 
-    static let font = NSFont.systemFont(ofSize: 14)
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -31,7 +34,7 @@ struct ComposerTextView: NSViewRepresentable {
         textView.allowsUndo = true
         textView.drawsBackground = false
         textView.backgroundColor = .clear
-        textView.font = Self.font
+        textView.font = NSFont.systemFont(ofSize: fontSize)
         textView.textColor = textColor
         textView.insertionPointColor = accentColor
         textView.textContainerInset = NSSize(width: 0, height: 2)
@@ -59,6 +62,10 @@ struct ComposerTextView: NSViewRepresentable {
         }
         textView.textColor = textColor
         textView.insertionPointColor = accentColor
+        if textView.font?.pointSize != fontSize {
+            textView.font = NSFont.systemFont(ofSize: fontSize)
+            context.coordinator.updateHeight()
+        }
         if context.coordinator.lastFocusToken != focusToken {
             context.coordinator.lastFocusToken = focusToken
             DispatchQueue.main.async { textView.window?.makeFirstResponder(textView) }
@@ -86,11 +93,18 @@ struct ComposerTextView: NSViewRepresentable {
             if selector == #selector(NSResponder.insertNewline(_:)) {
                 if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
                     textView.insertNewlineIgnoringFieldEditor(nil)
-                } else {
+                } else if !parent.onKey(.submit) {
                     parent.onSubmit()
                 }
                 return true
             }
+            let keys: [Selector: ComposerKey] = [
+                #selector(NSResponder.moveUp(_:)): .up,
+                #selector(NSResponder.moveDown(_:)): .down,
+                #selector(NSResponder.insertTab(_:)): .tab,
+                #selector(NSResponder.cancelOperation(_:)): .escape,
+            ]
+            if let key = keys[selector], parent.onKey(key) { return true }
             if selector == #selector(NSResponder.insertBacktab(_:)) {
                 parent.onCycleMode()
                 return true
@@ -102,11 +116,16 @@ struct ComposerTextView: NSViewRepresentable {
             guard let textView, let container = textView.textContainer, let layout = textView.layoutManager else { return }
             layout.ensureLayout(for: container)
             let used = layout.usedRect(for: container).height
-            let lineHeight = layout.defaultLineHeight(for: ComposerTextView.font)
+            let lineHeight = layout.defaultLineHeight(for: textView.font ?? NSFont.systemFont(ofSize: parent.fontSize))
             let height = ceil(max(used, lineHeight) + textView.textContainerInset.height * 2)
             if abs(parent.height - height) > 0.5 {
                 parent.height = height
             }
         }
     }
+}
+
+/// Keys the composer offers to its menus before handling them itself.
+enum ComposerKey {
+    case up, down, tab, escape, submit
 }

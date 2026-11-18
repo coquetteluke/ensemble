@@ -9,17 +9,28 @@ struct MainView: View {
     var remoteControlOverride: Bool?
 
     @AppStorage("remoteControlEnabled") private var remoteControl = false
+    @AppStorage(Zoom.storageKey) private var zoom = 1.0
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
 
     static let sidebarWidth: CGFloat = 260
     static let panelWidth: CGFloat = 303
 
+    /// Snapshots pass a fixed zoom; the app uses the stored View > Zoom setting.
+    var zoomOverride: CGFloat?
+
     var body: some View {
+        content
+            .ensembleTheme()
+            .environment(\.zoom, zoomOverride ?? CGFloat(Zoom.clamped(zoom)))
+            .onAppear { if !isSnapshot { window.installZoomShortcut() } }
+    }
+
+    private var content: some View {
         HStack(spacing: 0) {
             if window.showSidebar {
                 SidebarView(store: store, window: window)
-                    .frame(width: Self.sidebarWidth)
+                    .frame(width: theme.z(Self.sidebarWidth))
                     .transition(.move(edge: .leading))
                 VLine()
             }
@@ -28,7 +39,7 @@ struct MainView: View {
             if showsPanel {
                 VLine()
                 ContextPanelView(store: store, session: store.selected, remoteControl: remoteControlBinding)
-                    .frame(width: Self.panelWidth)
+                    .frame(width: theme.z(Self.panelWidth))
                     .transition(.move(edge: .trailing))
             }
         }
@@ -36,6 +47,7 @@ struct MainView: View {
         .overlay(alignment: .topLeading) { if isSnapshot { SnapshotWindowChrome(window: window) } }
         .ignoresSafeArea()
         .environment(\.transcriptActions, actions)
+        .powerSessionSync(store: store)
         .navigationTitle(store.selected?.title ?? "Ensemble")
         .toolbar {
             ToolbarItem(placement: .navigation) {
@@ -78,10 +90,39 @@ struct MainView: View {
     private var actions: TranscriptActions {
         let store = store
         let window = window
+        let session = store.selected
+        let sessionID = session?.id
         return TranscriptActions(
             openSession: { id in window.open(id, store: store) },
-            replyPermission: { request, decision in Task { await store.reply(to: request, decision: decision) } }
+            replyPermission: { request, decision in Task { await store.reply(to: request, decision: decision) } },
+            fork: { messageID in
+                guard let sessionID else { return }
+                Task {
+                    if await store.fork(sessionID, atMessageID: messageID) != nil { window.composerFocusToken &+= 1 }
+                }
+            },
+            rewind: { messageID in
+                guard let sessionID else { return }
+                Task { await store.rewind(sessionID, toBeforeMessageID: messageID) }
+            },
+            edit: { messageID in
+                guard let sessionID else { return }
+                Task {
+                    if let text = await store.editMessage(sessionID, messageID: messageID) {
+                        window.drafts[sessionID] = text
+                        window.composerFocusToken &+= 1
+                    }
+                }
+            },
+            historySupported: store.supportsHistory,
+            workingAgentName: session.flatMap { $0.isWorking ? agentName(for: $0) : nil }
         )
+    }
+
+    /// The working agent's name: the room agent, or the model.
+    private func agentName(for session: SessionModel) -> String {
+        if let id = session.agentID, let agent = store.agents[id] { return agent.name }
+        return store.modelName(session.info.model)
     }
 }
 
@@ -118,7 +159,7 @@ struct CenterHeader: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: theme.z(8)) {
             if !window.showSidebar {
                 Color.clear.frame(width: 110, height: 1)
             }
@@ -129,37 +170,37 @@ struct CenterHeader: View {
                         Button {
                             window.open(parent.id, store: store)
                         } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
+                            HStack(spacing: theme.z(4)) {
+                                Image(systemName: "chevron.left").font(theme.font(size: 10, weight: .semibold))
                                 Text(parent.title).lineLimit(1)
                             }
-                            .font(.system(size: 13))
+                            .font(theme.font(size: 13))
                             .foregroundStyle(theme.textSecondary)
                         }
                         .buttonStyle(.plain)
                         Text("/").foregroundStyle(theme.textTertiary)
                         Image(systemName: "person.2.fill")
-                            .font(.system(size: 10))
+                            .font(theme.font(size: 10))
                             .foregroundStyle(theme.accent)
                     }
                     Text(session.title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(theme.font(size: 13, weight: .semibold))
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
                     Text(Format.abbreviatedPath(session.directory))
-                        .font(.system(size: 12))
+                        .font(theme.font(size: 12))
                         .foregroundStyle(theme.textTertiary)
                         .lineLimit(1)
                         .truncationMode(.head)
                 }
             case .hub:
-                Text("Session Hub").font(.system(size: 13, weight: .semibold)).foregroundStyle(theme.textPrimary)
+                Text("Session Hub").font(theme.font(size: 13, weight: .semibold)).foregroundStyle(theme.textPrimary)
             case .scheduled:
-                Text("Scheduled").font(.system(size: 13, weight: .semibold)).foregroundStyle(theme.textPrimary)
+                Text("Scheduled").font(theme.font(size: 13, weight: .semibold)).foregroundStyle(theme.textPrimary)
             }
-            Spacer(minLength: 60)
+            Spacer(minLength: theme.z(60))
         }
-        .padding(.leading, 20)
+        .padding(.leading, theme.z(20))
         .frame(height: 52)
         .background(theme.background)
         .zIndex(1)
@@ -173,12 +214,12 @@ struct EmptySessionView: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: theme.z(14)) {
             Image(systemName: "square.and.pencil")
-                .font(.system(size: 28, weight: .light))
+                .font(theme.font(size: 28, weight: .light))
                 .foregroundStyle(theme.textTertiary)
             Text(store.isLoaded ? "No session selected" : "Loading sessions")
-                .font(.system(size: 15, weight: .medium))
+                .font(theme.font(size: 15, weight: .medium))
                 .foregroundStyle(theme.textPrimary)
             if store.isLoaded {
                 Button("New session") { window.beginNewSession() }

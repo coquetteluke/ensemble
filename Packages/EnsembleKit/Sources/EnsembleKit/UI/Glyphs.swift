@@ -22,8 +22,8 @@ public struct Glyph: View {
 
     public var body: some View {
         GlyphShape(kind: kind)
-            .stroke(color ?? theme.textSecondary, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
-            .frame(width: size, height: size)
+            .stroke(color ?? theme.textSecondary, style: StrokeStyle(lineWidth: theme.z(lineWidth), lineCap: .round, lineJoin: .round))
+            .frame(width: theme.z(size), height: theme.z(size))
             .accessibilityHidden(true)
     }
 

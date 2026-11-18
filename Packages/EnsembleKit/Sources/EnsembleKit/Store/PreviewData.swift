@@ -104,6 +104,9 @@ public enum PreviewData {
 
         let mainItems: [TranscriptItem] = [
             .user(id: "u1", text: "Build the right-hand context panel. Match the reference: Environment, Context with the coloured bar and breakdown rows, Outputs and Connectors.", date: ago(3600)),
+            .tool(ToolCallInfo(id: "t_plan", name: "todowrite", title: "Plan",
+                               inputJSON: #"{"todos": [{"content": "Read the context model and the store", "status": "completed"}, {"content": "Build the segmented context bar", "status": "completed"}, {"content": "Run the EnsembleKit tests", "status": "in_progress", "activeForm": "Running the EnsembleKit tests"}, {"content": "Fill in the Outputs list with file icons", "status": "pending"}, {"content": "Show connector status and Authenticate", "status": "pending"}]}"#,
+                               status: .succeeded)),
             .reasoning(id: "r1", text: "The panel has four sections. The numbers come from `engine.context()`, so I should read `ContextBreakdown` first, then check how the store exposes the selected session.", streaming: false),
             .agentText(id: "a1", text: "I'll start with the model types and the store.", agentID: nil, streaming: false),
             .tool(ToolCallInfo(id: "t_read", name: "read", title: ensemble + "/Packages/EnsembleKit/Sources/EnsembleKit/Model/Context.swift",

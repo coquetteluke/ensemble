@@ -70,7 +70,7 @@ public struct DiffView: View {
     public var body: some View {
         let limit = (showAll || maxLines == nil) ? lines.count : min(lines.count, maxLines ?? lines.count)
         let shown = Array(lines.prefix(limit))
-        let numberWidth = CGFloat(max(2, String(lines.compactMap { $0.newNumber ?? $0.oldNumber }.max() ?? 0).count)) * 7.6 + 8
+        let numberWidth = CGFloat(max(2, String(lines.compactMap { $0.newNumber ?? $0.oldNumber }.max() ?? 0).count)) * theme.z(7.6) + theme.z(8)
 
         VStack(alignment: .leading, spacing: 0) {
             AdaptiveScroll(.horizontal, snapshotAlignment: .leading) {
@@ -84,23 +84,23 @@ public struct DiffView: View {
             if limit < lines.count {
                 Button("Show \(lines.count - limit) more lines") { showAll = true }
                     .buttonStyle(.plain)
-                    .font(.system(size: 11.5))
+                    .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textSecondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, theme.z(10))
+                    .padding(.vertical, theme.z(6))
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, theme.z(4))
     }
 
     @ViewBuilder private func row(_ line: DiffLine, numberWidth: CGFloat) -> some View {
         switch line.kind {
         case .hunk:
             Text(line.text)
-                .font(.system(size: 11.5, design: .monospaced))
+                .font(theme.font(size: 11.5, design: .monospaced))
                 .foregroundStyle(theme.textTertiary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 3)
+                .padding(.horizontal, theme.z(10))
+                .padding(.vertical, theme.z(3))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(theme.diffHunkBackground)
         default:
@@ -112,15 +112,15 @@ public struct DiffView: View {
                     .frame(width: numberWidth, alignment: .trailing)
                     .foregroundStyle(theme.textTertiary.opacity(0.8))
                 Text(sign(line.kind))
-                    .frame(width: 22, alignment: .center)
+                    .frame(width: theme.z(22), alignment: .center)
                     .foregroundStyle(signColor(line.kind))
                 Text(line.text.isEmpty ? " " : line.text)
                     .foregroundStyle(theme.textPrimary)
                     .fixedSize(horizontal: true, vertical: false)
-                    .padding(.trailing, 12)
+                    .padding(.trailing, theme.z(12))
             }
-            .font(.system(size: 12, design: .monospaced))
-            .padding(.vertical, 1.5)
+            .font(theme.font(size: 12, design: .monospaced))
+            .padding(.vertical, theme.z(1.5))
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(background(line.kind))
         }

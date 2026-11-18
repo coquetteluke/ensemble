@@ -60,6 +60,7 @@ final class AppEngine {
 struct EnsembleApp: App {
     @State private var app = AppEngine()
     @State private var window = WindowState()
+    @State private var power = PowerController.makeForMac()
     @AppStorage("appearance") private var appearance = AppearanceSetting.dark.rawValue
 
     init() {
@@ -86,7 +87,9 @@ struct EnsembleApp: App {
             .frame(minWidth: 980, minHeight: 620)
             .ensembleTheme()
             .preferredColorScheme(colorScheme)
+            .environment(power)
             .task { app.start() }
+            .task { await power.start() }
         }
         .defaultSize(width: 1440, height: 900)
         .windowToolbarStyle(.unified(showsTitle: false))
@@ -117,6 +120,7 @@ struct EnsembleApp: App {
             }
             .ensembleTheme()
             .preferredColorScheme(colorScheme)
+            .environment(power)
         }
     }
 }
@@ -193,6 +197,14 @@ struct EnsembleCommands: Commands {
                 .keyboardShortcut("s", modifiers: [.command, .control])
             Button(window.showContextPanel ? "Hide Context Panel" : "Show Context Panel") { window.toggleContextPanel() }
                 .keyboardShortcut("i", modifiers: [.command, .option])
+            Divider()
+            // Command-= also zooms in (handled by WindowState.installZoomShortcut).
+            Button("Zoom In") { window.zoomIn() }
+                .keyboardShortcut("+", modifiers: .command)
+            Button("Zoom Out") { window.zoomOut() }
+                .keyboardShortcut("-", modifiers: .command)
+            Button("Actual Size") { window.resetZoom() }
+                .keyboardShortcut("0", modifiers: .command)
             Divider()
         }
     }

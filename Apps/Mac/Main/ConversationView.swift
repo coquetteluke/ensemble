@@ -20,26 +20,31 @@ struct ConversationView: View {
                 ComposerView(store: store, session: session, window: window)
                 StatusLine(store: store, session: session, window: window)
             }
-            .frame(maxWidth: Self.columnWidth + 24)
-            .padding(.horizontal, 20)
+            .frame(maxWidth: theme.z(Self.columnWidth + 24))
+            .padding(.horizontal, theme.z(20))
         }
         .environment(\.sessionDirectory, session.directory)
     }
 
     private var content: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: theme.z(16)) {
             if session.isSubagent, let parentID = session.info.parentID {
                 SubagentBanner(store: store, parentID: parentID, window: window)
             }
             TranscriptList(items: session.items, resolutions: session.resolutions, agents: store.agents)
+            if let todos = TodoParser.latest(in: session.items), !todos.isEmpty,
+               session.isWorking || todos.contains(where: { $0.status == .pending || $0.status == .inProgress }) {
+                TaskListCard(items: todos)
+            }
             if session.isWorking {
-                WorkingRow(since: session.workingSince, waitingForPermission: session.activity == .waitingForPermission)
+                WorkingRow(items: session.items, since: session.workingSince,
+                           waitingForPermission: session.activity == .waitingForPermission)
             }
         }
-        .frame(maxWidth: Self.columnWidth, alignment: .leading)
-        .padding(.horizontal, 32)
-        .padding(.top, 12)
-        .padding(.bottom, 22)
+        .frame(maxWidth: theme.z(Self.columnWidth), alignment: .leading)
+        .padding(.horizontal, theme.z(32))
+        .padding(.top, theme.z(12))
+        .padding(.bottom, theme.z(22))
         .frame(maxWidth: .infinity)
     }
 
@@ -69,16 +74,16 @@ struct ConversationView: View {
                         withAnimation(.easeOut(duration: 0.2)) { position.scrollTo(edge: .bottom) }
                     } label: {
                         Image(systemName: "arrow.down")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(theme.font(size: 12, weight: .semibold))
                             .foregroundStyle(theme.textPrimary)
-                            .frame(width: 30, height: 30)
+                            .frame(width: theme.z(30), height: theme.z(30))
                             .background(Circle().fill(theme.elevated))
                             .overlay(Circle().strokeBorder(theme.border))
-                            .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+                            .shadow(color: .black.opacity(0.25), radius: theme.z(6), y: theme.z(2))
                     }
                     .buttonStyle(.plain)
                     .help("Jump to the newest message")
-                    .padding(.bottom, 10)
+                    .padding(.bottom, theme.z(10))
                 }
             }
             .clipped()
@@ -95,9 +100,9 @@ struct SubagentBanner: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: theme.z(8)) {
             Image(systemName: "person.2.fill")
-                .font(.system(size: 11))
+                .font(theme.font(size: 11))
                 .foregroundStyle(theme.accent)
             Text("Subagent of")
                 .foregroundStyle(theme.textSecondary)
@@ -109,9 +114,9 @@ struct SubagentBanner: View {
             .underline()
             Spacer(minLength: 0)
         }
-        .font(.system(size: 12.5))
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(theme.accent.opacity(0.08)))
+        .font(theme.font(size: 12.5))
+        .padding(.horizontal, theme.z(12))
+        .padding(.vertical, theme.z(8))
+        .background(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).fill(theme.accent.opacity(0.08)))
     }
 }
