@@ -36,3 +36,10 @@ Newest first. One line per finished piece; details in commits.
 - Later that night: Wave 1 done (alerts, Dock badge and menu bar count, sidebar pins, unread and completed; composer queue with Send now, /btw side questions, dictation, plan limits and grouped models; Command-K search, file links, view modes, command palette). Review pane (diffs, line comments, stage and commit) and rooms in the main window with one shared side pane committed and installed.
 - Security passes on every new piece: Claude settings pinned and allowlisted, Gemini fails closed on modes and remembers only exact Always rules, permission cards show the whole command, agent-written links open only for web and mail, no default-app action for file links.
 
+
+## 2026-11-19 (overnight)
+
+- Wave 2 finished: plan mode and question cards on all three engines (Ensemble enforces read-only Plan on Claude, whose own plan mode let a shell write through), background work list, plan limit ring and auto-continue, workspace trust card with a private OpenCode server for untrusted folders, GitHub pull request bar (pushes only to the branch's own repository or the user's own fork).
+- Wave 3 so far: Session Hub (Needs you, Running, Finished, Old, with actions in place), split view (2 to 4 panes, narrow-pane layouts), scheduled tasks on every engine with catch-up after sleep, usage view and API-key spending caps, rewind with choices and redo, per-session worktrees, Customizations (what each agent loads per folder), browser pane with dev-server preview, rooms on the iPhone, phone alerts (local, and optional ntfy).
+- Claude session import: 416 sessions in 91 folders found on Luke's Mac; sessions the desktop app does not list come in archived by default, starred ones pinned.
+- Every piece went through a security review; fixes included Gemini fail-closed modes and exact Always rules, Claude settings pinning, git with repository programs switched off and only in trusted folders, agent-written links limited to web and mail, no default-app opening of files.
