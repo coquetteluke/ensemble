@@ -75,6 +75,17 @@ actor ACPEngineCore {
         let request: PermissionRequest
     }
 
+    /// An `elicitation/create` request waiting for answers (`ACPElicitation`).
+    struct PendingQuestion: Sendable {
+        let requestID: String
+        let rpcID: ACPRequestID
+        let connection: ConnectionKey
+        let generation: Int
+        let sessionID: String
+        let form: ACPElicitation
+        let request: PermissionRequest
+    }
+
     struct Catalog: Sendable {
         var date: Date
         var models: [ACPConfigChoice]
@@ -96,6 +107,11 @@ actor ACPEngineCore {
     private var agentSessions: [String: String] = [:]
     private var probeSessions: Set<String> = []
     private var pending: [String: PendingPermission] = [:]
+    private var pendingQuestions: [String: PendingQuestion] = [:]
+    /// The open plan of each session (made when a plan-mode turn ends).
+    private var pendingPlans: [String: PermissionRequest] = [:]
+    /// The plan artifact written during each session's current turn.
+    private var planDrafts: [String: PlanProposal] = [:]
     private var rules: [String: Set<String>] = [:]
     private var waitingForSlot: [String] = []
     private var generation = 0
@@ -205,7 +221,9 @@ actor ACPEngineCore {
         }
         let params: JSONValue = [
             "protocolVersion": .number(Double(acpProtocolVersion)),
-            "clientCapabilities": ["fs": ["readTextFile": false, "writeTextFile": false], "terminal": false],
+            // Form elicitation lets agents ask multiple-choice questions (`ACPElicitation`).
+            "clientCapabilities": ["fs": ["readTextFile": false, "writeTextFile": false], "terminal": false,
+                                   "elicitation": ["form": .object([:])]],
             "clientInfo": ["name": "ensemble", "title": "Ensemble", "version": .string(configuration.clientVersion)],
         ]
         let result: JSONValue
@@ -292,6 +310,10 @@ actor ACPEngineCore {
             pending[requestID] = nil
             emit(.permissionReplied(sessionID: prompt.sessionID, requestID: requestID))
         }
+        for (requestID, question) in pendingQuestions where question.connection == key && question.generation == gen {
+            pendingQuestions[requestID] = nil
+            emit(.permissionReplied(sessionID: question.sessionID, requestID: requestID))
+        }
     }
 
     func shutdown() {
@@ -317,8 +339,10 @@ actor ACPEngineCore {
         case .request(let id, let method, let params):
             if method == "session/request_permission" {
                 handlePermission(id: id, params: params, key: key, generation: gen)
+            } else if method == "elicitation/create" {
+                handleElicitation(id: id, params: params, key: key, generation: gen)
             } else {
-                // Ensemble offers no file system, terminal or elicitation methods (none are advertised).
+                // Ensemble offers no file system or terminal methods (none are advertised).
                 respondError(key, generation: gen, id: id, code: ACPRPCError.methodNotFound, message: "\(method) is not supported by Ensemble")
             }
         }
@@ -370,6 +394,14 @@ actor ACPEngineCore {
         case .other:
             break
         default:
+            if !live.replaying {
+                switch update {
+                case .toolCall(let call), .toolCallUpdate(let call):
+                    if let plan = ACPPlanArtifact.plan(in: call.rawInput) { planDrafts[id] = plan }
+                default:
+                    break
+                }
+            }
             let events = live.transcript.apply(update)
             if !live.replaying { emit(events) }
         }
@@ -395,7 +427,14 @@ actor ACPEngineCore {
             return
         }
         let rule = tool.alwaysRule(directory: record.directory)
-        if record.permissionMode == .bypass || rule.map({ rules[sessionID]?.contains($0.key) == true }) == true {
+        if record.permissionMode == .plan, tool.kind == "edit" || tool.kind == "delete" || tool.kind == "move" {
+            // Plan mode is read-only: file changes are refused, not asked.
+            respond(key, generation: gen, id: rpcID, result: ACPPermissionAsk.outcome(optionID: ask.option(for: .reject)?.id))
+            return
+        }
+        // In plan mode remembered "always" rules approve nothing.
+        if record.permissionMode == .bypass
+            || (record.permissionMode != .plan && rule.map({ rules[sessionID]?.contains($0.key) == true }) == true) {
             respond(key, generation: gen, id: rpcID, result: ACPPermissionAsk.outcome(optionID: ask.option(for: .once)?.id))
             return
         }
@@ -403,6 +442,25 @@ actor ACPEngineCore {
         let request = ACPPermissionMapping.request(id: requestID, sessionID: sessionID, tool: tool, directory: record.directory)
         pending[requestID] = PendingPermission(requestID: requestID, rpcID: rpcID, connection: key, generation: gen, sessionID: sessionID,
                                                ask: ask, rule: rule, request: request)
+        emit(.permissionAsked(request))
+        emit(.activity(sessionID: sessionID, .waitingForPermission))
+    }
+
+    private func handleElicitation(id rpcID: ACPRequestID, params: JSONValue, key: ConnectionKey, generation gen: Int) {
+        guard let agentSessionID = params["sessionId"]?.acpText, let sessionID = agentSessions[agentSessionID],
+              let live = lives[sessionID], let form = ACPElicitation(params: params) else {
+            respond(key, generation: gen, id: rpcID, result: ACPElicitation.declined)
+            return
+        }
+        if live.running?.interrupting == true {
+            respond(key, generation: gen, id: rpcID, result: ACPElicitation.cancelled)
+            return
+        }
+        let requestID = "acp-question-" + UUID().uuidString.lowercased()
+        let request = PermissionRequest(id: requestID, sessionID: sessionID, kind: InteractionKind.question,
+                                        title: form.questions[0].text, questions: form.questions)
+        pendingQuestions[requestID] = PendingQuestion(requestID: requestID, rpcID: rpcID, connection: key, generation: gen,
+                                                      sessionID: sessionID, form: form, request: request)
         emit(.permissionAsked(request))
         emit(.activity(sessionID: sessionID, .waitingForPermission))
     }
@@ -849,6 +907,8 @@ actor ACPEngineCore {
             return
         }
         let prompt = live.queue.removeFirst()
+        planDrafts[id] = nil
+        if let plan = pendingPlans.removeValue(forKey: id) { emit(.permissionReplied(sessionID: id, requestID: plan.id)) }
         var addEvents: [EngineEvent] = []
         for notice in prompt.queuedSynthetic { addEvents += live.transcript.addUser(notice, synthetic: true) }
         if !prompt.text.isEmpty { addEvents += live.transcript.addUser(prompt.text, synthetic: prompt.synthetic) }
@@ -904,8 +964,14 @@ actor ACPEngineCore {
             emit(.usageUpdated(sessionID: id, record.usage))
         }
         clearPending(sessionID: id, answer: true)
+        let plan = outcome == "succeeded" ? planAfterTurn(id) : nil
+        planDrafts[id] = nil
         emit(.executionEnded(sessionID: id, outcome: outcome, error: message))
         emit(.activity(sessionID: id, outcome == "failed" ? .failed : .idle))
+        if let plan {
+            pendingPlans[id] = plan
+            emit(.permissionAsked(plan))
+        }
         // A session marked `reopenWhenIdle` moves to its new process when its next turn opens it (`ensureOpen`).
         pump(id)
         pumpWaiting()
@@ -939,16 +1005,92 @@ actor ACPEngineCore {
         }
     }
 
-    /// Withdraws a session's open permission prompts; `answer` also tells the agent "cancelled".
+    /// Withdraws a session's open permission prompts and questions; `answer` also tells the agent "cancelled".
     private func clearPending(sessionID: String, answer: Bool) {
         for (requestID, prompt) in pending where prompt.sessionID == sessionID {
             pending[requestID] = nil
             if answer { respond(prompt.connection, generation: prompt.generation, id: prompt.rpcID, result: ACPPermissionAsk.outcome(optionID: nil)) }
             emit(.permissionReplied(sessionID: sessionID, requestID: requestID))
         }
+        for (requestID, question) in pendingQuestions where question.sessionID == sessionID {
+            pendingQuestions[requestID] = nil
+            if answer { respond(question.connection, generation: question.generation, id: question.rpcID, result: ACPElicitation.cancelled) }
+            emit(.permissionReplied(sessionID: sessionID, requestID: requestID))
+        }
+    }
+
+    /// The plan of a plan-mode turn that just ended: the plan artifact it wrote, else its last reply.
+    private func planAfterTurn(_ id: String) -> PermissionRequest? {
+        guard store[id]?.permissionMode == .plan else { return nil }
+        var plan = planDrafts[id]
+        if plan == nil, let reply = lives[id].flatMap({ ACPPlanArtifact.lastReply(in: $0.transcript.items) }) {
+            plan = PlanProposal(markdown: reply)
+        }
+        guard let plan else { return nil }
+        return PermissionRequest(id: "acp-plan-" + UUID().uuidString.lowercased(), sessionID: id, kind: InteractionKind.plan,
+                                 title: plan.title, plan: plan)
+    }
+
+    // MARK: Plans and questions
+
+    func answerQuestion(sessionID: String, requestID: String, answers: [AgentQuestionAnswer]) throws {
+        guard let question = pendingQuestions[requestID], question.sessionID == sessionID else {
+            throw ACPEngineError.invalidArgument("This question is no longer open in this session.")
+        }
+        pendingQuestions[requestID] = nil
+        guard connections[question.connection]?.process.generation == question.generation else {
+            emit(.permissionReplied(sessionID: sessionID, requestID: requestID))
+            throw ACPEngineError.processFailed("the agent stopped before the answer arrived")
+        }
+        respond(question.connection, generation: question.generation, id: question.rpcID, result: question.form.result(for: answers))
+        emit(.permissionReplied(sessionID: sessionID, requestID: requestID))
+        if !pending.values.contains(where: { $0.sessionID == sessionID }), !pendingQuestions.values.contains(where: { $0.sessionID == sessionID }),
+           lives[sessionID]?.running != nil {
+            emit(.activity(sessionID: sessionID, .working))
+        }
+    }
+
+    /// The plan-mode turn has ended, so both answers go on with a message: Proceed first switches the session's mode
+    /// (the agent must report the new mode back, as for any mode change), Keep planning sends the comments.
+    func respondToPlan(sessionID: String, requestID: String, decision: PlanDecision) async throws -> String? {
+        guard pendingPlans[sessionID]?.id == requestID else {
+            throw ACPEngineError.invalidArgument("This plan is no longer open in this session.")
+        }
+        let message: String
+        switch decision {
+        case .proceed(let mode):
+            guard mode != .plan else { throw ACPEngineError.invalidArgument("Proceed needs a mode other than Plan.") }
+            try await setPermissionMode(sessionID, mode: mode)
+            message = PlanLines.proceedMessage
+        case .keepPlanning(let comments):
+            message = PlanLines.feedback(comments)
+        }
+        if pendingPlans[sessionID]?.id == requestID {
+            pendingPlans[sessionID] = nil
+            emit(.permissionReplied(sessionID: sessionID, requestID: requestID))
+        }
+        return message
+    }
+
+    /// Supported when the agent offers a plan mode: from the modes it reported for this session, else from its entry
+    /// in the registry.
+    func planModeSupport(sessionID: String) -> PlanModeSupport {
+        let live = lives[sessionID]
+        let available = live?.configOptions.first { $0.category == "mode" }.map { $0.choices.map(\.value) } ?? (live?.modes.map(\.id) ?? [])
+        let known = available.isEmpty ? definition.modeIDs[.plan] != nil : ACPModes.modeID(for: .plan, definition: definition, available: available) != nil
+        return known ? .supported : .unsupported(reason: "\(definition.displayName) has no plan mode.")
     }
 
     func replyPermission(requestID: String, decision: PermissionDecision) throws {
+        if let question = pendingQuestions[requestID] {
+            // Questions are answered with their own card; Reject declines.
+            guard decision == .reject else { throw ACPEngineError.invalidArgument("Answer the question in its card.") }
+            try answerQuestion(sessionID: question.sessionID, requestID: requestID, answers: [])
+            return
+        }
+        if pendingPlans.values.contains(where: { $0.id == requestID }) {
+            throw ACPEngineError.invalidArgument("Choose Proceed or Keep planning on the plan card.")
+        }
         guard let prompt = pending.removeValue(forKey: requestID) else {
             throw ACPEngineError.invalidArgument("This permission prompt is no longer open.")
         }
@@ -977,7 +1119,8 @@ actor ACPEngineCore {
     }
 
     func pendingRequests() -> [PermissionRequest] {
-        pending.values.map(\.request).sorted { $0.created < $1.created }
+        (pending.values.map(\.request) + pendingQuestions.values.map(\.request) + Array(pendingPlans.values))
+            .sorted { $0.created < $1.created }
     }
 
     // MARK: Sign-in, models, commands

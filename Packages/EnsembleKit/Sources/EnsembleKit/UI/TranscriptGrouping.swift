@@ -45,7 +45,8 @@ public enum TranscriptGrouping {
     static func isStep(_ item: TranscriptItem, resolutions: [String: PermissionResolution]) -> Bool {
         switch item {
         case .tool, .reasoning: true
-        case .permission(let request): resolutions[request.id] != nil
+        // Answered plans and questions stay on their own rows, so the plan and the answer remain readable.
+        case .permission(let request): resolutions[request.id] != nil && !request.isInteraction
         default: false
         }
     }

@@ -3,6 +3,8 @@ import SwiftUI
 /// An agent asking to run a command, edit a file or reach outside the project.
 /// Pending: title, the exact command or path, detail, and Allow once / Always allow / Reject.
 /// Answered: a single line saying how it was resolved.
+/// Plans and questions travel as permission requests too; they get their own cards (`PlanCardView`,
+/// `QuestionRecordView`) and are never answered with Allow or Reject.
 public struct PermissionCardView: View {
     let request: PermissionRequest
     let resolution: PermissionResolution?
@@ -15,7 +17,11 @@ public struct PermissionCardView: View {
     }
 
     public var body: some View {
-        if let resolution {
+        if request.isPlan {
+            PlanCardView(request: request, resolution: resolution)
+        } else if request.isQuestion {
+            QuestionRecordView(request: request, resolution: resolution)
+        } else if let resolution {
             resolvedRow(resolution)
         } else {
             pendingCard

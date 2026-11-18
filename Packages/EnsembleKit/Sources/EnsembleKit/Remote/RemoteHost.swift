@@ -21,6 +21,21 @@ public protocol RemoteHost: AnyObject, Sendable {
     func setPermissionMode(_ mode: PermissionMode, for target: RemoteTarget) async throws
     func interrupt(_ target: RemoteTarget) async throws
     func controlRoom(_ roomID: UUID, action: RemoteRoomAction) async throws
+    /// Answers a question asked in `sessionID`; empty `answers` declines. Must refuse a request of another session.
+    func answerQuestion(sessionID: String, requestID: String, answers: [AgentQuestionAnswer]) async throws
+    /// Proceed or Keep planning on a plan of `sessionID`. Must refuse a request of another session, and a mode the plan
+    /// does not offer.
+    func respondToPlan(sessionID: String, requestID: String, decision: PlanDecision) async throws
+}
+
+public extension RemoteHost {
+    func answerQuestion(sessionID: String, requestID: String, answers: [AgentQuestionAnswer]) async throws {
+        throw RemoteError(.unknownMessage, "This Mac cannot answer questions from the iPhone.")
+    }
+
+    func respondToPlan(sessionID: String, requestID: String, decision: PlanDecision) async throws {
+        throw RemoteError(.unknownMessage, "This Mac cannot review plans from the iPhone.")
+    }
 }
 
 /// An action the phone asked for, as `DemoRemoteHost` records it.
@@ -30,6 +45,8 @@ public enum RemoteHostAction: Hashable, Sendable {
     case setPermissionMode(mode: PermissionMode, target: RemoteTarget)
     case interrupt(target: RemoteTarget)
     case controlRoom(roomID: UUID, action: RemoteRoomAction)
+    case answerQuestion(sessionID: String, requestID: String, answers: [AgentQuestionAnswer])
+    case respondToPlan(sessionID: String, requestID: String, decision: PlanDecision)
 }
 
 /// In-memory `RemoteHost` with sample data. Records every action and applies it to its own state the way
@@ -108,6 +125,42 @@ public actor DemoRemoteHost: RemoteHost {
             if sessions[i].pendingPermissions == 0 {
                 sessions[i].pendingAsk = nil
                 sessions[i].activity = decision == .reject ? .idle : .working
+            }
+            sessions[i].lastActivity = Date()
+            emit(.sessionUpserted(session: sessions[i]))
+        }
+    }
+
+    public func answerQuestion(sessionID: String, requestID: String, answers: [AgentQuestionAnswer]) async throws {
+        recordedActions.append(.answerQuestion(sessionID: sessionID, requestID: requestID, answers: answers))
+        guard let request = permissions.first(where: { $0.id == requestID && $0.sessionID == sessionID }), request.isQuestion else {
+            throw RemoteError(.notFound, "That question was already answered")
+        }
+        settle(request, decision: answers.isEmpty ? .reject : .once, working: !answers.isEmpty)
+    }
+
+    public func respondToPlan(sessionID: String, requestID: String, decision: PlanDecision) async throws {
+        recordedActions.append(.respondToPlan(sessionID: sessionID, requestID: requestID, decision: decision))
+        guard let request = permissions.first(where: { $0.id == requestID && $0.sessionID == sessionID }), let plan = request.plan else {
+            throw RemoteError(.notFound, "That plan was already answered")
+        }
+        if case .proceed(let mode) = decision {
+            guard plan.allowedProceedModes.contains(mode) else { throw RemoteError(.badRequest, "That plan cannot proceed in \(mode.label)") }
+            transcripts[sessionID]?.permissionMode = mode
+            emit(.permissionModeChanged(target: .session(sessionID), mode: mode))
+        }
+        settle(request, decision: nil, working: true)
+    }
+
+    /// Removes an answered plan or question and updates its Hub row, as the Mac would.
+    private func settle(_ request: PermissionRequest, decision: PermissionDecision?, working: Bool) {
+        permissions.removeAll { $0.id == request.id }
+        emit(.permissionReplied(sessionID: request.sessionID, requestID: request.id, decision: decision))
+        if let i = sessions.firstIndex(where: { $0.id == request.sessionID }) {
+            sessions[i].pendingPermissions = max(0, sessions[i].pendingPermissions - 1)
+            if sessions[i].pendingPermissions == 0 {
+                sessions[i].pendingAsk = nil
+                sessions[i].activity = working ? .working : .idle
             }
             sessions[i].lastActivity = Date()
             emit(.sessionUpserted(session: sessions[i]))

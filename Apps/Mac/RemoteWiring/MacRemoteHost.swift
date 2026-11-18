@@ -4,11 +4,20 @@ import EnsembleKit
 enum MacRemoteHostError: LocalizedError {
     case sessionNotFound
     case roomsNotAvailable
+    case requestNotOpen
+    /// An Allow from an iPhone app that predates plans and questions.
+    case needsOwnAnswer(plan: Bool)
+    case notAnswered(String?)
 
     var errorDescription: String? {
         switch self {
         case .sessionNotFound: "That session is not on this Mac anymore."
         case .roomsNotAvailable: "Rooms are not available from the iPhone yet."
+        case .requestNotOpen: "That question or plan is no longer open in this session."
+        case .needsOwnAnswer(let plan):
+            plan ? "Choose Proceed or Keep planning on the plan. Update Ensemble on the iPhone to do that here."
+                : "Choose an answer to the question. Update Ensemble on the iPhone to do that here."
+        case .notAnswered(let reason): reason ?? "The Mac could not pass the answer on."
         }
     }
 }
@@ -37,7 +46,7 @@ final class MacRemoteHost: RemoteHost {
             directory: s.directory,
             activity: s.activity,
             lastActivity: s.info.updated,
-            pendingAsk: s.pendingPermissions.first.map { "Approve: \($0.title)" },
+            pendingAsk: s.pendingPermissions.first.map(Self.askText),
             pendingPermissions: s.pendingPermissions.count,
             endedWithQuestion: s.activity != .working && asked,
             archived: s.info.archived,
@@ -47,6 +56,23 @@ final class MacRemoteHost: RemoteHost {
 
     private func session(_ id: String) -> SessionModel? {
         store.sessions.first { $0.id == id }
+    }
+
+    /// The Hub row's line for what the session waits on.
+    static func askText(_ request: PermissionRequest) -> String {
+        if request.isPlan { return "Plan ready: \(request.plan?.title ?? request.title)" }
+        if request.isQuestion { return "Question: \(request.questions?.first?.text ?? request.title)" }
+        return "Approve: \(request.title)"
+    }
+
+    /// The open request `requestID` of `sessionID` as the store holds it. A request id from another session is never
+    /// found, so an answer only ever reaches the session that asked.
+    private func openRequest(_ requestID: String, in sessionID: String) throws -> PermissionRequest {
+        guard let session = session(sessionID) else { throw MacRemoteHostError.sessionNotFound }
+        guard let request = session.pendingPermissions.first(where: { $0.id == requestID }), request.sessionID == sessionID else {
+            throw MacRemoteHostError.requestNotOpen
+        }
+        return request
     }
 
     func hubSnapshot() async -> RemoteHubSnapshot {
@@ -109,8 +135,11 @@ final class MacRemoteHost: RemoteHost {
         case .toolUpdated(let sid, let tool):
             return [.transcriptUpsert(sessionID: sid, item: .tool(tool))]
         case .permissionAsked(let request):
-            var out: [RemoteUpdate] = [.permissionAsked(request: request)]
-            if let s = await refreshedSummary(request.sessionID) { out.append(.sessionUpserted(session: s)) }
+            let summary = await refreshedSummary(request.sessionID)
+            // The store's copy, with what it adds (the mode a plan's Proceed switches to).
+            let shown = session(request.sessionID)?.pendingPermissions.first { $0.id == request.id } ?? request
+            var out: [RemoteUpdate] = [.permissionAsked(request: shown)]
+            if let summary { out.append(.sessionUpserted(session: summary)) }
             return out
         case .permissionReplied(let sid, let rid):
             var out: [RemoteUpdate] = [.permissionReplied(sessionID: sid, requestID: rid, decision: nil)]
@@ -146,6 +175,7 @@ final class MacRemoteHost: RemoteHost {
 
     func replyPermission(sessionID: String, requestID: String, decision: PermissionDecision) async throws {
         if let request = session(sessionID)?.pendingPermissions.first(where: { $0.id == requestID }) {
+            if request.isInteraction, decision != .reject { throw MacRemoteHostError.needsOwnAnswer(plan: request.isPlan) }
             await store.reply(to: request, decision: decision)
         } else {
             try await store.engine.replyPermission(sessionID: sessionID, requestID: requestID, decision: decision, message: nil)
@@ -164,5 +194,19 @@ final class MacRemoteHost: RemoteHost {
 
     func controlRoom(_ roomID: UUID, action: RemoteRoomAction) async throws {
         throw MacRemoteHostError.roomsNotAvailable
+    }
+
+    func answerQuestion(sessionID: String, requestID: String, answers: [AgentQuestionAnswer]) async throws {
+        let request = try openRequest(requestID, in: sessionID)
+        guard request.isQuestion else { throw MacRemoteHostError.requestNotOpen }
+        let done = answers.isEmpty ? await store.declineQuestion(request) : await store.answerQuestion(request, answers: answers)
+        guard done else { throw MacRemoteHostError.notAnswered(store.lastError) }
+    }
+
+    func respondToPlan(sessionID: String, requestID: String, decision: PlanDecision) async throws {
+        let request = try openRequest(requestID, in: sessionID)
+        guard request.isPlan else { throw MacRemoteHostError.requestNotOpen }
+        // The store also refuses a mode the plan card does not offer.
+        guard await store.respondToPlan(request, decision: decision) else { throw MacRemoteHostError.notAnswered(store.lastError) }
     }
 }

@@ -216,6 +216,7 @@ public enum SessionAttentionText {
         case "external_directory": "Allow access outside the project?"
         case "read": "Allow reading this file?"
         case "question": "Asked a question:"
+        case "plan": "Plan ready for review:"
         default: "Allow \(request.kind)?"
         }
         let title = request.title.trimmingCharacters(in: .whitespacesAndNewlines)

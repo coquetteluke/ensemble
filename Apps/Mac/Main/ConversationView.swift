@@ -24,6 +24,8 @@ struct ConversationView: View {
             .padding(.horizontal, theme.z(20))
         }
         .environment(\.sessionDirectory, session.directory)
+        // Plan cards in the transcript answer through the store (`PlanCardView`).
+        .environment(\.interactionStore, store)
     }
 
     private var content: some View {

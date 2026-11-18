@@ -122,6 +122,10 @@ public enum RemoteClientMessage: Hashable, Sendable {
     case roomsRequest
     /// Reply: `.usage`.
     case usageRequest
+    /// Reply: `.ack`. Answers (or, with no answers, declines) an agent's questions.
+    case answerQuestion(RemoteQuestionAnswer)
+    /// Reply: `.ack`. Proceed or Keep planning on a plan.
+    case respondToPlan(RemotePlanResponse)
 
     public var typeName: String {
         switch self {
@@ -136,6 +140,8 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .roomControl: "roomControl"
         case .roomsRequest: "roomsRequest"
         case .usageRequest: "usageRequest"
+        case .answerQuestion: "answerQuestion"
+        case .respondToPlan: "respondToPlan"
         }
     }
 
@@ -150,6 +156,8 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .setPermissionMode(let p): try c.encode(p, forKey: .data)
         case .interrupt(let t): try c.encode(RemoteTargetRef(target: t), forKey: .data)
         case .roomControl(let p): try c.encode(p, forKey: .data)
+        case .answerQuestion(let p): try c.encode(p, forKey: .data)
+        case .respondToPlan(let p): try c.encode(p, forKey: .data)
         }
     }
 
@@ -167,6 +175,8 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case "roomControl": return .roomControl(try c.decode(RemoteRoomControl.self, forKey: .data))
         case "roomsRequest": return .roomsRequest
         case "usageRequest": return .usageRequest
+        case "answerQuestion": return .answerQuestion(try c.decode(RemoteQuestionAnswer.self, forKey: .data))
+        case "respondToPlan": return .respondToPlan(try c.decode(RemotePlanResponse.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)
         }
     }

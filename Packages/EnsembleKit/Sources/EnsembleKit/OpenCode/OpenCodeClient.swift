@@ -15,6 +15,8 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
     private let session: URLSession
     private let streamSession: URLSession
     private let state = Mutex(State())
+    /// Plans waiting for an answer and the live event streams that hear about them (`OpenCodeClient+Interactions`).
+    let interactions = Mutex(OpenCodeInteractionState())
 
     private struct State {
         var modelCache: [String: (date: Date, models: [Wire.Model])] = [:]
@@ -111,7 +113,11 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
             "permissions": try JSONValue(encoding: PermissionRules.ruleset(for: permissionMode)),
         ]
         if let model { body["model"] = try JSONValue(encoding: model.wire) }
-        if let agent { body["agent"] = .string(agent) }
+        if let agent {
+            body["agent"] = .string(agent)
+        } else if permissionMode == .plan {
+            body["agent"] = .string(PermissionRules.agent(for: .plan))
+        }
         if let parentID { body["parentID"] = .string(parentID) }
         if let title { body["title"] = .string(title) }
         if let metadata { body["metadata"] = metadata }
@@ -137,6 +143,7 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
     public func setPermissionMode(_ sessionID: String, mode: PermissionMode) async throws {
         let rules = try JSONValue(encoding: PermissionRules.ruleset(for: mode))
         try await sendIgnoringBody("PATCH", "/api/session/\(sessionID)", body: ["permissions": rules])
+        try await switchAgentForMode(sessionID, mode: mode)
         var pending = [sessionID]
         var seen: Set<String> = [sessionID]
         while let parent = pending.popLast() {
@@ -242,6 +249,8 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
         }
         var seen = Set<String>()
         let unique = wire.filter { seen.insert($0.id).inserted }
+        let questions = await pendingForms(directories: directories)
+        let plans = interactions.withLock { Array($0.pendingPlans.values) }
         let now = Date()
         let firstSeen = state.withLock { state -> [String: Date] in
             for request in unique where state.permissionFirstSeen[request.id] == nil {
@@ -251,7 +260,7 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
             state.permissionFirstSeen = state.permissionFirstSeen.filter { open.contains($0.key) }
             return state.permissionFirstSeen
         }
-        return unique.map { PermissionRequest(wire: $0, created: firstSeen[$0.id] ?? now) }
+        return (unique.map { PermissionRequest(wire: $0, created: firstSeen[$0.id] ?? now) } + questions + plans)
             .sorted { $0.created < $1.created }
     }
 
@@ -459,7 +468,12 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
         let task = Task { [self] in
             await self.runEventLoop(types: types, continuation: continuation)
         }
-        continuation.onTermination = { _ in task.cancel() }
+        // Full streams also hear the plans this client makes itself (`OpenCodeClient+Interactions`).
+        let subscriber = types.isEmpty ? addInteractionSubscriber(continuation) : nil
+        continuation.onTermination = { [weak self] _ in
+            task.cancel()
+            if let subscriber { self?.removeInteractionSubscriber(subscriber) }
+        }
         return stream
     }
 
@@ -484,6 +498,7 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
                         switch output {
                         case .event(let event):
                             continuation.yield(event)
+                            if types.isEmpty { await afterEvent(event) }
                         case .refreshSession(let id, let type):
                             if let updated = try? await session(id) {
                                 continuation.yield(.sessionUpdated(updated))

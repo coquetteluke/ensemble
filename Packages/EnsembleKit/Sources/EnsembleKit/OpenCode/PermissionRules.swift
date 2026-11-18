@@ -176,6 +176,7 @@ public enum PermissionRules {
     ///   with a segment that starts with a dot, and the protected build files.
     /// - Auto: safe commands run, everything else asks. As Accept edits, plus the read-only commands in
     ///   `autoAllowedShell` run (minus the forms in `autoAskAgainShell`).
+    /// - Plan: read-only (`planRuleset`).
     /// - Bypass: everything runs.
     ///
     /// All modes except Bypass allow `subagent`; the child session copies the ruleset, so children follow the same mode.
@@ -185,6 +186,8 @@ public enum PermissionRules {
             return base(editsAllowed: false)
         case .acceptEdits:
             return base(editsAllowed: true)
+        case .plan:
+            return planRuleset
         case .auto:
             var rules = base(editsAllowed: true)
             rules += autoAllowedShell.map { PermissionRule("shell", $0, "allow") }
@@ -194,6 +197,42 @@ public enum PermissionRules {
             return [PermissionRule("*", "*", "allow")]
         }
     }
+
+    /// Plan mode: the session also runs OpenCode's `plan` agent (which adds a "you are in Plan mode" reminder), but
+    /// that agent alone still allows every shell command and writes under `~/.opencode/plan`, so the session rules make
+    /// it read-only. Anything not named is denied, MCP tools included; reads and searches run (`.env` files ask);
+    /// the read-only commands Auto allows run, and every other command, every edit, Code Mode, image generation and
+    /// work outside the project are denied. Questions and skills are allowed, and so are subagents, whose sessions copy
+    /// these rules. Web fetches and searches ask: they change nothing on this Mac and are often what a plan needs.
+    public static let planRuleset: [PermissionRule] = {
+        var rules = [
+            PermissionRule("*", "*", "deny"),
+            PermissionRule("read", "*", "allow"),
+            PermissionRule("read", "*.env", "ask"),
+            PermissionRule("read", "*.env.*", "ask"),
+            PermissionRule("read", "*.env.example", "allow"),
+            PermissionRule("glob", "*", "allow"),
+            PermissionRule("grep", "*", "allow"),
+            PermissionRule("question", "*", "allow"),
+            PermissionRule("skill", "*", "allow"),
+            PermissionRule("subagent", "*", "allow"),
+            PermissionRule("browser", "*", "deny"),
+            PermissionRule("skill", "browser", "deny"),
+            PermissionRule("edit", "*", "deny"),
+            PermissionRule("shell", "*", "deny"),
+            PermissionRule("webfetch", "*", "ask"),
+            PermissionRule("websearch", "*", "ask"),
+            PermissionRule("execute", "*", "deny"),
+            PermissionRule("experimental_image_generate", "*", "deny"),
+            PermissionRule("external_directory", "*", "deny"),
+        ]
+        rules += autoAllowedShell.map { PermissionRule("shell", $0, "allow") }
+        rules += autoAskAgainShell.map { PermissionRule("shell", $0, "deny") }
+        return rules
+    }()
+
+    /// The engine agent that goes with a mode: OpenCode's `plan` agent for Plan, its default `build` agent otherwise.
+    public static func agent(for mode: PermissionMode) -> String { mode == .plan ? "plan" : "build" }
 
     private static func base(editsAllowed: Bool) -> [PermissionRule] {
         var rules = [
@@ -240,8 +279,8 @@ public enum PermissionRules {
     public static let worktreeFolder = ".ensemble/worktrees"
 
     /// The ruleset for a permission mode, for a Team agent that works in its own git worktree: in Accept edits and
-    /// Auto, `ruleset(for:)` plus `worktreeEditRules(worktree)`. Ask and Bypass, and a path that is not a worktree
-    /// folder, get `ruleset(for:)` unchanged.
+    /// Auto, `ruleset(for:)` plus `worktreeEditRules(worktree)`. Ask, Plan and Bypass, and a path that is not a
+    /// worktree folder, get `ruleset(for:)` unchanged (Plan stays read-only: no worktree allow).
     /// `repoPrefix` is the room folder's place inside its repository (`git rev-parse --show-prefix`, without the
     /// trailing slash; empty at the top), so config files are protected at every folder the merged branch can reach.
     public static func ruleset(for mode: PermissionMode, worktree: String?, repoPrefix: String = "") -> [PermissionRule] {

@@ -227,7 +227,7 @@ public struct TranscriptList: View {
         switch block {
         case .activity: return .tool
         case .single(let item):
-            if case .permission = item, resolutions[item.id] != nil { return .resolvedPermission }
+            if case .permission(let request) = item, resolutions[item.id] != nil, !request.isInteraction { return .resolvedPermission }
             return item.kind
         }
     }

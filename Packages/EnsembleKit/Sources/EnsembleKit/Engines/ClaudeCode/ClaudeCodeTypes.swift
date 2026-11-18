@@ -224,10 +224,15 @@ public enum ClaudePermissionModes {
     ///   prompt, the second approved by the classifier). This is looser than Ensemble's allowlist-based Auto for
     ///   OpenCode agents.
     /// - bypass: `bypassPermissions`; the process must be launched with `--allow-dangerously-skip-permissions`.
+    /// - plan: Claude Code's `plan` mode. The agent ends with an `ExitPlanMode` call, which arrives as a permission
+    ///   request. The CLI's plan mode alone is not read-only (tested 2026-11-18: `echo hi > shell.txt` ran without a
+    ///   prompt, approved by the classifier), so the engine adds an ask rule for Bash while in plan and refuses file
+    ///   edits itself (`ClaudePlanGuard`).
     public static func cliMode(_ mode: PermissionMode) -> String {
         switch mode {
         case .ask: "default"
         case .acceptEdits: "acceptEdits"
+        case .plan: "plan"
         case .auto: "auto"
         case .bypass: "bypassPermissions"
         }
@@ -237,6 +242,7 @@ public enum ClaudePermissionModes {
         switch cliMode {
         case "default", "manual": .ask
         case "acceptEdits": .acceptEdits
+        case "plan": .plan
         case "auto": .auto
         case "bypassPermissions": .bypass
         default: nil

@@ -40,3 +40,9 @@ What this means for Ensemble:
 - Ensemble's Auto maps to Claude Code's own auto mode, where Anthropic's classifier approves most actions. Kept on purpose: it is the behaviour Luke uses daily in Claude Code. OpenCode agents use Ensemble's stricter allowlist until Ensemble has its own AI safety check.
 - Subscription agents report costUSD 0 and show plan limits (`planLimits()`: five-hour and weekly use, reset time); spending caps do not apply to them.
 - Rewind restores only files changed by Claude's edit tools.
+
+## Plan mode and questions (checked 2026-11-18, claude 2.1.319)
+- Ensemble's Plan is `--permission-mode plan` (or `set_permission_mode` `plan` live). The agent ends with `ExitPlanMode`, which arrives as a `can_use_tool` request with `input.plan` (Markdown) and `input.planFilePath` (the CLI's own file under `~/.claude/plans`, which plan mode writes without asking). Allow means Proceed; a deny with a message means Keep planning: the agent reads the message, revises and calls `ExitPlanMode` again in the same turn.
+- Proceed first sends `set_permission_mode` with the chosen mode, then the allow, so the rest of the turn runs in that mode.
+- The CLI's plan mode alone is not read-only: `echo hi > shell.txt` ran without a prompt, approved by the auto-mode classifier. While a session is in Plan, Ensemble adds `Bash` to `permissions.ask` with `apply_flag_settings` (then the command comes as a prompt; setting the list back lifts it) and refuses file edits itself. Remembered "Always" rules approve nothing in Plan.
+- `AskUserQuestion` arrives as `can_use_tool` with `input.questions` (`question`, `header`, `options` with `label` and `description`, `multiSelect`) and `requires_user_interaction`. The answer is an allow whose `updatedInput` is the input plus `answers`, a map from question text to the chosen label (several joined with ", ", or the typed text); the agent then reads `"<question>"="<answer>"`. A deny declines.

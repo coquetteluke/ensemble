@@ -479,6 +479,18 @@ public final class RemoteClient {
         markAnswered(permission.id, decision: decision)
     }
 
+    /// Answers an agent's questions; empty `answers` declines them.
+    public func answer(_ question: PermissionRequest, answers: [AgentQuestionAnswer]) async throws {
+        try await request(.answerQuestion(RemoteQuestionAnswer(sessionID: question.sessionID, requestID: question.id, answers: answers)))
+        markAnswered(question.id, decision: answers.isEmpty ? .reject : .once)
+    }
+
+    /// Proceed in one of the plan's modes, or Keep planning (without line comments from the phone).
+    public func respond(to plan: PermissionRequest, decision: PlanDecision) async throws {
+        try await request(.respondToPlan(RemotePlanResponse(sessionID: plan.sessionID, requestID: plan.id, decision: decision)))
+        if case .proceed = decision { markAnswered(plan.id, decision: .once) } else { markAnswered(plan.id, decision: .reject) }
+    }
+
     public func setPermissionMode(_ mode: PermissionMode, for target: RemoteTarget) async throws {
         try await request(.setPermissionMode(RemoteSetPermissionMode(target: target, mode: mode)))
     }

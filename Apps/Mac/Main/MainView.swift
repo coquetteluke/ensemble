@@ -239,6 +239,7 @@ struct CenterColumn: View {
                              trailingInset: window.showContextPanel ? 0 : MainView.toolbarButtonsWidth,
                              showsSidePanel: window.contextPanelVisible,
                              openSession: { id in window.open(id, store: store) })
+                        .environment(\.interactionStore, store)
                         .id(engine.state.id)
                 } else {
                     NoRoomView(rooms: rooms)

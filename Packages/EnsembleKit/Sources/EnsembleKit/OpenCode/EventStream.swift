@@ -149,6 +149,8 @@ struct EngineEventDecoder {
         let location: Wire.LocationRef?
     }
     private struct PermissionReplied: Decodable { let sessionID: String; let requestID: String; let reply: String? }
+    private struct FormCreated: Decodable { let form: OpenCodeForms.Form }
+    private struct FormSettled: Decodable { let id: String; let sessionID: String }
     private struct FileChanged: Decodable { let file: String; let event: String? }
 
     /// Event types that change a session's stored facts; the stream refetches the session for these.
@@ -264,6 +266,21 @@ struct EngineEventDecoder {
             guard let e = payload(PermissionReplied.self) else { break }
             return [.event(.permissionReplied(sessionID: e.sessionID, requestID: e.requestID)),
                     .event(.activity(sessionID: e.sessionID, .working))]
+
+        case "form.created":
+            // Questions (`OpenCodeForms`); a form with nothing Ensemble can answer stays an unknown event.
+            guard let e = payload(FormCreated.self), let request = OpenCodeForms.request(e.form, created: created) else { break }
+            return [.event(.permissionAsked(request)), .event(.activity(sessionID: request.sessionID, .waitingForPermission))]
+
+        case "form.replied":
+            guard let e = payload(FormSettled.self) else { break }
+            return [.event(.permissionReplied(sessionID: e.sessionID, requestID: e.id)),
+                    .event(.activity(sessionID: e.sessionID, .working))]
+
+        case "form.cancelled":
+            // Also sent when a turn is interrupted, so the activity is left to the execution events.
+            guard let e = payload(FormSettled.self) else { break }
+            return [.event(.permissionReplied(sessionID: e.sessionID, requestID: e.id))]
 
         case "session.usage.updated":
             guard let e = payload(UsageUpdated.self) else { break }

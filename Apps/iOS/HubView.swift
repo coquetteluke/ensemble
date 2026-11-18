@@ -97,7 +97,9 @@ struct HubView: View {
 
     @ViewBuilder
     private func quickActions(_ s: SessionSummary, bucket: HubBucket) -> some View {
-        if let ask = client.pendingPermissions(for: s.id).first, PermissionDisplay.fitsQuickApproval(ask) {
+        if let ask = client.pendingPermissions(for: s.id).first, ask.isInteraction {
+            interactionActions(ask, session: s)
+        } else if let ask = client.pendingPermissions(for: s.id).first, PermissionDisplay.fitsQuickApproval(ask) {
             VStack(alignment: .leading, spacing: 8) {
                 // Never truncated: everything a one-tap approval covers is on screen.
                 Text(ask.title)
@@ -123,6 +125,47 @@ struct HubView: View {
                 Label("Stop", systemImage: "stop.fill")
             }
             .buttonStyle(.bordered)
+            .controlSize(.small)
+        }
+    }
+
+    /// A plan: Proceed in its modes or Keep planning. A single question with choices: one tap per choice. Anything
+    /// else (several questions, checkboxes, typed answers) opens the chat, where the full card is.
+    @ViewBuilder
+    private func interactionActions(_ ask: PermissionRequest, session s: SessionSummary) -> some View {
+        if let plan = ask.plan {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(plan.title)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(RemoteTheme.primaryText)
+                    .lineLimit(3)
+                PlanButtons(plan: plan) { decision in
+                    act { try await client.respond(to: ask, decision: decision) }
+                }
+            }
+        } else if let questions = ask.questions, questions.count == 1, let question = questions.first,
+                  !question.multiSelect, !question.options.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(question.text)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(RemoteTheme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                FlowButtons(labels: question.options.map(\.label)) { label in
+                    act { try await client.answer(ask, answers: [AgentQuestionAnswer(questionID: question.id, selected: [label])]) }
+                }
+                if question.allowsOther {
+                    Button("Type an answer") { open(ChatRoute(sessionID: s.id, title: s.title)) }
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(RemoteTheme.secondaryText)
+                }
+            }
+        } else {
+            Button {
+                open(ChatRoute(sessionID: s.id, title: s.title))
+            } label: {
+                Label("Answer", systemImage: "questionmark.bubble")
+            }
+            .buttonStyle(.borderedProminent)
             .controlSize(.small)
         }
     }
@@ -201,6 +244,27 @@ struct HubRowHeader: View {
             Image(systemName: "checkmark.circle").foregroundStyle(RemoteTheme.success)
         case .old:
             Image(systemName: "clock").foregroundStyle(RemoteTheme.tertiaryText)
+        }
+    }
+}
+
+/// Small bordered buttons that wrap onto more lines when they do not fit.
+struct FlowButtons: View {
+    let labels: [String]
+    let onTap: (String) -> Void
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 8) { buttons }
+            VStack(alignment: .leading, spacing: 8) { buttons }
+        }
+        .controlSize(.small)
+    }
+
+    private var buttons: some View {
+        ForEach(labels, id: \.self) { label in
+            Button(label) { onTap(label) }
+                .buttonStyle(.bordered)
         }
     }
 }

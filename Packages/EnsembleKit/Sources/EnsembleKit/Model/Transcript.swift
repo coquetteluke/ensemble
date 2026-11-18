@@ -65,9 +65,14 @@ public struct PermissionRequest: Codable, Hashable, Sendable, Identifiable {
     /// `detail` so text the agent wrote can never pose as the saved rule.
     public var alwaysPatterns: [String]?
     public var created: Date
+    /// Set when the agent presents a plan for approval (`kind` is `plan`). Absent in data written before plans existed.
+    public var plan: PlanProposal?
+    /// Set when the agent asks multiple-choice questions (`kind` is `question`). Absent in older data.
+    public var questions: [AgentQuestion]?
 
     public init(id: String, sessionID: String, kind: String, title: String, detail: String? = nil,
-                alwaysPatterns: [String]? = nil, created: Date = Date()) {
+                alwaysPatterns: [String]? = nil, created: Date = Date(), plan: PlanProposal? = nil,
+                questions: [AgentQuestion]? = nil) {
         self.id = id
         self.sessionID = sessionID
         self.kind = kind
@@ -75,6 +80,8 @@ public struct PermissionRequest: Codable, Hashable, Sendable, Identifiable {
         self.detail = detail
         self.alwaysPatterns = alwaysPatterns
         self.created = created
+        self.plan = plan
+        self.questions = questions
     }
 }
 

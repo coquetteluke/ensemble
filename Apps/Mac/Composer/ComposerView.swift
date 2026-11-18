@@ -3,7 +3,8 @@ import AppKit
 import EnsembleKit
 
 /// Message box: text, attachments, attach button, permission-mode menu, model chip, dictation, send or stop.
-/// Above it: messages queued while the agent works, and the side question panel (`/btw`, Command-semicolon).
+/// Above it: the agent's open question (`QuestionCardView`), messages queued while the agent works, and the side
+/// question panel (`/btw`, Command-semicolon).
 struct ComposerView: View {
     let store: SessionStore
     let session: SessionModel
@@ -33,6 +34,14 @@ struct ComposerView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: theme.z(6)) {
+            if let question = store.openQuestion(in: session.id) {
+                QuestionCardView(
+                    request: question,
+                    onAnswer: { answers in Task { await store.answerQuestion(question, answers: answers) } },
+                    onDecline: { Task { await store.declineQuestion(question) } })
+                    .id(question.id)
+                    .padding(.bottom, theme.z(4))
+            }
             if !queue.isEmpty {
                 ComposerQueueStrip(
                     messages: queue, held: store.isQueueHeld(session.id), delivery: store.queuedDelivery(for: session.id),
@@ -59,6 +68,7 @@ struct ComposerView: View {
         .background { sideQuestionShortcut }
         .task(id: session.info.model?.description) { await store.loadModelOptions(for: session.info.model) }
         .task(id: session.directory) { await store.loadCommands(directory: session.directory) }
+        .task(id: session.id) { await store.loadPlanModeSupport(for: session.id) }
         .task(id: store.models.count) {
             guard !isSnapshot, let billing = store.engine as? any EngineModelBilling else { return }
             modelBilling = try? await billing.modelBilling()
@@ -283,7 +293,7 @@ struct ComposerView: View {
                     textColor: NSColor(theme.textPrimary),
                     accentColor: NSColor(theme.accent),
                     onSubmit: submit,
-                    onCycleMode: { Task { await store.setPermissionMode(session.permissionMode.next, for: session.id) } },
+                    onCycleMode: { Task { await store.setPermissionMode(store.nextPermissionMode(for: session.id), for: session.id) } },
                     onKey: handleKey,
                     dictation: liveDictation
                 )
@@ -347,7 +357,7 @@ struct ComposerView: View {
         .fixedSize()
         .help("Permission mode (Shift-Tab to switch)")
         .popover(isPresented: $showModeMenu, arrowEdge: .bottom) {
-            ModeMenuContent(current: mode) { newMode in
+            ModeMenuContent(current: mode, planSupport: store.planModeSupport(for: session.id)) { newMode in
                 showModeMenu = false
                 Task { await store.setPermissionMode(newMode, for: session.id) }
             }

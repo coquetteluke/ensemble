@@ -31,7 +31,7 @@ struct HubPlaceholderView: View {
                                 Text(session.title)
                                     .font(theme.font(size: 13, weight: .medium))
                                     .foregroundStyle(theme.textPrimary)
-                                Text(session.pendingPermissions.first.map { "Approve: \($0.title)" } ?? "")
+                                Text(session.pendingPermissions.first.map(MacRemoteHost.askText) ?? "")
                                     .font(theme.font(size: 12, design: .monospaced))
                                     .foregroundStyle(theme.textSecondary)
                                     .lineLimit(1)

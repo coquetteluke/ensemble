@@ -18,6 +18,8 @@ actor ClaudeEngineCore {
         var trusted = false
         /// The CLI reads the project's own settings files (`ClaudeSettingsPlan.project`), so they are watched.
         var readsProjectFiles = false
+        /// The `permissions` of the process's `--settings` file, sent back unchanged around the plan guard.
+        var basePermissions: JSONValue?
     }
 
     struct TranscriptSource: Sendable {
@@ -266,9 +268,17 @@ actor ClaudeEngineCore {
         }
         do {
             _ = try await control(id, ["subtype": "set_permission_mode", "mode": .string(ClaudePermissionModes.cliMode(mode))])
+            try await applyPlanGuard(id, planOn: mode == .plan)
         } catch {
             restartWhenIdle(id)
         }
+    }
+
+    /// Adds or removes the plan guard's ask rule on the running process (`ClaudePlanGuard`).
+    private func applyPlanGuard(_ root: String, planOn: Bool) async throws {
+        guard let session = live[root] else { return }
+        _ = try await control(root, ["subtype": "apply_flag_settings",
+                                     "settings": ClaudePlanGuard.settings(planOn: planOn, base: session.basePermissions)])
     }
 
     func switchModel(_ id: String, model: ModelRef) async throws {
@@ -413,8 +423,10 @@ actor ClaudeEngineCore {
         // A project plan pins the redirect-capable keys with a command-line settings file, which outranks the project's.
         var snapshotArguments: [String] = []
         var snapshotFolder: URL?
+        var basePermissions: JSONValue?
         switch plan {
         case .snapshot(let snapshot):
+            basePermissions = ClaudePlanGuard.basePermissions(snapshot.settings)
             let written = try Self.writeSnapshot(snapshot)
             snapshotFolder = written.folder
             snapshotArguments = written.arguments
@@ -446,7 +458,15 @@ actor ClaudeEngineCore {
         decoder.lastContextTokens = record.lastContextTokens
         decoder.reportsCost = record.billing == .apiKey
         live[id] = Live(process: process, decoder: decoder, bypassAllowed: record.permissionMode == .bypass,
-                        launchedWithResumeAt: options.resumeAt != nil, trusted: trusted, readsProjectFiles: plan == .project)
+                        launchedWithResumeAt: options.resumeAt != nil, trusted: trusted, readsProjectFiles: plan == .project,
+                        basePermissions: basePermissions)
+        if record.permissionMode == .plan {
+            // Written before any prompt, so the plan guard is in place for the first turn (the answer is not awaited:
+            // the CLI handles stdin in order).
+            try? write(id, ["type": "control_request", "request_id": .string("ensemble-plan-" + UUID().uuidString.lowercased()),
+                            "request": ["subtype": "apply_flag_settings",
+                                        "settings": ClaudePlanGuard.settings(planOn: true, base: basePermissions)]])
+        }
         let gen = generation
         let lines = process.lines
         Task {
@@ -613,7 +633,14 @@ actor ClaudeEngineCore {
             emit(event)
 
         case .permission(let prompt):
-            if rules[root]?.allows(prompt) == true {
+            let inPlan = store[root]?.permissionMode == .plan
+            if inPlan, !prompt.isInteraction, ClaudeFormatting.editToolNames.contains(prompt.toolName) {
+                // Plan mode is read-only: edits are refused, not asked (the CLI's own plan file never comes here).
+                try? write(root, prompt.planEditRefusal())
+                return
+            }
+            // Plans and questions always wait for the user; in plan mode remembered rules approve nothing.
+            if !prompt.isInteraction, !inPlan, rules[root]?.allows(prompt) == true {
                 try? write(root, prompt.response(decision: .once, message: nil))
                 return
             }
@@ -753,6 +780,17 @@ actor ClaudeEngineCore {
     }
 
     func replyPermission(requestID: String, decision: PermissionDecision, message: String?) throws {
+        if let prompt = pending[requestID], prompt.isInteraction {
+            // Plans and questions are answered with their own calls; Reject declines or keeps planning.
+            guard decision == .reject else {
+                throw ClaudeCodeError.invalidArgument(prompt.isPlan ? "Choose Proceed on the plan card." : "Answer the question in its card.")
+            }
+            pending[requestID] = nil
+            let root = prompt.sessionID
+            try write(root, prompt.isPlan ? prompt.planResponse(.keepPlanning(comments: [])) : prompt.questionResponse(answers: []))
+            emit(.permissionReplied(sessionID: root, requestID: requestID))
+            return
+        }
         guard let prompt = pending.removeValue(forKey: requestID) else {
             throw ClaudeCodeError.invalidArgument("This permission prompt is no longer open.")
         }
@@ -778,6 +816,81 @@ actor ClaudeEngineCore {
         if !pending.values.contains(where: { $0.sessionID == root }), (live[root]?.turnsInFlight ?? 0) > 0 {
             emit(.activity(sessionID: root, .working))
         }
+    }
+
+    // MARK: Plans and questions
+
+    /// The open plan or question `requestID`, only when it belongs to `sessionID` (the root session that asked).
+    private func interactionPrompt(_ requestID: String, sessionID: String) throws -> ClaudePermissionPrompt {
+        guard let prompt = pending[requestID], prompt.isInteraction,
+              prompt.sessionID == ClaudeSessionIDs.root(of: sessionID) else {
+            throw ClaudeCodeError.invalidArgument("This question or plan is no longer open in this session.")
+        }
+        return prompt
+    }
+
+    func answerQuestion(sessionID: String, requestID: String, answers: [AgentQuestionAnswer]) throws {
+        let prompt = try interactionPrompt(requestID, sessionID: sessionID)
+        guard prompt.isQuestion else { throw ClaudeCodeError.invalidArgument("This request is not a question.") }
+        let root = prompt.sessionID
+        guard live[root] != nil else {
+            pending[requestID] = nil
+            emit(.permissionReplied(sessionID: root, requestID: requestID))
+            throw ClaudeCodeError.processFailed("the agent stopped before the answer arrived")
+        }
+        pending[requestID] = nil
+        try write(root, prompt.questionResponse(answers: answers))
+        emit(.permissionReplied(sessionID: root, requestID: requestID))
+        if !pending.values.contains(where: { $0.sessionID == root }), (live[root]?.turnsInFlight ?? 0) > 0 {
+            emit(.activity(sessionID: root, .working))
+        }
+    }
+
+    /// Proceed switches the CLI to the chosen mode (and lifts the plan guard) before the plan is approved, so the
+    /// agent's next tool call already runs under the new mode. Keep planning denies `ExitPlanMode` with the comments.
+    func respondToPlan(sessionID: String, requestID: String, decision: PlanDecision) async throws {
+        let prompt = try interactionPrompt(requestID, sessionID: sessionID)
+        guard prompt.isPlan else { throw ClaudeCodeError.invalidArgument("This request is not a plan.") }
+        let root = prompt.sessionID
+        guard let session = live[root] else {
+            pending[requestID] = nil
+            emit(.permissionReplied(sessionID: root, requestID: requestID))
+            throw ClaudeCodeError.processFailed("the agent stopped before the answer arrived")
+        }
+        if case .proceed(let mode) = decision {
+            guard mode != .plan else { throw ClaudeCodeError.invalidArgument("Proceed needs a mode other than Plan.") }
+            guard mode != .bypass || session.bypassAllowed else {
+                throw ClaudeCodeError.invalidArgument("Bypass needs the agent restarted. Choose another mode, then switch to Bypass.")
+            }
+            // Claimed before waiting, so a second answer or a cancel cannot use the prompt meanwhile.
+            pending[requestID] = nil
+            do {
+                _ = try await control(root, ["subtype": "set_permission_mode", "mode": .string(ClaudePermissionModes.cliMode(mode))])
+                try await applyPlanGuard(root, planOn: false)
+            } catch {
+                if live[root] != nil { pending[requestID] = prompt }
+                throw error
+            }
+            if var record = store[root] {
+                record.permissionMode = mode
+                store[root] = record
+                save()
+                emit(.sessionUpdated(record.engineSession))
+            }
+        } else {
+            pending[requestID] = nil
+        }
+        try write(root, prompt.planResponse(decision))
+        emit(.permissionReplied(sessionID: root, requestID: requestID))
+        if !pending.values.contains(where: { $0.sessionID == root }), (live[root]?.turnsInFlight ?? 0) > 0 {
+            emit(.activity(sessionID: root, .working))
+        }
+    }
+
+    func planModeSupport(sessionID: String) -> PlanModeSupport {
+        ClaudeSessionIDs.isChild(sessionID)
+            ? .unsupported(reason: "A subagent follows the mode of the session that started it.")
+            : .supported
     }
 
     func pendingRequests() -> [PermissionRequest] {

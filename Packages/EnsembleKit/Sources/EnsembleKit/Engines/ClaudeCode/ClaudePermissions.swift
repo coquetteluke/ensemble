@@ -68,6 +68,12 @@ struct ClaudePermissionPrompt: Equatable, Sendable {
             detail.append((isExternal ? "Outside the project: " : "Touches: ") + ClaudeFormatting.displayPath(blockedPath, directory: directory))
         }
         if let reason = body["decision_reason"]?.stringValue, !reason.isEmpty { detail.append(reason) }
+        // Plans and questions get their own cards; they have no "always" rule.
+        if let interaction = Self.interactionRequest(requestID: requestID, sessionID: sessionID, toolName: toolName,
+                                                     input: input, created: created) {
+            request = interaction
+            return
+        }
         let rules = ClaudePermissionRules.rules(for: toolName, input: input, suggestions: suggestions, isExternal: isExternal)
         let always = rules.isEmpty ? [ClaudePermissionRules.describe(rules)] : rules.map { ClaudePermissionRules.describe([$0]) }
         request = PermissionRequest(id: requestID, sessionID: sessionID, kind: kind, title: title,

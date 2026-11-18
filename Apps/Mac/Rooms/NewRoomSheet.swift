@@ -281,7 +281,8 @@ struct NewRoomSheet: View {
                 label("Permissions")
                 ChoiceChip(title: draft.permissionMode.label, symbol: draft.permissionMode.symbolName,
                            tint: draft.permissionMode.isDangerous ? theme.danger : nil,
-                           options: PermissionMode.allCases.map { ($0, $0.label, $0.summary, nil, true) },
+                           // Rooms do not offer Plan mode: room agents plan on the board instead.
+                           options: PermissionMode.allCases.filter { $0 != .plan }.map { ($0, $0.label, $0.summary, nil, true) },
                            selection: draft.permissionMode) { draft.permissionMode = $0 }
                 Text(draft.permissionMode.summary)
                     .font(theme.font(size: 11.5))

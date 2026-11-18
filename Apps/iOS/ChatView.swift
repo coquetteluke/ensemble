@@ -128,7 +128,8 @@ struct ChatView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 Section("Permission mode") {
-                    ForEach(PermissionMode.allCases, id: \.self) { mode in
+                    // Rooms do not offer Plan mode.
+                    ForEach(PermissionMode.allCases.filter { roomID == nil || $0 != .plan }, id: \.self) { mode in
                         Button {
                             act { try await client.setPermissionMode(mode, for: target) }
                         } label: {

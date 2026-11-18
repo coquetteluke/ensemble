@@ -1,15 +1,19 @@
 import SwiftUI
 import EnsembleKit
 
-/// Permission mode menu: Ask permissions, Accept edits, Auto mode, Bypass permissions (in red).
+/// Permission mode menu: Ask permissions, Accept edits, Plan mode, Auto mode, Bypass permissions (in red). Plan is
+/// greyed out, with the reason, where the session's engine has no plan mode.
 struct ModeMenuContent: View {
     let current: PermissionMode
+    /// Whether the session can use Plan mode; nil while unknown (Plan is offered and checked when chosen).
+    var planSupport: PlanModeSupport? = nil
     let onSelect: (PermissionMode) -> Void
     @Environment(\.theme) private var theme
 
     var body: some View {
         VStack(alignment: .leading, spacing: theme.z(2)) {
             ForEach(PermissionMode.allCases, id: \.self) { mode in
+                let unavailable = mode == .plan ? planSupport?.reason : nil
                 Button {
                     onSelect(mode)
                 } label: {
@@ -22,9 +26,10 @@ struct ModeMenuContent: View {
                             Text(mode.label)
                                 .font(theme.font(size: 13, weight: .medium))
                                 .foregroundStyle(mode.isDangerous ? theme.danger : theme.textPrimary)
-                            Text(mode.summary)
+                            Text(unavailable ?? mode.summary)
                                 .font(theme.font(size: 11.5))
                                 .foregroundStyle(theme.textTertiary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer(minLength: theme.z(8))
                         if mode == current {
@@ -38,6 +43,8 @@ struct ModeMenuContent: View {
                     .padding(.vertical, theme.z(7))
                 }
                 .buttonStyle(RowButtonStyle(selected: false, cornerRadius: theme.z(7)))
+                .disabled(unavailable != nil)
+                .opacity(unavailable != nil ? 0.55 : 1)
             }
             HLine()
                 .padding(.vertical, theme.z(4))

@@ -418,6 +418,7 @@ public extension PermissionMode {
         switch self {
         case .ask: "hand.raised"
         case .acceptEdits: "pencil.line"
+        case .plan: "list.bullet.clipboard"
         case .auto: "wand.and.sparkles"
         case .bypass: "exclamationmark.shield"
         }
@@ -428,6 +429,7 @@ public extension PermissionMode {
         switch self {
         case .ask: "Edits and commands ask you first"
         case .acceptEdits: "File edits run, commands ask"
+        case .plan: "Reads and plans, changes nothing"
         case .auto: "Safe actions run, risky commands ask"
         case .bypass: "Everything runs without asking"
         }

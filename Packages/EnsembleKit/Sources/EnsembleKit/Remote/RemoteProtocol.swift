@@ -281,8 +281,37 @@ public struct RemoteUsageSummary: Codable, Hashable, Sendable {
     }
 }
 
+/// Answers to an agent's questions (`PermissionRequest.questions`) from the phone. Empty `answers` declines.
+/// Added after protocol 3 shipped: a Mac without it answers `unknownMessage`, and nothing older changes.
+public struct RemoteQuestionAnswer: Codable, Hashable, Sendable {
+    public var sessionID: String
+    public var requestID: String
+    public var answers: [AgentQuestionAnswer]
+
+    public init(sessionID: String, requestID: String, answers: [AgentQuestionAnswer]) {
+        self.sessionID = sessionID
+        self.requestID = requestID
+        self.answers = answers
+    }
+}
+
+/// Proceed or Keep planning on a plan (`PermissionRequest.plan`) from the phone. The phone offers only the modes the
+/// plan names (`PlanProposal.allowedProceedModes`) and keeps planning without line comments; the Mac checks both.
+public struct RemotePlanResponse: Codable, Hashable, Sendable {
+    public var sessionID: String
+    public var requestID: String
+    public var decision: PlanDecision
+
+    public init(sessionID: String, requestID: String, decision: PlanDecision) {
+        self.sessionID = sessionID
+        self.requestID = requestID
+        self.decision = decision
+    }
+}
+
 /// The Session Hub as the phone needs it: every row plus the open permission prompts, so rows can offer
-/// Allow and Reject without opening the chat.
+/// Allow and Reject without opening the chat. Plans and questions are in `permissions` too (with `plan` or
+/// `questions` set); phones that predate them see them as ordinary prompts, and the Mac refuses Allow for them.
 public struct RemoteHubSnapshot: Codable, Hashable, Sendable {
     public var sessions: [SessionSummary]
     public var permissions: [PermissionRequest]

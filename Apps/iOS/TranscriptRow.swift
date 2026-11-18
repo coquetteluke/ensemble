@@ -46,7 +46,13 @@ struct TranscriptRow: View {
         case .tool(let tool):
             ToolLine(tool: tool)
         case .permission(let request):
-            PermissionCard(request: request, client: client, onError: onError)
+            if request.isQuestion {
+                RemoteQuestionCard(request: request, client: client, onError: onError)
+            } else if request.isPlan {
+                RemotePlanCard(request: request, client: client, onError: onError)
+            } else {
+                PermissionCard(request: request, client: client, onError: onError)
+            }
         case .board(_, let from, let to, let text, _):
             BoardMessage(from: agents[from], to: to.compactMap { agents[$0] }, text: text)
         case .error(_, let message):

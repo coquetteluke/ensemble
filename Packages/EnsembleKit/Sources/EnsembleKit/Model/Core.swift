@@ -33,10 +33,12 @@ public struct ModelRef: Codable, Hashable, Sendable, CustomStringConvertible {
     }
 }
 
-/// How much an agent may do without asking.
+/// How much an agent may do without asking. The order is the Shift-Tab cycle.
 public enum PermissionMode: String, Codable, CaseIterable, Sendable {
     case ask
     case acceptEdits
+    /// Read and think only, then present a plan for approval (`PlanProposal`). Nothing is changed.
+    case plan
     case auto
     case bypass
 
@@ -44,8 +46,20 @@ public enum PermissionMode: String, Codable, CaseIterable, Sendable {
         switch self {
         case .ask: "Ask permissions"
         case .acceptEdits: "Accept edits"
+        case .plan: "Plan mode"
         case .auto: "Auto mode"
         case .bypass: "Bypass permissions"
+        }
+    }
+
+    /// The name used after "Proceed in" on a plan card ("Proceed in Accept edits").
+    public var shortLabel: String {
+        switch self {
+        case .ask: "Ask"
+        case .acceptEdits: "Accept edits"
+        case .plan: "Plan"
+        case .auto: "Auto"
+        case .bypass: "Bypass"
         }
     }
 }

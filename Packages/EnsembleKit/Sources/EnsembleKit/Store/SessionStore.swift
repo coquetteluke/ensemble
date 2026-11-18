@@ -41,6 +41,15 @@ public final class SessionStore {
     public internal(set) var sideQuestions: [String: SideQuestion] = [:]
     /// Temporary sessions behind side questions. Left out of the sidebar until kept.
     public internal(set) var hiddenSessionIDs: Set<String> = []
+    /// How each answered plan or question was resolved, by request id (`SessionStore+Interactions.swift`).
+    public internal(set) var interactionOutcomes: [String: InteractionOutcome] = [:]
+    /// Whether each session can use Plan mode, from `EngineInteractionControl` (loaded with `loadPlanModeSupport`).
+    public internal(set) var planSupport: [String: PlanModeSupport] = [:]
+    /// Line comments being written on open plans, by request id, then by line index. Kept here so they survive the
+    /// card scrolling out of view.
+    public var planCommentDrafts: [String: [Int: String]] = [:]
+    /// The mode each session was in before it switched to Plan; Proceed returns to it.
+    @ObservationIgnored var modeBeforePlan: [String: PermissionMode] = [:]
 
     @ObservationIgnored var byID: [String: SessionModel] = [:]
     @ObservationIgnored private(set) var eventTask: Task<Void, Never>?
@@ -324,8 +333,9 @@ public final class SessionStore {
             TranscriptReducer.upsertTool(&model.items, tool)
             model.touch()
 
-        case .permissionAsked(let request):
-            guard let model = byID[request.sessionID] else { return }
+        case .permissionAsked(let asked):
+            guard let model = byID[asked.sessionID] else { return }
+            let request = prepared(asked)
             if !model.pendingPermissions.contains(where: { $0.id == request.id }) {
                 model.pendingPermissions.append(request)
             }
@@ -432,6 +442,11 @@ public final class SessionStore {
     }
 
     public func reply(to request: PermissionRequest, decision: PermissionDecision) async {
+        if request.isInteraction {
+            // Plans and questions have their own answers; Reject keeps planning or declines.
+            await replyToInteraction(request, decision: decision)
+            return
+        }
         guard let session = byID[request.sessionID] else { return }
         session.resolutions[request.id] = PermissionResolution(decision)
         session.pendingPermissions.removeAll { $0.id == request.id }
@@ -466,8 +481,17 @@ public final class SessionStore {
     public func setPermissionMode(_ mode: PermissionMode, for sessionID: String? = nil) async {
         guard let session = sessionID.flatMap({ byID[$0] }) ?? selected else { return }
         let previous = session.permissionMode
+        if mode == .plan, previous != .plan {
+            // Only engines with a real plan mode get one (`EngineInteractionControl`).
+            let support = await loadPlanModeSupport(for: session.id)
+            guard support.isSupported else {
+                lastError = support.reason ?? "This agent has no plan mode."
+                return
+            }
+        }
         session.permissionMode = mode
         permissionRulesChecked.insert(session.id)
+        if mode == .plan, previous != .plan { modeBeforePlan[session.id] = previous }
         do { try await engine.setPermissionMode(session.id, mode: mode) } catch {
             session.permissionMode = previous
             lastError = "Could not change permissions: \(error.localizedDescription)"

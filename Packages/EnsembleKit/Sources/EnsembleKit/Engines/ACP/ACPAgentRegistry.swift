@@ -118,7 +118,7 @@ public enum ACPAgentRegistry {
         searchDirectories: ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin"],
         arguments: ["acp"],
         bypassArguments: ["--dangerously-skip-permissions"],
-        modeIDs: [.ask: "default", .acceptEdits: "accept-edits", .auto: "auto", .bypass: "auto"],
+        modeIDs: [.ask: "default", .acceptEdits: "accept-edits", .plan: "plan", .auto: "auto", .bypass: "auto"],
         installHint: "Install the Antigravity CLI with `brew install --cask antigravity-cli`.",
         signInHint: "Run `agy` once in Terminal and sign in with your Google account (it shares the Antigravity app's sign-in).",
         signInCheck: .acpSession,
@@ -249,6 +249,8 @@ enum ACPModes {
     static let candidates: [PermissionMode: [String]] = [
         .ask: ["default", "ask", "manual", "normal"],
         .acceptEdits: ["accept-edits", "acceptEdits", "accept_edits", "auto-edit", "autoEdit"],
+        // No guess for Plan: a mode called "plan" is not necessarily read-only (OpenCode's ACP `plan` agent runs shell
+        // commands without asking), so only a definition that names its plan mode gets one.
         .auto: ["auto", "smart"],
         .bypass: ["bypassPermissions", "bypass", "yolo", "auto"],
     ]

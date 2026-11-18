@@ -38,6 +38,12 @@ public enum RemoteDispatcher {
                 return .rooms(await host.rooms())
             case .usageRequest:
                 return .usage(await host.usageSummary())
+            case .answerQuestion(let a):
+                try await host.answerQuestion(sessionID: a.sessionID, requestID: a.requestID, answers: a.answers)
+                return .ack
+            case .respondToPlan(let r):
+                try await host.respondToPlan(sessionID: r.sessionID, requestID: r.requestID, decision: r.decision)
+                return .ack
             }
         } catch let error as RemoteError {
             return .error(error)

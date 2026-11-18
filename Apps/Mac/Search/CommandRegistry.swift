@@ -82,7 +82,7 @@ struct AppShortcut: Hashable {
 enum AppCommandID: String, CaseIterable, Identifiable {
     case newSession, newRoom, searchTranscripts, keyboardShortcuts, commandPalette, settings, pairIPhone
     case sendMessage, stopAgent, openHub, openScheduled, archiveSession, forkSession, compactConversation, revealFolder
-    case switchModel, switchMode, modeAsk, modeAcceptEdits, modeAuto, modeBypass, changeEffort, toggleFastMode, sideQuestion, focusComposer
+    case switchModel, switchMode, modeAsk, modeAcceptEdits, modeAuto, modePlan, modeBypass, changeEffort, toggleFastMode, sideQuestion, focusComposer
     case allowOnce, alwaysAllow, reject
     case nextTranscriptView, viewNormal, viewThinking, viewVerbose
     case toggleSidebar, toggleContextPanel, closeFileViewer, zoomIn, zoomOut, actualSize
@@ -113,6 +113,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .modeAsk: "Permission mode: \(PermissionMode.ask.label)"
         case .modeAcceptEdits: "Permission mode: \(PermissionMode.acceptEdits.label)"
         case .modeAuto: "Permission mode: \(PermissionMode.auto.label)"
+        case .modePlan: "Permission mode: \(PermissionMode.plan.label)"
         case .modeBypass: "Permission mode: \(PermissionMode.bypass.label)"
         case .changeEffort: "Change effort"
         case .toggleFastMode: "Turn fast mode on or off"
@@ -142,7 +143,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .newSession, .newRoom, .settings, .pairIPhone: .general
         case .searchTranscripts, .keyboardShortcuts, .commandPalette: .search
         case .sendMessage, .stopAgent, .openHub, .openScheduled, .archiveSession, .forkSession, .compactConversation, .revealFolder: .sessions
-        case .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modeBypass, .changeEffort, .toggleFastMode, .sideQuestion,
+        case .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass, .changeEffort, .toggleFastMode, .sideQuestion,
              .focusComposer: .composer
         case .allowOnce, .alwaysAllow, .reject: .permissions
         case .nextTranscriptView, .viewNormal, .viewThinking, .viewVerbose: .transcript
@@ -173,6 +174,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .modeAsk: PermissionMode.ask.symbolName
         case .modeAcceptEdits: PermissionMode.acceptEdits.symbolName
         case .modeAuto: PermissionMode.auto.symbolName
+        case .modePlan: PermissionMode.plan.symbolName
         case .modeBypass: PermissionMode.bypass.symbolName
         case .changeEffort: "gauge.with.dots.needle.50percent"
         case .toggleFastMode: "hare"
@@ -235,7 +237,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .stopAgent: ["interrupt", "cancel"]
         case .openHub: ["needs you", "inbox"]
         case .openScheduled: ["schedules", "cron"]
-        case .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modeBypass: ["permissions", "mode"]
+        case .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass: ["permissions", "mode"]
         case .switchModel: ["model", "provider"]
         case .changeEffort: ["thinking", "reasoning"]
         case .sideQuestion: ["btw", "aside"]
@@ -344,7 +346,7 @@ enum CommandRegistry {
         switch id {
         case .newSession, .searchTranscripts: return store != nil
         case .newRoom: return context.search.rooms != nil
-        case .sendMessage, .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modeBypass, .focusComposer,
+        case .sendMessage, .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass, .focusComposer,
              .archiveSession, .revealFolder, .compactConversation, .sideQuestion:
             return session != nil
         case .stopAgent: return session?.isWorking ?? false
@@ -394,6 +396,7 @@ enum CommandRegistry {
         case .modeAsk: setMode(.ask, context)
         case .modeAcceptEdits: setMode(.acceptEdits, context)
         case .modeAuto: setMode(.auto, context)
+        case .modePlan: setMode(.plan, context)
         case .modeBypass: setMode(.bypass, context)
         case .changeEffort: window.requestedMenu = .effort
         case .toggleFastMode:
