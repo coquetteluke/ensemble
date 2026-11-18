@@ -262,10 +262,11 @@ struct ACPToolState: Equatable, Sendable {
 
     /// Ensemble's permission kind (`bash`, `edit`, `write`, `read`, `webfetch`, `external_directory`, ...).
     func permissionKind(directory: String?) -> String {
-        if let directory, ["read", "edit", "delete", "move", "search"].contains(kind),
-           let outside = (locations.map(\.path) + diffs.map(\.path)).first(where: { $0.hasPrefix("/") && !ACPFormatting.isInside($0, directory: directory) }),
-           !outside.isEmpty {
-            return "external_directory"
+        if let directory, ["read", "edit", "delete", "move", "search"].contains(kind) {
+            let paths = touchedPaths(directory: directory)
+            if paths == nil || paths?.contains(where: { !ACPFormatting.isInside($0, directory: directory) }) == true {
+                return "external_directory"
+            }
         }
         switch kind {
         case "execute": return "bash"
@@ -277,15 +278,139 @@ struct ACPToolState: Equatable, Sendable {
         }
     }
 
-    /// What an "always" answer allows again in this session: the same tool, kind and command or path.
-    var ruleKey: String {
-        let subject: String
-        switch kind {
-        case "execute": subject = ACPFormatting.command(rawInput) ?? title
-        case "read", "edit", "delete", "move": subject = path ?? title
-        default: subject = title
+    /// Every path the call touches: its locations, its diffs, and every path-like argument (source and destination
+    /// included, nested arguments too), relative ones taken from the project folder, all with links resolved and
+    /// without duplicates. nil when a path cannot be resolved (a dangling link, a `..` past a missing folder), so the
+    /// call cannot be judged.
+    func touchedPaths(directory: String) -> [String]? {
+        var raw = locations.map(\.path) + diffs.map(\.path)
+        if let rawInput { ACPAlwaysRules.collectPaths(rawInput, into: &raw) }
+        var result: [String] = []
+        for path in raw where !path.isEmpty {
+            let absolute = path.hasPrefix("/") ? path : (directory as NSString).appendingPathComponent(path)
+            guard let resolved = WorkspaceTrust.resolvedPath(absolute) else { return nil }
+            if !result.contains(resolved) { result.append(resolved) }
         }
-        return "\(kind)|\(name ?? "")|\(subject)"
+        return result
+    }
+
+    /// What an "always" answer remembers for this call, or nil when it has no concrete subject, in which case "always"
+    /// only allows this one request. Built only from what the call does, never from the title the agent wrote:
+    /// - every kind: the call touches at most one path, and that path is inside the project folder;
+    /// - execute: the exact command from the arguments (and the folder it runs in, when given);
+    /// - read, edit, delete: exactly one path;
+    /// - move: never (it touches a source and a destination);
+    /// - fetch: the canonical URL from the arguments;
+    /// - anything else: the exact arguments.
+    func alwaysRule(directory: String) -> ACPAlwaysRule? {
+        guard let paths = touchedPaths(directory: directory), paths.count <= 1 else { return nil }
+        if let only = paths.first, !ACPFormatting.isInside(only, directory: directory) { return nil }
+        let tool = name ?? ""
+        switch kind {
+        case "execute":
+            guard let command = ACPFormatting.command(rawInput) else { return nil }
+            let cwd = ACPAlwaysRules.workingFolder(rawInput).map { folder in
+                WorkspaceTrust.resolvedPath(folder.hasPrefix("/") ? folder : (directory as NSString).appendingPathComponent(folder)) ?? folder
+            }
+            var summary = "command: \(command)"
+            if let cwd, let folder = WorkspaceTrust.resolvedPath(directory), cwd != folder {
+                summary += " (in \(ACPFormatting.displayPath(cwd, directory: folder)))"
+            }
+            return ACPAlwaysRule(key: "execute|\(tool)|\(cwd ?? "")|\(command)", summary: summary)
+        case "read", "edit", "delete":
+            guard let only = paths.first else { return nil }
+            let shown = ACPFormatting.displayPath(only, directory: WorkspaceTrust.resolvedPath(directory) ?? directory)
+            let verb = kind == "read" ? "reading" : kind == "edit" ? "edits to" : "deleting"
+            return ACPAlwaysRule(key: "\(kind)|\(tool)|\(only)", summary: "\(verb) \(shown)")
+        case "move":
+            return nil
+        case "fetch":
+            if let url = ACPAlwaysRules.canonicalURL(rawInput) {
+                return ACPAlwaysRule(key: "fetch|\(tool)|\(url)", summary: "web request: \(url)")
+            }
+            guard let arguments = ACPAlwaysRules.canonicalArguments(rawInput) else { return nil }
+            return ACPAlwaysRule(key: "fetch|\(tool)|\(arguments)", summary: "\(ensembleName)(\(arguments))")
+        default:
+            guard let arguments = ACPAlwaysRules.canonicalArguments(rawInput) else { return nil }
+            return ACPAlwaysRule(key: "\(kind)|\(tool)|\(arguments)", summary: "\(ensembleName)(\(arguments))")
+        }
+    }
+}
+
+/// One "always" answer Ensemble remembers for a session: an exact key, and the line the permission card shows.
+struct ACPAlwaysRule: Hashable, Sendable {
+    let key: String
+    let summary: String
+}
+
+enum ACPAlwaysRules {
+    /// What the card says when "always" allows nothing beyond this request.
+    static let thisRequestOnly = "nothing more (this request only)"
+
+    /// Argument names that hold paths: anything with path, file or dir in the name, and the usual source and
+    /// destination names.
+    static func isPathKey(_ key: String) -> Bool {
+        let lower = key.lowercased()
+        if lower.contains("path") || lower.contains("file") || lower.contains("dir") { return true }
+        return ["cwd", "source", "destination", "src", "dst", "dest", "from", "to", "target_file"].contains(lower)
+    }
+
+    /// Collects every string under a path-like key, at any depth (including arrays of paths).
+    static func collectPaths(_ value: JSONValue, into paths: inout [String], underPathKey: Bool = false) {
+        switch value {
+        case .string(let text) where underPathKey:
+            paths.append(text)
+        case .array(let items):
+            for item in items { collectPaths(item, into: &paths, underPathKey: underPathKey) }
+        case .object(let object):
+            // A stable order (sources before destinations), so the card lists paths the same way every time.
+            func rank(_ key: String) -> Int {
+                let lower = key.lowercased()
+                if ["source", "src", "from"].contains(lower) || lower.hasPrefix("old") || lower.hasPrefix("source") { return 0 }
+                if ["destination", "dst", "dest", "to"].contains(lower) || lower.hasPrefix("new") || lower.hasPrefix("dest") { return 2 }
+                return 1
+            }
+            for key in object.keys.sorted(by: { (rank($0), $0) < (rank($1), $1) }) {
+                collectPaths(object[key] ?? .null, into: &paths, underPathKey: isPathKey(key))
+            }
+        default:
+            break
+        }
+    }
+
+    /// The folder a command runs in, when the arguments say.
+    static func workingFolder(_ rawInput: JSONValue?) -> String? {
+        for key in ["cwd", "Cwd", "workdir", "workingDirectory", "working_directory", "directory", "Directory"] {
+            if let value = rawInput?[key]?.acpText { return value }
+        }
+        return nil
+    }
+
+    /// `https://example.com/a?b=1` from the URL argument: scheme and host lowercased, default port and fragment dropped.
+    /// nil without an http or https URL with a host.
+    static func canonicalURL(_ rawInput: JSONValue?) -> String? {
+        var text: String?
+        for key in ["url", "Url", "URL", "uri", "Uri"] {
+            if let value = rawInput?[key]?.acpText { text = value; break }
+        }
+        guard let text, var components = URLComponents(string: text.trimmingCharacters(in: .whitespaces)),
+              let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              let host = components.host?.lowercased(), !host.isEmpty, components.user == nil, components.password == nil else { return nil }
+        components.scheme = scheme
+        components.host = host
+        components.fragment = nil
+        if (scheme == "https" && components.port == 443) || (scheme == "http" && components.port == 80) { components.port = nil }
+        if components.path.isEmpty { components.path = "/" }
+        return components.string
+    }
+
+    /// The arguments as compact JSON with sorted keys, or nil when there are none.
+    static func canonicalArguments(_ rawInput: JSONValue?) -> String? {
+        switch rawInput {
+        case .object(let object)? where !object.isEmpty: return rawInput?.jsonText
+        case .array(let items)? where !items.isEmpty: return rawInput?.jsonText
+        default: return nil
+        }
     }
 }
 
@@ -524,15 +649,26 @@ struct ACPTranscriptState: Sendable {
 
 /// Building Ensemble's permission card from an ACP permission request.
 enum ACPPermissionMapping {
+    /// The permission card for a tool call. Path calls show every path they touch, and `alwaysPatterns` says exactly what
+    /// an "always" answer remembers (`ACPToolState.alwaysRule`), or that it allows this request only.
     static func request(id: String, sessionID: String, tool: ACPToolState, directory: String, date: Date = Date()) -> PermissionRequest {
+        let base = WorkspaceTrust.resolvedPath(directory) ?? directory
         let title: String
         switch tool.kind {
-        case "execute": title = ACPFormatting.command(tool.rawInput) ?? tool.title
-        case "read", "edit", "delete", "move": title = tool.path.map { ACPFormatting.displayPath($0, directory: directory) } ?? tool.title
-        default: title = tool.title.isEmpty ? (tool.name ?? "Tool call") : tool.title
+        case "execute":
+            title = ACPFormatting.command(tool.rawInput) ?? tool.title
+        case "read", "edit", "delete", "move":
+            var raw = tool.locations.map(\.path) + tool.diffs.map(\.path)
+            if let input = tool.rawInput { ACPAlwaysRules.collectPaths(input, into: &raw) }
+            let paths = tool.touchedPaths(directory: directory) ?? raw
+            let shown = paths.map { ACPFormatting.displayPath($0, directory: base) }
+            title = shown.isEmpty ? tool.title : shown.joined(separator: ", ")
+        default:
+            title = tool.title.isEmpty ? (tool.name ?? "Tool call") : tool.title
         }
         let detail = tool.unifiedDiff(directory: directory) ?? ACPFormatting.prettyJSON(tool.rawInput)
+        let always = tool.alwaysRule(directory: directory)?.summary ?? ACPAlwaysRules.thisRequestOnly
         return PermissionRequest(id: id, sessionID: sessionID, kind: tool.permissionKind(directory: directory),
-                                 title: title.isEmpty ? "Tool call" : title, detail: detail, created: date)
+                                 title: title.isEmpty ? "Tool call" : title, detail: detail, alwaysPatterns: [always], created: date)
     }
 }

@@ -8,6 +8,8 @@ diffs, cancellation, session/load replay, usage and title updates.
 Prompt words pick the behaviour (case-insensitive, first match):
   fail    -> the prompt request fails with a JSON-RPC error
   slow    -> streams "tick " every 0.1 s until cancelled (stopReason cancelled), at most 100 ticks
+  mystery -> execute tool call whose arguments name no command (only a title), asks permission
+  outside -> edit tool call on a file outside the session folder, asks permission
   edit    -> edit tool call on notes.txt with a diff, asks permission, completes, fails or is cancelled
   write   -> new-file tool call (diff without oldText), asks permission
   shell   -> execute tool call `echo hi`; asks permission unless the mode is turbo or auto, or --bypass was given
@@ -23,6 +25,7 @@ Environment:
   FAKE_ACP_NO_ALWAYS     "1": offer only allow_once and reject_once (like Antigravity)
   FAKE_ACP_SIGNED_OUT    "1": session/new fails with -32000 (auth required)
   FAKE_ACP_IGNORE_MODE   "1": accept mode changes but keep reporting the initial mode
+  FAKE_ACP_NO_MODES      "1": report no modes at all (sessions keep the initial mode)
 """
 import json, os, sys, threading, time
 
@@ -33,6 +36,7 @@ INITIAL_MODE = os.environ.get("FAKE_ACP_INITIAL_MODE", "default")
 NO_ALWAYS = os.environ.get("FAKE_ACP_NO_ALWAYS") == "1"
 SIGNED_OUT = os.environ.get("FAKE_ACP_SIGNED_OUT") == "1"
 IGNORE_MODE = os.environ.get("FAKE_ACP_IGNORE_MODE") == "1"
+NO_MODES = os.environ.get("FAKE_ACP_NO_MODES") == "1"
 BYPASS = "--bypass" in sys.argv[1:]
 
 MODES = [("default", "Default"), ("accept-edits", "Accept edits"), ("auto", "Auto"), ("turbo", "Turbo")]
@@ -89,7 +93,7 @@ def save_state():
 
 def config_options(s):
     mode = INITIAL_MODE if IGNORE_MODE else s["mode"]
-    return [
+    options = [
         {"id": "model", "name": "Model", "category": "model", "type": "select", "currentValue": s["model"],
          "options": [{"value": v, "name": n} for v, n in MODELS]},
         {"id": "thought_level", "name": "Thinking Level", "category": "thought_level", "type": "select", "currentValue": s["level"],
@@ -97,6 +101,7 @@ def config_options(s):
         {"id": "mode", "name": "Mode", "category": "mode", "type": "select", "currentValue": mode,
          "options": [{"value": v, "name": n} for v, n in MODES]},
     ]
+    return [o for o in options if not (NO_MODES and o["id"] == "mode")]
 
 
 def update(sid, body):
@@ -113,8 +118,9 @@ def new_session(cwd, sid=None, history=None, prompts=0):
 
 def setup_result(sid, include_id=True):
     s = sessions[sid]
-    result = {"configOptions": config_options(s),
-              "modes": {"currentModeId": INITIAL_MODE if IGNORE_MODE else s["mode"], "availableModes": [{"id": v, "name": n} for v, n in MODES]}}
+    result = {"configOptions": config_options(s)}
+    if not NO_MODES:
+        result["modes"] = {"currentModeId": INITIAL_MODE if IGNORE_MODE else s["mode"], "availableModes": [{"id": v, "name": n} for v, n in MODES]}
     if include_id:
         result["sessionId"] = sid
     return result
@@ -174,6 +180,20 @@ def run_prompt(rid, sid, text):
                 update(sid, {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "tick "}})
                 reply += "tick "
                 time.sleep(0.1)
+        elif "mystery" in lower or "outside" in lower:
+            tid = "call_%d" % s["prompts"]
+            if "mystery" in lower:
+                call = {"toolCallId": tid, "name": "helper", "title": "echo hi", "kind": "execute", "status": "pending", "rawInput": {}}
+            else:
+                path = os.path.join(os.path.dirname(s["cwd"].rstrip("/")), "outside.txt")
+                call = {"toolCallId": tid, "name": "edit_file", "title": "File outside.txt", "kind": "edit", "status": "pending",
+                        "locations": [{"path": path}], "rawInput": {"path": path},
+                        "content": [{"type": "diff", "path": path, "oldText": "a\n", "newText": "b\n"}]}
+            update(sid, dict(call, sessionUpdate="tool_call"))
+            answer = "allow" if BYPASS else ask_permission(sid, call, s["cancel"])
+            update(sid, {"sessionUpdate": "tool_call_update", "toolCallId": tid, "status": "completed" if answer == "allow" else "failed"})
+            stop = "cancelled" if answer == "cancelled" else "end_turn"
+            reply = "Done." if answer == "allow" else ""
         elif "edit" in lower or "write" in lower:
             new_file = "write" in lower
             path = os.path.join(s["cwd"], "hello.txt" if new_file else "notes.txt")

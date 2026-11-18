@@ -199,6 +199,8 @@ struct ACPRealAgentTests {
         #expect(request.kind == "write")
         #expect(request.title == "notes.txt")
         #expect(request.detail?.contains("+alpha") == true)
+        // The new file is inside the project and is the only path the call touches.
+        #expect(request.alwaysPatterns == ["edits to notes.txt"])
     }
 
     @Test func antigravityReplayShellAndCancel() throws {
@@ -220,7 +222,8 @@ struct ACPRealAgentTests {
         let request = ACPPermissionMapping.request(id: "p", sessionID: "s", tool: tool, directory: F.directory)
         #expect(request.kind == "bash")
         #expect(request.title == "echo hi")
-        #expect(tool.ruleKey == "execute|run_command|echo hi")
+        #expect(tool.alwaysRule(directory: F.directory) == ACPAlwaysRule(key: "execute|run_command||echo hi", summary: "command: echo hi"))
+        #expect(request.alwaysPatterns == ["command: echo hi"])
 
         let stops = try F.incoming("agy-load-cancel.jsonl").compactMap { message -> ACPStopReason? in
             if case .response(_, let result) = message, let stop = result["stopReason"]?.stringValue { return ACPStopReason(stop) }
@@ -238,12 +241,17 @@ struct ACPRealAgentTests {
         let replay = try F.replay("agy-ask-under-turbo.jsonl")
         #expect(replay.asks.count == 4)
         var kinds: [String] = []
+        var always: [[String]] = []
         for ask in replay.asks {
             var tool = ACPToolState(id: "t")
             tool.merge(try #require(ask.toolCall))
-            kinds.append(ACPPermissionMapping.request(id: "p", sessionID: "s", tool: tool, directory: F.directory).kind)
+            let request = ACPPermissionMapping.request(id: "p", sessionID: "s", tool: tool, directory: F.directory)
+            kinds.append(request.kind)
+            always.append(request.alwaysPatterns ?? [])
         }
         #expect(kinds == ["bash", "external_directory", "external_directory", "bash"])
+        // Paths outside the project are never remembered.
+        #expect(always == [["command: touch made-by-shell.txt"], [ACPAlwaysRules.thisRequestOnly], [ACPAlwaysRules.thisRequestOnly], ["command: ls"]])
         let modes = try ACPFixtures.lines("agy-ask-under-turbo.jsonl").filter { !$0.incoming && $0.message["params"]?["configId"]?.stringValue == "mode" }
         #expect(modes.compactMap { $0.message["params"]?["value"]?.stringValue } == ["default", "accept-edits", "auto"])
     }
@@ -372,6 +380,109 @@ struct ACPTranscriptTests {
         #expect(ACPStopReason("max_tokens").outcome.error != nil)
         #expect(ACPStopReason("refusal").outcome.outcome == "failed")
         #expect(ACPStopReason("weird") == .other("weird"))
+    }
+}
+
+@Suite("ACP always rules")
+struct ACPAlwaysRuleTests {
+    static let project = "/tmp/ensemble-acp/proj"
+
+    func tool(_ json: JSONValue) -> ACPToolState {
+        var state = ACPToolState(id: "t")
+        state.merge(ACPToolCallUpdate(json)!)
+        return state
+    }
+
+    func request(_ json: JSONValue) -> PermissionRequest {
+        ACPPermissionMapping.request(id: "p", sessionID: "s", tool: tool(json), directory: Self.project)
+    }
+
+    @Test func commandsAreRememberedByTheParsedCommandNotTheTitle() {
+        let echo = tool(["toolCallId": "t", "kind": "execute", "name": "run_command", "title": "harmless", "rawInput": ["CommandLine": "echo hi"]])
+        let sameCommand = tool(["toolCallId": "u", "kind": "execute", "name": "run_command", "title": "other words", "rawInput": ["CommandLine": "echo hi"]])
+        let sameTitle = tool(["toolCallId": "v", "kind": "execute", "name": "run_command", "title": "harmless", "rawInput": ["CommandLine": "rm -rf ~"]])
+        #expect(echo.alwaysRule(directory: Self.project)?.key == sameCommand.alwaysRule(directory: Self.project)?.key)
+        #expect(echo.alwaysRule(directory: Self.project)?.key != sameTitle.alwaysRule(directory: Self.project)?.key)
+        #expect(echo.alwaysRule(directory: Self.project)?.summary == "command: echo hi")
+        // A command Ensemble cannot read from the arguments is allowed once only, whatever the title says.
+        let titleOnly = ["toolCallId": "t", "kind": "execute", "title": "echo hi", "rawInput": [:]] as JSONValue
+        #expect(tool(titleOnly).alwaysRule(directory: Self.project) == nil)
+        #expect(request(titleOnly).alwaysPatterns == [ACPAlwaysRules.thisRequestOnly])
+        // The folder a command runs in is part of the rule; a folder outside the project is never remembered.
+        let inSub = tool(["toolCallId": "t", "kind": "execute", "rawInput": ["command": "make", "cwd": .string("\(Self.project)/sub")]])
+        #expect(inSub.alwaysRule(directory: Self.project)?.summary == "command: make (in sub)")
+        #expect(inSub.alwaysRule(directory: Self.project)?.key != tool(["toolCallId": "t", "kind": "execute", "rawInput": ["command": "make"]])
+            .alwaysRule(directory: Self.project)?.key)
+        #expect(tool(["toolCallId": "t", "kind": "execute", "rawInput": ["command": "make", "cwd": "/etc"]]).alwaysRule(directory: Self.project) == nil)
+    }
+
+    @Test func fetchesAreRememberedByTheCanonicalURL() {
+        let a = tool(["toolCallId": "t", "kind": "fetch", "title": "docs", "rawInput": ["url": "HTTPS://Example.COM:443/a?b=1#part"]])
+        let b = tool(["toolCallId": "u", "kind": "fetch", "title": "something else", "rawInput": ["url": "https://example.com/a?b=1"]])
+        let other = tool(["toolCallId": "v", "kind": "fetch", "title": "docs", "rawInput": ["url": "https://example.com/b"]])
+        #expect(a.alwaysRule(directory: Self.project)?.key == b.alwaysRule(directory: Self.project)?.key)
+        #expect(a.alwaysRule(directory: Self.project)?.key != other.alwaysRule(directory: Self.project)?.key)
+        #expect(a.alwaysRule(directory: Self.project)?.summary == "web request: https://example.com/a?b=1")
+        #expect(ACPAlwaysRules.canonicalURL(["url": "https://example.com"]) == "https://example.com/")
+        #expect(ACPAlwaysRules.canonicalURL(["url": "file:///etc/passwd"]) == nil)
+        #expect(ACPAlwaysRules.canonicalURL(["url": "https://user:pw@example.com/"]) == nil)
+        #expect(tool(["toolCallId": "t", "kind": "fetch", "title": "https://example.com"]).alwaysRule(directory: Self.project) == nil)
+        let search = tool(["toolCallId": "t", "kind": "fetch", "name": "web_search", "rawInput": ["query": "swift"]])
+        #expect(search.alwaysRule(directory: Self.project)?.summary == #"websearch({"query":"swift"})"#)
+    }
+
+    @Test func onlyOnePathInsideTheProjectIsRemembered() {
+        let one = ["toolCallId": "t", "kind": "edit", "name": "edit_file", "title": "File notes.txt",
+                   "locations": [["path": "/private/tmp/ensemble-acp/proj/notes.txt"]],
+                   "rawInput": ["Path": "/private/tmp/ensemble-acp/proj/notes.txt", "Target": "alpha", "Replacement": "beta"]] as JSONValue
+        #expect(tool(one).alwaysRule(directory: Self.project)?.summary == "edits to notes.txt")
+        #expect(request(one).alwaysPatterns == ["edits to notes.txt"])
+        // A relative argument is the same file.
+        let relative = ["toolCallId": "t", "kind": "edit", "name": "edit_file", "title": "x", "rawInput": ["path": "notes.txt"]] as JSONValue
+        #expect(tool(relative).alwaysRule(directory: Self.project)?.key == tool(one).alwaysRule(directory: Self.project)?.key)
+
+        // The location says one file, the arguments name another: two paths, asked every time, and the card shows both.
+        let mismatch = ["toolCallId": "t", "kind": "edit", "title": "File notes.txt",
+                        "locations": [["path": "/private/tmp/ensemble-acp/proj/notes.txt"]],
+                        "rawInput": ["path": "/private/tmp/ensemble-acp/proj/notes.txt", "extra": ["file_path": "/private/tmp/ensemble-acp/proj/b.txt"]]] as JSONValue
+        #expect(tool(mismatch).alwaysRule(directory: Self.project) == nil)
+        #expect(request(mismatch).alwaysPatterns == [ACPAlwaysRules.thisRequestOnly])
+        #expect(request(mismatch).title == "notes.txt, b.txt")
+
+        let diffElsewhere = ["toolCallId": "t", "kind": "edit", "title": "File notes.txt",
+                             "locations": [["path": "/private/tmp/ensemble-acp/proj/notes.txt"]],
+                             "content": [["type": "diff", "path": "/private/tmp/ensemble-acp/proj/other.txt", "newText": "x"]]] as JSONValue
+        #expect(tool(diffElsewhere).alwaysRule(directory: Self.project) == nil)
+
+        let move = ["toolCallId": "t", "kind": "move", "title": "Move",
+                    "rawInput": ["source": .string("\(Self.project)/a.txt"), "destination": .string("\(Self.project)/b.txt")]] as JSONValue
+        #expect(tool(move).alwaysRule(directory: Self.project) == nil)
+        #expect(request(move).title == "a.txt, b.txt")
+        // A move with only one path visible is still never remembered.
+        #expect(tool(["toolCallId": "t", "kind": "move", "rawInput": ["source": .string("\(Self.project)/a.txt")]]).alwaysRule(directory: Self.project) == nil)
+
+        let outside = ["toolCallId": "t", "kind": "read", "title": "File notes.txt", "rawInput": ["Path": "/etc/hosts"]] as JSONValue
+        #expect(tool(outside).alwaysRule(directory: Self.project) == nil)
+        #expect(request(outside).kind == "external_directory")
+        #expect(request(outside).alwaysPatterns == [ACPAlwaysRules.thisRequestOnly])
+        let escape = ["toolCallId": "t", "kind": "edit", "title": "x", "rawInput": ["path": "../../outside.txt"]] as JSONValue
+        #expect(tool(escape).alwaysRule(directory: Self.project) == nil)
+        // A path the agent hides in a nested list of files counts too.
+        let nested = ["toolCallId": "t", "kind": "edit", "title": "x", "locations": [["path": .string("\(Self.project)/a.txt")]],
+                      "rawInput": ["edits": [["files": [.string("\(Self.project)/a.txt"), "/etc/passwd"]]]]] as JSONValue
+        #expect(tool(nested).alwaysRule(directory: Self.project) == nil)
+        // A shell command that names an outside folder in its location is not remembered either.
+        let shellOutside = ["toolCallId": "t", "kind": "execute", "locations": [["path": "/etc"]], "rawInput": ["command": "ls"]] as JSONValue
+        #expect(tool(shellOutside).alwaysRule(directory: Self.project) == nil)
+    }
+
+    @Test func otherCallsAreRememberedByTheirExactArguments() {
+        let a = tool(["toolCallId": "t", "kind": "other", "name": "lookup", "title": "Look it up", "rawInput": ["b": 2, "a": "x"]])
+        #expect(a.alwaysRule(directory: Self.project)?.summary == #"lookup({"a":"x","b":2})"#)
+        let differentArgs = tool(["toolCallId": "u", "kind": "other", "name": "lookup", "title": "Look it up", "rawInput": ["a": "y"]])
+        #expect(a.alwaysRule(directory: Self.project)?.key != differentArgs.alwaysRule(directory: Self.project)?.key)
+        #expect(tool(["toolCallId": "t", "kind": "other", "name": "lookup", "title": "Look it up"]).alwaysRule(directory: Self.project) == nil)
+        #expect(tool(["toolCallId": "t", "kind": "think", "title": "Think", "rawInput": [:]]).alwaysRule(directory: Self.project) == nil)
     }
 }
 

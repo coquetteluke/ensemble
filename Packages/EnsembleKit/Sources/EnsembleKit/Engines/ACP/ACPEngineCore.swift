@@ -70,7 +70,8 @@ actor ACPEngineCore {
         let generation: Int
         let sessionID: String
         let ask: ACPPermissionAsk
-        let ruleKey: String
+        /// What "always" remembers; nil when it allows this request only.
+        let rule: ACPAlwaysRule?
         let request: PermissionRequest
     }
 
@@ -393,14 +394,15 @@ actor ACPEngineCore {
             respond(key, generation: gen, id: rpcID, result: ACPPermissionAsk.outcome(optionID: nil))
             return
         }
-        if record.permissionMode == .bypass || rules[sessionID]?.contains(tool.ruleKey) == true {
+        let rule = tool.alwaysRule(directory: record.directory)
+        if record.permissionMode == .bypass || rule.map({ rules[sessionID]?.contains($0.key) == true }) == true {
             respond(key, generation: gen, id: rpcID, result: ACPPermissionAsk.outcome(optionID: ask.option(for: .once)?.id))
             return
         }
         let requestID = "acp-perm-" + UUID().uuidString.lowercased()
         let request = ACPPermissionMapping.request(id: requestID, sessionID: sessionID, tool: tool, directory: record.directory)
         pending[requestID] = PendingPermission(requestID: requestID, rpcID: rpcID, connection: key, generation: gen, sessionID: sessionID,
-                                               ask: ask, ruleKey: tool.ruleKey, request: request)
+                                               ask: ask, rule: rule, request: request)
         emit(.permissionAsked(request))
         emit(.activity(sessionID: sessionID, .waitingForPermission))
     }
@@ -697,7 +699,14 @@ actor ACPEngineCore {
             }
             let modeOption = lives[id]?.configOptions.first { $0.category == "mode" }
             let available = modeOption.map { $0.choices.map(\.value) } ?? (lives[id]?.modes.map(\.id) ?? [])
-            if !available.isEmpty, let wanted = ACPModes.modeID(for: record.permissionMode, definition: definition, available: available) {
+            let wanted = available.isEmpty ? nil : ACPModes.modeID(for: record.permissionMode, definition: definition, available: available)
+            // Fail closed: unless the session is Bypass, work is only sent once the agent runs in the mode
+            // Ensemble asked for. An agent that offers no matching mode would otherwise keep its own default,
+            // which can be a "proceed without asking" preset from the user's own config.
+            if wanted == nil, record.permissionMode != .bypass {
+                throw ACPEngineError.modeNotApplied(record.permissionMode.label)
+            }
+            if let wanted {
                 if forceMode || lives[id]?.currentModeID != wanted {
                     if let modeOption {
                         try await setOption(modeOption, wanted)
@@ -948,13 +957,14 @@ actor ACPEngineCore {
             emit(.permissionReplied(sessionID: sessionID, requestID: requestID))
             throw ACPEngineError.processFailed("the agent stopped before the answer arrived")
         }
-        let option = prompt.ask.option(for: decision)
+        // "Always" is answered as a one-time allow: the agent's own "always" option would save a rule of the agent's
+        // choosing that the card cannot describe. Ensemble remembers exactly the rule the card showed, if any.
+        let option = prompt.ask.option(for: decision == .reject ? .reject : .once)
         respond(prompt.connection, generation: prompt.generation, id: prompt.rpcID, result: ACPPermissionAsk.outcome(optionID: option?.id))
         emit(.permissionReplied(sessionID: sessionID, requestID: requestID))
-        if decision == .always {
-            // Remembered by Ensemble for this session, also when the agent offers no "always" option of its own.
-            rules[sessionID, default: []].insert(prompt.ruleKey)
-            for (otherID, other) in pending where other.sessionID == sessionID && other.ruleKey == prompt.ruleKey {
+        if decision == .always, let rule = prompt.rule {
+            rules[sessionID, default: []].insert(rule.key)
+            for (otherID, other) in pending where other.sessionID == sessionID && other.rule?.key == rule.key {
                 pending[otherID] = nil
                 respond(other.connection, generation: other.generation, id: other.rpcID,
                         result: ACPPermissionAsk.outcome(optionID: other.ask.option(for: .once)?.id))

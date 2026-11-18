@@ -318,7 +318,8 @@ struct ACPPermissionAsk: Equatable, Sendable {
     }
 
     /// The option that answers `decision`. "Once" never picks an "always" option unless the agent offers nothing else
-    /// that allows; "reject" prefers the one-time rejection.
+    /// that allows; "reject" prefers the one-time rejection. The engine never sends the agent's "always" option itself
+    /// (it answers "always" with `.once` and remembers its own rule).
     func option(for decision: PermissionDecision) -> Option? {
         func first(_ kinds: [String]) -> Option? {
             for kind in kinds { if let match = options.first(where: { $0.kind == kind }) { return match } }

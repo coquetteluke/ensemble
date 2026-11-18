@@ -51,9 +51,12 @@ public struct ACPAuthState: Equatable, Sendable {
 /// - Updates map to engine events: message chunks to text deltas, thoughts to reasoning, tool calls to tool cards
 ///   (with unified diffs from ACP diff content), plans to a task list card, `usage_update` to the context panel,
 ///   the `session/prompt` usage to token totals, `session_info_update` titles to the session title.
-/// - Permissions: `session/request_permission` becomes a permission card; once, always and reject pick the matching
-///   option. "Always" is also remembered by Ensemble for the session (Antigravity offers allow once and deny only).
-///   Cancelling a turn answers open prompts with `cancelled`, as the protocol requires.
+/// - Permissions: `session/request_permission` becomes a permission card. Once and reject pick the matching option.
+///   "Always" answers the agent once (its own "always" option would save a rule Ensemble cannot describe) and Ensemble
+///   remembers, for the session, exactly the rule the card shows in `alwaysPatterns`: the exact command, the canonical
+///   URL, the one file inside the project, or the exact arguments (`ACPToolState.alwaysRule`). Calls with no concrete
+///   subject, several paths or a path outside the project are allowed once only, and the card says so. Cancelling a
+///   turn answers open prompts with `cancelled`, as the protocol requires.
 /// - Permission mode: set on the agent every time a session opens (`session/set_config_option` for the `mode`
 ///   option, or `session/set_mode`), and the agent must report it back, so the tool's own defaults (for Antigravity,
 ///   the user's permission preset such as Turbo) never carry over. Antigravity: Ask is `default`, Accept edits is

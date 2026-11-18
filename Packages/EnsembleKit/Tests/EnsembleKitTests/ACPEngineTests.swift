@@ -82,7 +82,7 @@ final class FakeACPHarness: @unchecked Sendable {
                            installHint: "Install the fake agent.", signInHint: "Run fake login.", signInCheck: .acpSession,
                            status: .verified, workspaceSettings: .alwaysLoaded,
                            environmentPassThrough: ["FAKE_ACP_LOG", "FAKE_ACP_STATE", "FAKE_ACP_INITIAL_MODE", "FAKE_ACP_NO_ALWAYS",
-                                                    "FAKE_ACP_SIGNED_OUT", "FAKE_ACP_IGNORE_MODE"])
+                                                    "FAKE_ACP_SIGNED_OUT", "FAKE_ACP_IGNORE_MODE", "FAKE_ACP_NO_MODES"])
     }
 
     func engine(env extra: [String: String] = [:], maxTurns: Int? = nil, executable: String = "/usr/bin/python3") -> ACPEngine {
@@ -185,6 +185,7 @@ struct ACPEngineTests {
         #expect(request.kind == "edit")
         #expect(request.title == "notes.txt")
         #expect(request.detail?.contains("-alpha\n+beta") == true)
+        #expect(request.alwaysPatterns == ["edits to notes.txt"])
         #expect(try await engine.pendingPermissions().map(\.id) == [request.id])
         _ = try await h.recorder.wait("waiting", after: mark) { $0 == .activity(sessionID: session.id, .waitingForPermission) }
         try await engine.replyPermission(sessionID: session.id, requestID: request.id, decision: .once, message: nil)
@@ -210,8 +211,9 @@ struct ACPEngineTests {
         _ = try await h.recorder.ended(session.id, after: mark)
         #expect(ACPFixtures.tools(try await engine.transcript(session.id)).last?.status == .failed)
 
+        // "Always" reaches the agent as a one-time allow; the agent's own "always" option is never sent.
         let answers = h.events("permission_answer").compactMap { $0["outcome"]?["optionId"]?.stringValue }
-        #expect(answers == ["allow", "always", "deny"])
+        #expect(answers == ["allow", "allow", "deny"])
         await engine.shutdown()
         await h.finish()
     }
@@ -231,6 +233,29 @@ struct ACPEngineTests {
         #expect(try await h.recorder.ended(session.id, after: mark).outcome == "succeeded")
         #expect(await h.recorder.all(after: mark) { if case .permissionAsked = $0 { true } else { false } }.isEmpty)
         #expect(h.events("permission_answer").compactMap { $0["outcome"]?["optionId"]?.stringValue } == ["allow", "allow"])
+        await h.finish()
+    }
+
+    @Test func alwaysWithoutAConcreteSubjectAllowsOnceOnly() async throws {
+        let h = try FakeACPHarness()
+        let engine = h.engine()
+        let session = try await h.session(engine)
+        for text in ["mystery job", "outside change"] {
+            var mark = await h.recorder.mark()
+            try await engine.prompt(session.id, text: text, files: [])
+            let first = try await h.recorder.permission(session.id, after: mark)
+            #expect(first.alwaysPatterns == [ACPAlwaysRules.thisRequestOnly])
+            try await engine.replyPermission(sessionID: session.id, requestID: first.id, decision: .always, message: nil)
+            #expect(try await h.recorder.ended(session.id, after: mark).outcome == "succeeded")
+            // The same call again asks again.
+            mark = await h.recorder.mark()
+            try await engine.prompt(session.id, text: text, files: [])
+            let second = try await h.recorder.permission(session.id, after: mark)
+            try await engine.replyPermission(sessionID: session.id, requestID: second.id, decision: .reject, message: nil)
+            _ = try await h.recorder.ended(session.id, after: mark)
+        }
+        let outside = h.events("permission_answer").compactMap { $0["outcome"]?["optionId"]?.stringValue }
+        #expect(outside == ["allow", "deny", "allow", "deny"])
         await h.finish()
     }
 
@@ -305,6 +330,30 @@ struct ACPEngineTests {
         #expect(end.outcome == "failed")
         #expect(end.error?.contains("did not switch to default") == true)
         #expect(h.received("session/prompt").isEmpty)
+        await h.finish()
+    }
+
+    @Test func agentWithNoMatchingModeGetsNoWorkUnlessBypass() async throws {
+        // An agent that reports no modes at all keeps whatever its own config says (Turbo, say), so
+        // Ensemble refuses to send work in every mode but Bypass.
+        let h = try FakeACPHarness()
+        let engine = h.engine(env: ["FAKE_ACP_INITIAL_MODE": "turbo", "FAKE_ACP_NO_MODES": "1"])
+        let session = try await h.session(engine, mode: .ask)
+        let mark = await h.recorder.mark()
+        try await engine.prompt(session.id, text: "run the shell", files: [])
+        let end = try await h.recorder.ended(session.id, after: mark, timeout: 5)
+        #expect(end.outcome == "failed")
+        #expect(end.error?.contains("did not switch to Ask permissions") == true)
+        #expect(await h.recorder.all(after: mark) { $0 == .activity(sessionID: session.id, .failed) }.count == 1)
+        #expect(h.received("session/prompt").isEmpty)
+        #expect(h.received("session/set_config_option").isEmpty)
+
+        // Bypass is the one mode that may run without a matching agent mode.
+        try await engine.setPermissionMode(session.id, mode: .bypass)
+        let bypassMark = await h.recorder.mark()
+        try await engine.prompt(session.id, text: "run the shell", files: [])
+        #expect(try await h.recorder.ended(session.id, after: bypassMark).outcome == "succeeded")
+        #expect(h.received("session/prompt").count == 1)
         await h.finish()
     }
 
