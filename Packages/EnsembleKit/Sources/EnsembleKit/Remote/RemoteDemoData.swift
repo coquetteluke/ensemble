@@ -136,7 +136,21 @@ public struct RemoteDemoData: Sendable {
                 .init(id: IDs.agentB.uuidString, label: "Grace", usage: Usage(inputTokens: 48_400, outputTokens: 8_300, costUSD: 0.46),
                       capUSD: nil, colorHex: "#6A9BCC"),
             ],
-            updated: now)
+            updated: now,
+            plans: [
+                RemotePlanUsage(id: SubscriptionPlan.claude.id, title: SubscriptionPlan.claude.title, windows: [
+                    .init(id: "five_hour", label: "Five-hour limit", usedFraction: 0.46, resetsAt: now.addingTimeInterval(137 * minute)),
+                    .init(id: "seven_day", label: "Weekly limit", usedFraction: 0.71, resetsAt: now.addingTimeInterval(77 * 60 * minute)),
+                ]),
+                RemotePlanUsage(id: SubscriptionPlan.googleAI.id, title: SubscriptionPlan.googleAI.title, windows: [
+                    .init(id: "gemini/5h", group: "Gemini models", label: "Five-hour limit", usedFraction: 0.62,
+                          resetsAt: now.addingTimeInterval(160 * minute)),
+                    .init(id: "gemini/weekly", group: "Gemini models", label: "Weekly limit", usedFraction: 0.19,
+                          resetsAt: now.addingTimeInterval(99 * 60 * minute)),
+                    .init(id: "3p/5h", group: "Claude and GPT models", label: "Five-hour limit", usedFraction: 0),
+                    .init(id: "3p/weekly", group: "Claude and GPT models", label: "Weekly limit", usedFraction: 0),
+                ]),
+            ])
 
         return RemoteDemoData(
             sessions: sessions, permissions: [permission],

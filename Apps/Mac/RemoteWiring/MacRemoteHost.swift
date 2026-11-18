@@ -141,7 +141,8 @@ final class MacRemoteHost: RemoteHost {
         }
         let rows = byProvider.sorted { $0.value.costUSD > $1.value.costUSD }
             .map { RemoteUsageSummary.Row(id: $0.key, label: $0.key, usage: $0.value) }
-        return RemoteUsageSummary(today: todayUsage, week: weekUsage, providers: rows)
+        // Claude plan and Google AI plan limits (`RemotePlanSummaries`, Usage/PlanUsageSections.swift).
+        return RemoteUsageSummary(today: todayUsage, week: weekUsage, providers: rows, plans: await RemotePlanSummaries.plans(store: store))
     }
 
     // MARK: Live updates

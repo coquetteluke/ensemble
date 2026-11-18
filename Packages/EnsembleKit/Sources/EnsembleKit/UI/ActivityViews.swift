@@ -91,7 +91,7 @@ public struct ActivityGroupView: View {
 
 // MARK: - Working row
 
-/// The app icon's constellation, alive: four stars drift on small orbits and the links between them draw one after
+/// The app icon's constellation, alive: four stars drift on their own orbits, the shape sways, and the links between them draw one after
 /// another, so the shape keeps connecting while an agent works. Still in snapshots and with Reduce Motion.
 public struct ConstellationSpinner: View {
     var size: CGFloat
@@ -108,13 +108,13 @@ public struct ConstellationSpinner: View {
     }
 
     /// Where the icon's stars sit, in a unit square: white, teal, amber, pink.
-    static let stars: [(x: Double, y: Double)] = [(0.20, 0.22), (0.80, 0.30), (0.33, 0.80), (0.81, 0.74)]
+    static let stars: [(x: Double, y: Double)] = [(0.25, 0.27), (0.75, 0.32), (0.35, 0.75), (0.76, 0.70)]
     /// The icon's five links.
     static let links: [(from: Int, to: Int)] = [(0, 1), (1, 3), (3, 2), (2, 0), (1, 2)]
     /// One full round of links, in seconds.
-    public static let period = 2.8
+    public static let period = 2.2
     /// Each star's own drift: frequencies (cycles a second) and phases, so they never move in step.
-    static let drift: [(fx: Double, fy: Double, phase: Double)] = [(0.31, 0.23, 0.0), (0.27, 0.35, 1.7), (0.37, 0.29, 3.1), (0.24, 0.33, 4.6)]
+    static let drift: [(fx: Double, fy: Double, phase: Double)] = [(0.55, 0.42, 0.0), (0.48, 0.62, 1.7), (0.66, 0.51, 3.1), (0.44, 0.58, 4.6)]
 
     public var body: some View {
         let side = theme.z(size)
@@ -164,7 +164,7 @@ public struct ConstellationSpinner: View {
             let radius = side * 0.085
             for (index, point) in points.enumerated() {
                 let pulse = glow[index]
-                let halo = radius * (1.6 + 0.3 * pulse)
+                let halo = radius * (1.5 + 0.3 * pulse)
                 context.fill(Path(ellipseIn: CGRect(x: point.x - halo, y: point.y - halo, width: halo * 2, height: halo * 2)),
                              with: .color(colors[index].opacity(0.14 + 0.16 * pulse)))
                 let core = radius * (1 + 0.18 * pulse)
@@ -176,12 +176,17 @@ public struct ConstellationSpinner: View {
 
     /// Each star's place at `time`: its spot in the icon plus a small drift.
     static func positions(at time: Double, side: CGFloat) -> [CGPoint] {
-        let reach = 0.035
+        let reach = 0.07
+        // The whole constellation also sways a little around its middle.
+        let sway = 0.14 * sin(2 * .pi * 0.17 * time)
+        let center = (x: 0.52, y: 0.51)
         return stars.indices.map { index in
             let star = stars[index], move = drift[index]
-            let x = star.x + reach * sin(2 * .pi * move.fx * time + move.phase)
-            let y = star.y + reach * cos(2 * .pi * move.fy * time + move.phase * 0.7)
-            return CGPoint(x: x * side, y: y * side)
+            let dx = star.x - center.x, dy = star.y - center.y
+            let x = center.x + dx * cos(sway) - dy * sin(sway) + reach * sin(2 * .pi * move.fx * time + move.phase)
+            let y = center.y + dx * sin(sway) + dy * cos(sway) + reach * cos(2 * .pi * move.fy * time + move.phase * 0.7)
+            // A small inset keeps a glowing star inside the frame at the far end of its drift.
+            return CGPoint(x: (0.06 + x * 0.88) * side, y: (0.06 + y * 0.88) * side)
         }
     }
 

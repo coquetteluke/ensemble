@@ -122,6 +122,8 @@ actor ACPEngineCore {
     private var commandsByDirectory: [String: [ACPCommand]] = [:]
     private var latestCommands: [ACPCommand]?
     private var auth: (date: Date, state: ACPAuthState)?
+    /// Plan use and limit hits (`ACPEngineCore+PlanUsage.swift`).
+    var planUsage = ACPPlanUsageState()
     private var lastCost: [String: Double] = [:]
 
     init(configuration: ACPEngine.Configuration, broadcaster: ACPEventBroadcaster) {
@@ -960,6 +962,7 @@ actor ACPEngineCore {
             outcome = mapped.0
             message = mapped.1
         }
+        notePlanLimit(sessionID: id, outcome: outcome, message: message, modelID: store[id]?.model?.id)
         lives[id] = live
         if var record = store[id] {
             if let usage = ACPTurnUsage(result?["usage"]) { record.usage = record.usage + usage.usage }

@@ -10,8 +10,9 @@ files in `Packages/EnsembleKit/Sources/EnsembleKit/Resources/Fonts/`.
 
 ## Ensemble Serif
 
-Merriweather at its normal width with the weight axis remapped, so that Regular and SemiBold read
-like the serif in the reference app and Bold is a touch heavier (matched by measuring x-height, ink per line and line
+Merriweather at its normal width. Regular is Merriweather's own Regular (400); the weight axis is
+remapped above it, so SemiBold reads like the serif in the reference app and Bold is a touch heavier. A
+lighter Regular (325) was tried first and read as blurry on dark backgrounds (matched by measuring x-height, ink per line and line
 length, never by copying another font's data). "Merriweather" is a Reserved Font Name, so the result
 is renamed throughout.
 

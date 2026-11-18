@@ -1,10 +1,10 @@
 """Builds Ensemble Serif from Merriweather (SIL OFL 1.1).
 
-Changes from Merriweather: width fixed at its normal 100, weight axis relabelled so the
-standard weights land where they read like the reference app's text (Regular 400 is
-Merriweather 325, Medium 500 is 480, SemiBold 600 is 650, Bold 700 is 720, a touch heavier
-than the reference's bold), and every name changed, since "Merriweather" is a Reserved Font
-Name under its licence.
+Changes from Merriweather: width fixed at its normal 100, weight axis remapped above Regular
+(Regular 400 is Merriweather's own 400, Medium 500 is 480, SemiBold 600 is 650, Bold 700 is 720,
+a touch heavier than the reference's bold), and every name changed, since "Merriweather" is a
+Reserved Font Name under its licence. Regular was 325 at first; on dark backgrounds that read as
+blurry, so it is Merriweather's own Regular now (2026-11-18).
 """
 import sys
 from fontTools.ttLib import TTFont
@@ -41,7 +41,7 @@ if __name__ != "__main__":
 
 src, out, style = sys.argv[1], sys.argv[2], sys.argv[3]  # style: "Regular" or "Italic"
 font = TTFont(src)
-WIDTH, DEFAULT, MAX = 100, 325, 900
+WIDTH, DEFAULT, MAX = 100, 400, 900
 font = instancer.instantiateVariableFont(font, {"wdth": WIDTH, "wght": (300, DEFAULT, MAX)}, updateFontNames=False)
 
 # Relabel the weight axis: the new default (design DEFAULT) is user weight 400.

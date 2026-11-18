@@ -2,15 +2,20 @@ import SwiftUI
 import EnsembleKit
 
 /// Under the composer: session cost and tokens (opens the usage popover), "Work in a copy" and the branch chip
-/// (`WorktreeControls.swift`), the Claude plan limit ring and a small context meter. Shows the widest level that fits
+/// (`WorktreeControls.swift`), the plan limit ring (the session's plan: Google AI in Gemini sessions, else Claude) and a
+/// small context meter. Shows the widest level that fits
 /// (`StatusLineLevel`): labels shorten, then items keep their icons only (the tooltips keep the full text), then the
 /// "Work in a copy" switch moves into the composer's More menu (`onWorktreeSwitchHidden`).
 struct StatusLine: View {
     let store: SessionStore
     let session: SessionModel
     @Bindable var window: WindowState
-    /// Snapshots pass a fixed plan meter; the app reads the Claude engine.
+    /// Snapshots pass a fixed plan meter; the app reads the engine of the session's plan (`PlanLimitLoader`).
     var planMeter: PlanLimitMeter?
+    /// The plan `planMeter` belongs to.
+    var planMeterPlan: SubscriptionPlan = .claude
+    /// Snapshots pass fixed plan limits for the usage popover.
+    var planSnapshot: PlanUsageSnapshot?
     /// Told whether the level on screen leaves out the "Work in a copy" switch.
     var onWorktreeSwitchHidden: ((Bool) -> Void)?
     @Environment(\.theme) private var theme
@@ -38,7 +43,7 @@ struct StatusLine: View {
             }
         }
         .modifier(WorktreeStatusTasks(store: store, session: session, showBranches: $showBranches, pendingSwitch: $pendingSwitch))
-        .modifier(PlanLimitRefresh(store: store, loader: planLoader, enabled: planMeter == nil && !isSnapshot))
+        .modifier(PlanLimitRefresh(store: store, session: session, loader: planLoader, enabled: planMeter == nil && !isSnapshot))
     }
 
     private func line(_ level: StatusLineLevel) -> some View {
@@ -49,7 +54,8 @@ struct StatusLine: View {
                 WorktreeStatusControls.pick(branch, session: session, store: store) { pendingSwitch = $0 }
             }
             Spacer(minLength: theme.z(8))
-            PlanLimitStatusItem(meter: planMeter ?? planLoader.meter, compact: level >= .icons) { showUsage = true }
+            PlanLimitStatusItem(meter: planMeter ?? planLoader.meter, plan: planMeter == nil ? planLoader.plan : planMeterPlan,
+                                group: planMeter == nil ? planLoader.group : nil, compact: level >= .icons) { showUsage = true }
             contextButton(level)
         }
         .onAppear { onWorktreeSwitchHidden?(level == .minimal) }
@@ -80,7 +86,7 @@ struct StatusLine: View {
         .accessibilityLabel("Usage for this session")
         .accessibilityValue("\(cost), \(tokens) tokens")
         .popover(isPresented: $showUsage, arrowEdge: .top) {
-            UsagePopover(usage: usage, title: session.title, store: store) {
+            UsagePopover(usage: usage, title: session.title, store: store, session: session, planSnapshot: planSnapshot) {
                 showUsage = false
                 window.route = .usage
             }
@@ -157,11 +163,16 @@ struct ContextRing: View {
     }
 }
 
-/// Session usage numbers, the Claude plan limits, and "Show all usage" (the Usage screen: per agent and provider).
+/// Session usage numbers, every plan's limits (Claude plan, Google AI plan, the session's own plan first), and "Show all
+/// usage" (the Usage screen: per agent and provider).
 struct UsagePopover: View {
     let usage: Usage
     let title: String
     let store: SessionStore
+    /// The session the popover is for: its plan comes first.
+    var session: SessionModel?
+    /// Snapshots pass fixed plan limits; the app reads the engines.
+    var planSnapshot: PlanUsageSnapshot?
     /// Opens the Usage screen; nil hides the button.
     var onShowAll: (() -> Void)?
     @Environment(\.theme) private var theme
@@ -181,7 +192,7 @@ struct UsagePopover: View {
                 row("Cache read", usage.cacheReadTokens)
                 row("Cache write", usage.cacheWriteTokens)
             }
-            ClaudePlanLimitsSection(store: store)
+            PlanUsageSections(store: store, session: session, snapshot: planSnapshot)
             if let onShowAll {
                 Button(action: onShowAll) {
                     HStack(spacing: theme.z(5)) {
