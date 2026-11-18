@@ -198,6 +198,16 @@ actor ClaudeEngineCore {
         return record.engineSession
     }
 
+    /// Adds imported sessions (`ClaudeImport+Engine.swift`); ids already known, as a session or its CLI conversation, are skipped.
+    func adopt(_ imported: [ClaudeSessionRecord]) -> [EngineSession] {
+        var known = Set(store.all.flatMap { [$0.id, $0.cliID] })
+        let added = imported.filter { known.insert($0.id).inserted }
+        for record in added { store[record.id] = record }
+        if !added.isEmpty { save() }
+        for record in added { emit(.sessionCreated(record.engineSession)) }
+        return added.map(\.engineSession)
+    }
+
     func deleteSession(_ id: String) throws {
         _ = try rootRecord(id, action: "be deleted on its own")
         stopProcess(id)

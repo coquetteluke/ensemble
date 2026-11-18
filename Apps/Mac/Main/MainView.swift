@@ -100,6 +100,7 @@ struct MainView: View {
             NewSessionSheet(store: store, window: window)
                 .ensembleTheme()
         }
+        .claudeImport(store: store)
         .alert("Something went wrong", isPresented: errorShown, presenting: store.lastError) { _ in
             Button("OK") { store.lastError = nil }
         } message: { message in

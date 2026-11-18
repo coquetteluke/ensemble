@@ -267,6 +267,7 @@ enum SnapshotRenderer {
         written += SearchSnapshots.render(to: outputDirectory, zoom: zoom)
         written += RoomSnapshots.render(to: outputDirectory, zoom: zoom)
         written += ReviewSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += ImportSnapshots.render(to: outputDirectory, zoom: zoom)
 
         print("Rendered \(written.count) snapshots:")
         for path in written { print(path) }

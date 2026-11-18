@@ -237,6 +237,9 @@ struct EnsembleCommands: Commands {
             Button("New Room") { app.rooms?.beginNewRoom() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(app.rooms == nil)
+            Divider()
+            Button("Import Claude Sessions...") { if let store = app.store { ClaudeImportCenter.shared.show(store: store) } }
+                .disabled(!ClaudeImportCenter.canImport(app.store))
         }
 
         CommandMenu("Session") {
