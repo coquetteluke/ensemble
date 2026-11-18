@@ -16,6 +16,7 @@ final class AppEngine {
     /// The iPhone remote, available once the store exists.
     private(set) var remote: RemoteControlController?
     @ObservationIgnored private var watchTask: Task<Void, Never>?
+    @ObservationIgnored private var quitObserver: (any NSObjectProtocol)?
     /// Sends each session to OpenCode or to the Claude engine (Claude models on the user's own subscription).
     @ObservationIgnored private(set) var router: EngineRouter?
 
@@ -26,6 +27,11 @@ final class AppEngine {
 
     func start() {
         guard store == nil, watchTask == nil else { return }
+        quitObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stopAgentProcesses() }
+        }
         if Self.usePreview {
             open(SessionStore(engine: PreviewEngine()))
             return
@@ -44,6 +50,12 @@ final class AppEngine {
                 }
                 guard self.store == nil else { continue }
                 let router = EngineRouter.standard(openCode: client, claude: ClaudeCodeEngine())
+                // Gemini through Google's official `agy acp`, on the user's own Google AI plan.
+                let antigravity = ACPAgentRegistry.antigravity
+                if ACPAgentRegistry.installation(antigravity).installed {
+                    router.register(ACPEngine(agent: antigravity), providers: [antigravity.id], billing: .subscription,
+                                    id: "antigravity", name: "Google Antigravity")
+                }
                 self.router = router
                 self.open(SessionStore(engine: router))
             }
@@ -65,6 +77,21 @@ final class AppEngine {
 
     func retry() {
         Task { await manager.checkNow() }
+    }
+
+    /// Stops the `claude` and `agy` processes Ensemble started, waiting at most two seconds so quitting
+    /// never hangs. (They also exit by themselves once their input closes.)
+    private func stopAgentProcesses() {
+        guard let router else { return }
+        let claude = router.registration(id: "claude")?.engine as? ClaudeCodeEngine
+        let antigravity = router.registration(id: "antigravity")?.engine as? ACPEngine
+        let done = DispatchSemaphore(value: 0)
+        Task.detached {
+            await claude?.shutdown()
+            await antigravity?.shutdown()
+            done.signal()
+        }
+        _ = done.wait(timeout: .now() + 2)
     }
 }
 
