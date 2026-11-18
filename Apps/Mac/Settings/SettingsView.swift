@@ -26,6 +26,9 @@ private struct SettingsTabs: View {
             Tab("Accounts", systemImage: "person.crop.circle") {
                 AccountsSettingsView(store: store)
             }
+            Tab("Alerts", systemImage: "bell.badge") {
+                AttentionSettingsTab()
+            }
             Tab("Models", systemImage: "cpu") {
                 ModelsSettingsView(store: store)
             }

@@ -1,19 +1,38 @@
 import SwiftUI
 import EnsembleKit
 
-/// Left sidebar: New session, Session Hub, Scheduled, search, projects with their sessions, Settings.
+/// Left sidebar: New session, Session Hub, Scheduled, search, pinned sessions, the session list (grouped by
+/// project, state or date), Settings. Rows show a needs-you badge, a working spinner, or a failed, unread or
+/// completed mark.
 struct SidebarView: View {
     let store: SessionStore
     @Bindable var window: WindowState
+    /// Snapshots pass a fixed grouping; the app uses the saved choice.
+    var groupingOverride: SidebarGrouping?
     @Environment(\.theme) private var theme
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
     @Environment(\.isSnapshot) private var isSnapshot
+    /// Snapshots inject their own; the app uses `AttentionCenter.shared`.
+    @Environment(AttentionCenter.self) private var injectedAttention: AttentionCenter?
+
+    @AppStorage(AttentionSettings.Key.sidebarGrouping) private var groupingRaw = SidebarGrouping.project.rawValue
+    @AppStorage(AttentionSettings.Key.sidebarSort) private var sortRaw = SidebarSort.recent.rawValue
 
     @State private var renaming: SessionModel?
     @State private var renameText = ""
     @State private var deleting: SessionModel?
 
+    private var attention: AttentionCenter { injectedAttention ?? .shared }
+    private var grouping: SidebarGrouping { groupingOverride ?? SidebarGrouping(rawValue: groupingRaw) ?? .project }
+    private var sort: SidebarSort { SidebarSort(rawValue: sortRaw) ?? .recent }
+
     var body: some View {
+        let snapshots = store.attentionSnapshots()
+        let entries = store.sidebarEntries(snapshots: snapshots, marks: attention.marks).filter { $0.matches(window.searchText) }
+        let arrangement = SidebarArrangement.arrange(entries, grouping: grouping, sort: sort)
+        let prompts = Dictionary(snapshots.map { ($0.id, $0.prompts.count) }, uniquingKeysWith: { a, _ in a })
+
         VStack(alignment: .leading, spacing: 0) {
             // Title bar area: traffic lights and the sidebar toolbar button live here.
             Color.clear.frame(height: 52)
@@ -40,10 +59,13 @@ struct SidebarView: View {
 
             AdaptiveScroll(.vertical) {
                 VStack(alignment: .leading, spacing: theme.z(14)) {
-                    ForEach(filteredProjects) { project in
-                        projectSection(project)
+                    if !arrangement.pinned.isEmpty {
+                        pinnedSection(arrangement.pinned, prompts: prompts)
                     }
-                    if filteredProjects.isEmpty && store.isLoaded {
+                    if !arrangement.groups.isEmpty || (store.isLoaded && !store.projects.isEmpty) {
+                        sessionsSection(arrangement.groups, prompts: prompts)
+                    }
+                    if arrangement.isEmpty && store.isLoaded {
                         Text(window.searchText.isEmpty ? "No sessions yet" : "No matches")
                             .font(theme.font(size: 12.5))
                             .foregroundStyle(theme.textTertiary)
@@ -61,6 +83,14 @@ struct SidebarView: View {
             footer
         }
         .background(theme.sidebar)
+        .background {
+            if !isSnapshot { AttentionWindowReader { attention.registerMainWindow($0) } }
+        }
+        .task(id: ObjectIdentifier(store)) {
+            guard !isSnapshot else { return }
+            attention.registerOpenWindow { openWindow(id: "main") }
+            attention.attach(store: store, window: window)
+        }
         .alert("Rename session", isPresented: renameShown) {
             TextField("Title", text: $renameText)
             Button("Rename") {
@@ -71,7 +101,11 @@ struct SidebarView: View {
         }
         .confirmationDialog("Delete this session?", isPresented: deleteShown, presenting: deleting) { session in
             Button("Delete \"\(session.title)\"", role: .destructive) {
-                Task { await store.delete(session.id) }
+                let id = session.id
+                Task {
+                    await store.delete(id)
+                    if store.session(id) == nil { attention.forget(id) }
+                }
                 deleting = nil
             }
         } message: { _ in
@@ -79,58 +113,123 @@ struct SidebarView: View {
         }
     }
 
-    // MARK: Projects
+    // MARK: Sections
 
-    private var filteredProjects: [ProjectGroup] {
-        let query = window.searchText.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return store.projects }
-        return store.projects.compactMap { project in
-            if project.name.localizedCaseInsensitiveContains(query) { return project }
-            let matches = project.sessions.filter { $0.title.localizedCaseInsensitiveContains(query) }
-            return matches.isEmpty ? nil : ProjectGroup(id: project.id, directory: project.directory, name: project.name, sessions: matches)
-        }
-    }
-
-    private func projectSection(_ project: ProjectGroup) -> some View {
-        let collapsed = window.collapsedProjects.contains(project.id) && window.searchText.isEmpty
+    private func pinnedSection(_ entries: [SidebarEntry], prompts: [String: Int]) -> some View {
+        let collapsed = isCollapsed("pinned")
         return VStack(alignment: .leading, spacing: theme.z(1)) {
-            ProjectHeader(name: project.name, path: project.directory, collapsed: collapsed,
-                          onToggle: {
-                              if collapsed { window.collapsedProjects.remove(project.id) } else { window.collapsedProjects.insert(project.id) }
-                          },
-                          onNew: { window.beginNewSession(in: project.directory) })
+            SidebarSectionHeader(title: "Pinned", collapsed: collapsed, onToggle: { toggle("pinned") }) {
+                EmptyView()
+            }
             if !collapsed {
-                ForEach(project.sessions) { session in
-                    sessionRow(session)
+                ForEach(entries) { entry in
+                    sessionRow(entry, prompts: prompts[entry.id] ?? 0, showsFolder: true)
                 }
             }
         }
     }
 
-    private func sessionRow(_ session: SessionModel) -> some View {
-        let selectedID = store.selected.map { $0.info.parentID ?? $0.id }
-        let colors = (store.sessionAgentIDs[session.id] ?? []).compactMap { store.agents[$0] }.map { Color(hexString: $0.colorHex) }
-        return SessionRow(session: session,
-                          selected: window.route == .session && selectedID == session.id,
-                          needsYou: store.needsYouCount(session.id),
-                          running: store.isRunning(session.id),
-                          agentColors: colors) {
-            window.open(session.id, store: store)
-        }
-        .contextMenu {
-            Button("Rename") {
-                renameText = session.title
-                renaming = session
+    private func sessionsSection(_ groups: [SidebarGroup], prompts: [String: Int]) -> some View {
+        VStack(alignment: .leading, spacing: theme.z(4)) {
+            SidebarSectionHeader(title: "Sessions", collapsed: nil, onToggle: {}) {
+                GroupAndSortMenu(grouping: $groupingRaw, sort: $sortRaw)
             }
-            Button("Reveal in Finder") {
-                NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: session.directory)
+            VStack(alignment: .leading, spacing: theme.z(14)) {
+                ForEach(groups) { group in
+                    groupSection(group, prompts: prompts)
+                }
             }
-            Divider()
-            Button("Archive") { Task { await store.archive(session.id) } }
-            Button("Delete", role: .destructive) { deleting = session }
-            Divider()
-            PowerMenuItems(holder: .session(session.id))
         }
+    }
+
+    private func groupSection(_ group: SidebarGroup, prompts: [String: Int]) -> some View {
+        let collapsed = isCollapsed(group.id)
+        return VStack(alignment: .leading, spacing: theme.z(1)) {
+            switch group.kind {
+            case .project(let directory):
+                SidebarGroupHeader(icon: .symbol("folder"), title: group.title, help: Format.abbreviatedPath(directory),
+                                   collapsed: collapsed, onToggle: { toggle(group.id) },
+                                   onNew: { window.beginNewSession(in: directory) })
+            case .state(let state):
+                SidebarGroupHeader(icon: stateIcon(state), title: group.title, help: nil,
+                                   collapsed: collapsed, onToggle: { toggle(group.id) })
+            case .date:
+                SidebarGroupHeader(icon: .symbol("calendar"), title: group.title, help: nil,
+                                   collapsed: collapsed, onToggle: { toggle(group.id) })
+            }
+            if !collapsed {
+                ForEach(group.entries) { entry in
+                    sessionRow(entry, prompts: prompts[entry.id] ?? 0, showsFolder: grouping != .project)
+                }
+            }
+        }
+    }
+
+    private func stateIcon(_ state: SidebarStateGroup) -> SidebarGroupHeader.Icon {
+        switch state {
+        case .needsYou: .dot(theme.accent)
+        case .running: .symbol("circle.dotted")
+        case .unread: .dot(theme.contextBlue)
+        case .idle: .dot(theme.textTertiary.opacity(0.6))
+        case .completed: .symbol("checkmark")
+        }
+    }
+
+    private func isCollapsed(_ id: String) -> Bool {
+        window.collapsedProjects.contains(id) && window.searchText.isEmpty
+    }
+
+    private func toggle(_ id: String) {
+        if window.collapsedProjects.contains(id) { window.collapsedProjects.remove(id) } else { window.collapsedProjects.insert(id) }
+    }
+
+    // MARK: Rows
+
+    @ViewBuilder
+    private func sessionRow(_ entry: SidebarEntry, prompts: Int, showsFolder: Bool) -> some View {
+        if let session = store.session(entry.id) {
+            let selectedID = store.selected.map { $0.info.parentID ?? $0.id }
+            let colors = (store.sessionAgentIDs[session.id] ?? []).compactMap { store.agents[$0] }.map { Color(hexString: $0.colorHex) }
+            SessionRow(session: session,
+                       selected: window.route == .session && selectedID == session.id,
+                       status: entry.status,
+                       needsYou: prompts,
+                       folder: showsFolder ? Format.folderName(session.directory) : nil,
+                       agentColors: colors) {
+                window.open(session.id, store: store)
+            }
+            .contextMenu { rowMenu(session, entry: entry) }
+        }
+    }
+
+    @ViewBuilder
+    private func rowMenu(_ session: SessionModel, entry: SidebarEntry) -> some View {
+        let id = session.id
+        Button(entry.pinned ? "Unpin" : "Pin") { attention.setPinned(id, !entry.pinned) }
+        Button("Rename") {
+            renameText = session.title
+            renaming = session
+        }
+        Divider()
+        if attention.marks.isUnread(id) {
+            Button("Mark as read") { attention.setUnread(id, false) }
+        } else {
+            Button("Mark as unread") { attention.setUnread(id, true) }
+        }
+        if attention.marks.isCompleted(id) {
+            Button("Mark as not completed") { attention.setCompleted(id, false) }
+        } else {
+            Button("Mark as completed") { attention.setCompleted(id, true) }
+        }
+        Divider()
+        Button("Reveal in Finder") {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: session.directory)
+        }
+        Divider()
+        Button("Archive") { Task { await store.archive(id) } }
+        Button("Delete", role: .destructive) { deleting = session }
+        Divider()
+        PowerMenuItems(holder: .session(id))
     }
 
     // MARK: Footer
@@ -243,59 +342,15 @@ struct SidebarNavRow: View {
     }
 }
 
-/// Folder name above its sessions, with collapse and "new session here" on hover.
-struct ProjectHeader: View {
-    let name: String
-    let path: String
-    let collapsed: Bool
-    let onToggle: () -> Void
-    let onNew: () -> Void
-    @Environment(\.theme) private var theme
-    @State private var hovering = false
-
-    var body: some View {
-        HStack(spacing: theme.z(6)) {
-            Button(action: onToggle) {
-                HStack(spacing: theme.z(6)) {
-                    Image(systemName: hovering ? (collapsed ? "chevron.right" : "chevron.down") : "folder")
-                        .font(theme.font(size: hovering ? 9 : 11, weight: hovering ? .bold : .regular))
-                        .foregroundStyle(theme.textTertiary)
-                        .frame(width: theme.z(14))
-                    Text(name)
-                        .font(theme.font(size: 12, weight: .semibold))
-                        .foregroundStyle(theme.textSecondary)
-                        .lineLimit(1)
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(Format.abbreviatedPath(path))
-
-            if hovering {
-                Button(action: onNew) {
-                    Image(systemName: "plus")
-                        .font(theme.font(size: 11, weight: .semibold))
-                        .foregroundStyle(theme.textSecondary)
-                        .frame(width: theme.z(20), height: theme.z(20))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("New session in \(name)")
-            }
-        }
-        .padding(.horizontal, theme.z(10))
-        .frame(height: theme.z(26))
-        .onHover { hovering = $0 }
-    }
-}
-
-/// One session in the sidebar: agent dots, title, and a needs-you badge, spinner or age.
+/// One session in the sidebar: agent dots, title (and its folder when the list is not grouped by project),
+/// then one mark: a needs-you badge, the working spinner, a red failed dot, a blue unread dot, a completed
+/// check, or the age.
 struct SessionRow: View {
     let session: SessionModel
     let selected: Bool
+    let status: SidebarRowStatus
     let needsYou: Int
-    let running: Bool
+    var folder: String?
     let agentColors: [Color]
     let action: () -> Void
     @Environment(\.theme) private var theme
@@ -313,10 +368,20 @@ struct SessionRow: View {
                         }
                     }
                 }
-                Text(session.title)
-                    .font(theme.font(size: 13))
-                    .foregroundStyle(selected ? theme.textPrimary : theme.textSidebar)
-                    .lineLimit(1)
+                // The folder shows only when it fits whole next to the whole title; otherwise the title alone.
+                ViewThatFits(in: .horizontal) {
+                    if let folder {
+                        HStack(spacing: theme.z(6)) {
+                            title
+                            Text(folder)
+                                .font(theme.font(size: 11.5))
+                                .foregroundStyle(theme.textTertiary)
+                                .lineLimit(1)
+                        }
+                        .fixedSize()
+                    }
+                    title
+                }
                 Spacer(minLength: theme.z(6))
                 trailing
             }
@@ -325,29 +390,62 @@ struct SessionRow: View {
             .frame(height: theme.z(30))
         }
         .buttonStyle(RowButtonStyle(selected: selected))
+        .help(Format.abbreviatedPath(session.directory))
         .accessibilityLabel(accessibilityText)
     }
 
+    private var title: some View {
+        Text(session.title)
+            .font(theme.font(size: 13))
+            .foregroundStyle(titleColor)
+            .lineLimit(1)
+    }
+
+    private var titleColor: Color {
+        if selected { return theme.textPrimary }
+        return status == .completed ? theme.textTertiary : theme.textSidebar
+    }
+
     @ViewBuilder private var trailing: some View {
-        if needsYou > 0 {
-            CountBadge(needsYou)
-        } else if running {
+        switch status {
+        case .needsYou:
+            CountBadge(max(needsYou, 1))
+        case .running:
             Spinner(size: 11)
-        } else if session.activity == .failed {
-            Image(systemName: "exclamationmark.circle")
-                .font(theme.font(size: 11.5))
-                .foregroundStyle(theme.danger)
-        } else {
+                .frame(width: theme.z(17))
+        case .failed:
+            mark(theme.danger)
+        case .unread:
+            mark(theme.contextBlue)
+        case .completed:
+            Image(systemName: "checkmark")
+                .font(theme.font(size: 10, weight: .semibold))
+                .foregroundStyle(theme.textTertiary)
+                .frame(width: theme.z(17))
+        case .idle:
             Text(Format.relative(session.info.updated))
                 .font(theme.font(size: 11.5).monospacedDigit())
                 .foregroundStyle(theme.textTertiary)
         }
     }
 
+    /// A dot centred where the badge and spinner sit, so marks line up down the list.
+    private func mark(_ color: Color) -> some View {
+        StatusDot(color, size: 7)
+            .frame(width: theme.z(17), height: theme.z(17))
+    }
+
     private var accessibilityText: String {
         var parts = [session.title]
-        if needsYou > 0 { parts.append("\(needsYou) waiting for you") }
-        if running { parts.append("running") }
+        if let folder { parts.append(folder) }
+        switch status {
+        case .needsYou: parts.append(needsYou == 1 ? "1 waiting for you" : "\(needsYou) waiting for you")
+        case .running: parts.append("running")
+        case .failed: parts.append("failed")
+        case .unread: parts.append("unread")
+        case .completed: parts.append("completed")
+        case .idle: break
+        }
         return parts.joined(separator: ", ")
     }
 }

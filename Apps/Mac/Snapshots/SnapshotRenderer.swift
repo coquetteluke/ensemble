@@ -184,6 +184,7 @@ enum SnapshotRenderer {
 
         // The live view hierarchy (real scroll views and text view) in windows that are never shown.
         written += renderLiveWindows(outputDirectory: outputDirectory, seededStore: store)
+        written += AttentionSnapshots.render(to: outputDirectory, zoom: zoom)
 
         print("Rendered \(written.count) snapshots:")
         for path in written { print(path) }
@@ -364,7 +365,7 @@ private struct SettingsTabStrip: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            ForEach([("General", "gearshape"), ("Accounts", "person.crop.circle"), ("Models", "cpu"), ("Engine", "server.rack"), ("Power", "cup.and.saucer")], id: \.0) { title, symbol in
+            ForEach([("General", "gearshape"), ("Accounts", "person.crop.circle"), ("Alerts", "bell.badge"), ("Models", "cpu"), ("Engine", "server.rack"), ("Power", "cup.and.saucer")], id: \.0) { title, symbol in
                 VStack(spacing: 3) {
                     Image(systemName: symbol).font(.system(size: 16))
                     Text(title).font(.system(size: 11))

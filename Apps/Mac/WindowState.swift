@@ -73,7 +73,7 @@ final class WindowState {
 
     /// Opens the Nth session in sidebar order (Cmd-1 to Cmd-9).
     func openSession(number: Int, store: SessionStore) {
-        let order = store.sidebarOrder
+        let order = AttentionCenter.shared.sidebarOrder(store: store)
         guard number >= 1, number <= order.count else { return }
         open(order[number - 1].id, store: store)
     }

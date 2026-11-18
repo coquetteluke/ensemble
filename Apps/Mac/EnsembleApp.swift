@@ -108,6 +108,8 @@ struct EnsembleApp: App {
             SnapshotRenderer.run(outputDirectory: directory)
             exit(0)
         }
+        // A notification clicked while Ensemble was closed opens its session once sessions load.
+        AttentionCenter.shared.installNotificationHandler()
     }
 
     private var colorScheme: ColorScheme? {
@@ -217,7 +219,7 @@ struct EnsembleCommands: Commands {
                 .disabled(!(app.store?.selected?.isWorking ?? false))
             Divider()
 
-            let order = app.store?.sidebarOrder ?? []
+            let order = app.store.map { AttentionCenter.shared.sidebarOrder(store: $0) } ?? []
             ForEach(1...9, id: \.self) { number in
                 Button(number <= order.count ? order[number - 1].title : "Session \(number)") {
                     if let store = app.store { window.openSession(number: number, store: store) }
