@@ -56,11 +56,16 @@ final class RemoteControlController {
     @ObservationIgnored private let tokenStore: any RemoteTokenStore
     @ObservationIgnored private let identityStore: any RelayIdentityStore
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let bindPortOverride: UInt16?
+    @ObservationIgnored private let detectNetwork: @Sendable () async -> RemoteNetworkInfo
     @ObservationIgnored private var server: RemoteServer?
+    @ObservationIgnored private var serverGeneration = 0
     @ObservationIgnored private var token: String?
     @ObservationIgnored private var identity: RelayIdentity?
     @ObservationIgnored private var statusTask: Task<Void, Never>?
     @ObservationIgnored private var networkTask: Task<Void, Never>?
+    @ObservationIgnored private var relayGeneration = 0
+    @ObservationIgnored private var pendingRelayStop: Task<Void, Never>?
     @ObservationIgnored private var relayHost: RelayHost?
     @ObservationIgnored private var relayStatusTask: Task<Void, Never>?
     @ObservationIgnored private var previousRelayHost: RelayHost?
@@ -80,11 +85,15 @@ final class RemoteControlController {
     init(host: any RemoteHost,
          tokenStore: any RemoteTokenStore = KeychainRemoteTokenStore(),
          identityStore: any RelayIdentityStore = KeychainRelayIdentityStore(),
-         defaults: UserDefaults = .standard) {
+         defaults: UserDefaults = .standard,
+         bindPortOverride: UInt16? = nil,
+         detectNetwork: @escaping @Sendable () async -> RemoteNetworkInfo = { await RemoteNetworkInfo.detect() }) {
         self.host = host
         self.tokenStore = tokenStore
         self.identityStore = identityStore
         self.defaults = defaults
+        self.bindPortOverride = bindPortOverride
+        self.detectNetwork = detectNetwork
         let savedPort = defaults.integer(forKey: Keys.port)
         self.port = (1...65535).contains(savedPort) ? savedPort : remoteDefaultPort
         self.allowLocalNetwork = defaults.bool(forKey: Keys.allowLocalNetwork)
@@ -120,7 +129,8 @@ final class RemoteControlController {
             try? identityStore.saveIdentity(RelayIdentity(mailboxID: mailboxID, hostKey: key))
         }
         let controller = RemoteControlController(host: DemoRemoteHost(), tokenStore: tokenStore,
-                                                 identityStore: identityStore, defaults: defaults)
+                                                 identityStore: identityStore, defaults: defaults,
+                                                 detectNetwork: { network })
         var status = RemoteServer.Status.stopped
         status.running = phase == .on
         status.listening = phase == .on ? listening : []
@@ -204,16 +214,13 @@ final class RemoteControlController {
         relayEnabled = enabled
         defaults.set(enabled, forKey: Keys.relayEnabled)
         rotatedTakenMailboxOnce = false
+        rebuildPairing()
         if enabled {
-            rebuildPairing()
             await server?.setActiveRelay(currentActiveRelay())
-            if let server, let token = loadToken() {
-                await startRelayHosts(server: server, token: token)
-            }
+            await syncRelayHosts()
         } else {
             await stopRelayHosts()
             await server?.setActiveRelay(nil)
-            rebuildPairing()
         }
     }
 
@@ -234,8 +241,8 @@ final class RemoteControlController {
         rotatedTakenMailboxOnce = false
         rebuildPairing()
         await server?.setActiveRelay(currentActiveRelay())
-        if relayEnabled, let server, let token = loadToken() {
-            await startRelayHosts(server: server, token: token)
+        if relayEnabled, server != nil {
+            await syncRelayHosts()
         }
         return nil
     }
@@ -261,18 +268,18 @@ final class RemoteControlController {
         needsRescanNotice = false
         rotatedTakenMailboxOnce = false
         clearPreviousRelay()
+        rebuildPairing()
         await stopRelayHosts()
         await server?.setToken(fresh)
         await server?.setActiveRelay(currentActiveRelay())
-        rebuildPairing()
-        if relayEnabled, let server {
-            await startRelayHosts(server: server, token: fresh)
+        if relayEnabled, server != nil {
+            await syncRelayHosts()
         }
     }
 
     /// Re-reads the Mac's Tailscale and LAN addresses.
     func refreshNetwork() async {
-        let info = await RemoteNetworkInfo.detect()
+        let info = await detectNetwork()
         let addressesChanged = info.bindAddresses(includeLocalNetwork: allowLocalNetwork)
             != network.bindAddresses(includeLocalNetwork: allowLocalNetwork)
         network = info
@@ -294,9 +301,16 @@ final class RemoteControlController {
     // MARK: - Server
 
     private func start() async {
-        guard server == nil else { return }
+        switch phase {
+        case .on, .starting:
+            return
+        case .off, .failed:
+            break
+        }
+        serverGeneration += 1
+        let gen = serverGeneration
         phase = .starting
-        guard let token = loadToken() else {
+        guard loadToken() != nil else {
             phase = .failed(tokenError ?? "Could not read the pairing token")
             return
         }
@@ -304,48 +318,80 @@ final class RemoteControlController {
             phase = .failed(tokenError ?? "Could not read the relay identity")
             return
         }
-        network = await RemoteNetworkInfo.detect()
+
+        let detected = await detectNetwork()
+        guard serverGeneration == gen else { return }
+        network = detected
+
+        guard let initialToken = loadToken() else {
+            phase = .failed(tokenError ?? "Could not read the pairing token")
+            return
+        }
+        if relayEnabled, loadIdentity() == nil {
+            phase = .failed(tokenError ?? "Could not read the relay identity")
+            return
+        }
+
+        let listenPort = bindPortOverride ?? UInt16(port)
         let config = RemoteServer.Configuration(
-            port: UInt16(port),
+            port: listenPort,
             bindAddresses: network.bindAddresses(includeLocalNetwork: allowLocalNetwork),
             macName: network.computerName,
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0",
             acceptedHosts: network.pairingHosts(includeLocalNetwork: allowLocalNetwork),
             activeRelay: currentActiveRelay())
-        let server = RemoteServer(host: host, token: token, configuration: config)
+        let newServer = RemoteServer(host: host, token: initialToken, configuration: config)
         do {
-            try await server.start()
+            try await newServer.start()
         } catch {
+            guard serverGeneration == gen else { return }
             phase = .failed(error.localizedDescription)
             return
         }
-        self.server = server
+
+        guard serverGeneration == gen else {
+            await newServer.stop()
+            return
+        }
+
+        if let latestToken = loadToken(), latestToken != initialToken {
+            await newServer.setToken(latestToken)
+        }
+        await newServer.setAcceptedHosts(network.pairingHosts(includeLocalNetwork: allowLocalNetwork))
+        await newServer.setActiveRelay(currentActiveRelay())
+        guard serverGeneration == gen else {
+            await newServer.stop()
+            return
+        }
+
+        self.server = newServer
         phase = .on
         rotatedTakenMailboxOnce = false
         rebuildPairing()
-        watch(server)
+        watch(newServer)
         if relayEnabled {
-            await startRelayHosts(server: server, token: token)
+            await syncRelayHosts()
         } else {
             relayStatus = .off
         }
     }
 
     private func stop() async {
+        serverGeneration += 1
         statusTask?.cancel()
         statusTask = nil
         networkTask?.cancel()
         networkTask = nil
-        await stopRelayHosts()
         let runningServer = server
         server = nil
-        await runningServer?.stop()
         status = .stopped
         phase = .off
+        await stopRelayHosts()
+        await runningServer?.stop()
     }
 
     private func restartIfOn() async {
-        guard server != nil else {
+        guard isOn else {
             rebuildPairing()
             return
         }
@@ -356,7 +402,7 @@ final class RemoteControlController {
     private func watch(_ server: RemoteServer) {
         statusTask = Task { [weak self] in
             for await s in await server.statusUpdates() {
-                guard let self else { return }
+                guard !Task.isCancelled, let self, self.server === server else { return }
                 self.status = s
             }
         }
@@ -364,7 +410,7 @@ final class RemoteControlController {
         networkTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled, let self, self.server === server else { return }
                 await self.refreshNetwork()
             }
         }
@@ -372,42 +418,7 @@ final class RemoteControlController {
 
     // MARK: - Relay
 
-    private func startRelayHosts(server: RemoteServer, token: String) async {
-        await stopRelayHosts()
-        guard relayEnabled, self.server === server,
-              let identity = loadIdentity(),
-              let primaryURL = URL(string: relayURL) else { return }
-        let primary = RelayHost(relayURL: primaryURL, identity: identity, token: token, server: server)
-        relayHost = primary
-        relayStatus = .connecting
-        let updates = await primary.statusUpdates()
-        guard relayHost === primary else {
-            await primary.stop()
-            return
-        }
-        relayStatusTask = Task { [weak self] in
-            for await s in updates {
-                guard !Task.isCancelled, let self else { return }
-                await self.handleRelayStatus(s, from: primary)
-            }
-        }
-        await primary.start()
-        guard relayHost === primary else { return }
-
-        if let prev = activePreviousRelay(), prev.url != relayURL, let prevURL = URL(string: prev.url) {
-            let secondary = RelayHost(relayURL: prevURL, identity: identity, token: token, server: server)
-            previousRelayHost = secondary
-            let waitSeconds = max(0, prev.until.timeIntervalSinceNow)
-            previousRelayExpiryTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(waitSeconds))
-                guard !Task.isCancelled, let self else { return }
-                await self.expirePreviousRelayHost(secondary)
-            }
-            await secondary.start()
-        }
-    }
-
-    private func stopRelayHosts() async {
+    private func teardownCurrentRelayHosts() -> (primary: RelayHost?, secondary: RelayHost?) {
         relayStatusTask?.cancel()
         relayStatusTask = nil
         previousRelayExpiryTask?.cancel()
@@ -417,11 +428,95 @@ final class RemoteControlController {
         relayHost = nil
         previousRelayHost = nil
         relayStatus = .off
-        await primary?.stop()
-        await secondary?.stop()
+        return (primary, secondary)
     }
 
-    private func handleRelayStatus(_ newStatus: RelayHostStatus, from source: RelayHost) async {
+    private func enqueueRelayStop(_ hosts: (primary: RelayHost?, secondary: RelayHost?)) async {
+        let prior = pendingRelayStop
+        let stopTask = Task { @MainActor in
+            await prior?.value
+            await hosts.primary?.stop()
+            await hosts.secondary?.stop()
+        }
+        pendingRelayStop = stopTask
+        await stopTask.value
+    }
+
+    private func stopRelayHosts() async {
+        relayGeneration += 1
+        let old = teardownCurrentRelayHosts()
+        await enqueueRelayStop(old)
+    }
+
+    /// Stops any active relay hosts and starts fresh ones from the controller's current credentials and URL.
+    private func syncRelayHosts() async {
+        relayGeneration += 1
+        let gen = relayGeneration
+        let old = teardownCurrentRelayHosts()
+        await enqueueRelayStop(old)
+
+        guard relayGeneration == gen, !Task.isCancelled else { return }
+        guard relayEnabled, let server = self.server,
+              let currentToken = loadToken(),
+              let currentIdentity = loadIdentity(),
+              let primaryURL = URL(string: relayURL) else {
+            return
+        }
+
+        let primary = RelayHost(relayURL: primaryURL, identity: currentIdentity, token: currentToken, server: server)
+        relayHost = primary
+        relayStatus = .connecting
+
+        let updates = await primary.statusUpdates()
+        guard relayGeneration == gen, relayHost === primary, !Task.isCancelled else {
+            if relayHost === primary {
+                _ = teardownCurrentRelayHosts()
+            }
+            await enqueueRelayStop((primary, nil))
+            return
+        }
+
+        relayStatusTask = Task { [weak self] in
+            for await s in updates {
+                guard !Task.isCancelled, let self else { return }
+                self.handleRelayStatus(s, from: primary)
+            }
+        }
+
+        await primary.start()
+        guard relayGeneration == gen, relayHost === primary, !Task.isCancelled else {
+            if relayHost === primary {
+                let stale = teardownCurrentRelayHosts()
+                await enqueueRelayStop(stale)
+            } else {
+                await enqueueRelayStop((primary, nil))
+            }
+            return
+        }
+
+        if let prev = activePreviousRelay(), prev.url != relayURL, let prevURL = URL(string: prev.url) {
+            let secondary = RelayHost(relayURL: prevURL, identity: currentIdentity, token: currentToken, server: server)
+            previousRelayHost = secondary
+            let waitSeconds = max(0, prev.until.timeIntervalSinceNow)
+            previousRelayExpiryTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(waitSeconds))
+                guard !Task.isCancelled, let self else { return }
+                await self.expirePreviousRelayHost(secondary, generation: gen)
+            }
+            await secondary.start()
+            guard relayGeneration == gen, previousRelayHost === secondary, !Task.isCancelled else {
+                if previousRelayHost === secondary {
+                    previousRelayExpiryTask?.cancel()
+                    previousRelayExpiryTask = nil
+                    previousRelayHost = nil
+                }
+                await enqueueRelayStop((nil, secondary))
+                return
+            }
+        }
+    }
+
+    private func handleRelayStatus(_ newStatus: RelayHostStatus, from source: RelayHost) {
         guard relayHost === source else { return }
         if newStatus == .mailboxTaken {
             guard !rotatedTakenMailboxOnce else {
@@ -441,11 +536,15 @@ final class RemoteControlController {
             clearPreviousRelay()
             needsRescanNotice = true
             rebuildPairing()
-            await server?.setActiveRelay(currentActiveRelay())
-            if let server, let token = loadToken(), relayEnabled {
-                await startRelayHosts(server: server, token: token)
-            } else {
-                await stopRelayHosts()
+            // Cancel `relayStatusTask` and restart from a fresh unstructured task so `RelayHost.start()` never runs
+            // inside a cancelled `relayStatusTask`.
+            relayStatusTask?.cancel()
+            relayStatusTask = nil
+            let active = currentActiveRelay()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.server?.setActiveRelay(active)
+                await self.syncRelayHosts()
             }
             return
         }
@@ -455,12 +554,12 @@ final class RemoteControlController {
         relayStatus = newStatus
     }
 
-    private func expirePreviousRelayHost(_ host: RelayHost) async {
-        guard previousRelayHost === host else { return }
+    private func expirePreviousRelayHost(_ host: RelayHost, generation gen: Int) async {
+        guard relayGeneration == gen, previousRelayHost === host else { return }
         previousRelayExpiryTask = nil
         previousRelayHost = nil
         clearPreviousRelay()
-        await host.stop()
+        await enqueueRelayStop((nil, host))
     }
 
     /// Returns the unexpired previous relay URL and deadline, clearing expired entries from UserDefaults.
@@ -478,15 +577,6 @@ final class RemoteControlController {
     }
 
     private func recordPreviousRelay(changingFrom oldURL: String, to newURL: String, now: Date = Date()) {
-        if let existing = activePreviousRelay(now: now), existing.url != oldURL {
-            if existing.url == newURL {
-                clearPreviousRelay()
-            } else {
-                defaults.set(now.addingTimeInterval(Self.previousRelayWindow).timeIntervalSince1970,
-                             forKey: Keys.relayPreviousUntil)
-            }
-            return
-        }
         guard oldURL != newURL else { return }
         defaults.set(oldURL, forKey: Keys.relayPreviousURL)
         defaults.set(now.addingTimeInterval(Self.previousRelayWindow).timeIntervalSince1970,
