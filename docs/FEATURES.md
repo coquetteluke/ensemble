@@ -4,10 +4,13 @@ Built from the two research catalogs (`docs/research/claude-code-and-antigravity
 
 The deep polish (PLAN.md M5) starts only after Luke says go, when these waves are done.
 
-## Status (2026-11-19, early morning)
-- Done and committed: engines (Claude, Gemini, OpenCode, router, Accounts), Wave 1 (alerts and sidebar states, composer queue, side questions, dictation, search, file links, view modes, palette), Wave 2 (review pane, rooms in the window, plan mode and question cards, background work, plan limit ring, auto-continue, workspace trust card with a private OpenCode server for untrusted folders), Claude session import, GitHub pull request bar, Inter and Ensemble Serif.
-- Running (Wave 3): W3-A Session Hub and split view, W3-B scheduled tasks and usage, W3-C rewind with choices and per-session worktrees, W3-D Customizations.
-- Later in Wave 3: terminal pane, browser pane, iPhone alerts, side-task cards, rooms on the iPhone.
+## Status (2026-11-18, morning)
+- Done and committed: engines (Claude, Gemini, OpenCode, router, Accounts), Waves 1 to 3, and Wave 4:
+  - W4-A: room Members list, message graph with replay, Follow, and goal mode.
+  - W4-B: agent tools (propose_session cards, browser tools with every action approved on its exact site).
+  - W4-C: the safety check for Auto on OpenCode, and Auto on Gemini decided by Ensemble the same way.
+- Also done after Luke's feedback: the model picker by maker with subscription or API key per model, signed installs so the keychain stops asking, the composer queue hold after Stop.
+- Waiting for Luke: the cloud relay design (`docs/superpowers/specs/2026-11-18-cloud-relay-design.md`), and the deep polish.
 
 ## Wave 1 (files nobody else is editing)
 | Item | Features | Main files |
