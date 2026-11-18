@@ -70,10 +70,13 @@ public struct ClaudeImportSession: Identifiable, Hashable, Sendable {
     public var alreadyImported: Bool
     /// The transcript changed a few minutes ago, so the session may still be open in another app.
     public var recentlyWritten: Bool
+    /// The desktop app lists this session. False for sessions started outside it (the terminal, headless `claude -p`
+    /// runs), and for every session when the desktop app is not installed.
+    public var inDesktopApp: Bool
 
     public init(id: String, directory: String, title: String, titleSource: TitleSource, created: Date, updated: Date,
                 archived: Bool = false, starred: Bool = false, model: ModelRef? = nil, transcriptPath: String,
-                alreadyImported: Bool = false, recentlyWritten: Bool = false) {
+                alreadyImported: Bool = false, recentlyWritten: Bool = false, inDesktopApp: Bool = false) {
         self.id = id
         self.directory = directory
         self.title = title
@@ -86,6 +89,16 @@ public struct ClaudeImportSession: Identifiable, Hashable, Sendable {
         self.transcriptPath = transcriptPath
         self.alreadyImported = alreadyImported
         self.recentlyWritten = recentlyWritten
+        self.inDesktopApp = inDesktopApp
+    }
+
+    /// The session as it will be imported: archived when `archiveOutsideDesktopApp` is on and the desktop app does not
+    /// list it. Archived sessions stay out of the sidebar but search still finds and opens them.
+    public func prepared(archiveOutsideDesktopApp: Bool) -> ClaudeImportSession {
+        guard archiveOutsideDesktopApp, !inDesktopApp, !archived else { return self }
+        var copy = self
+        copy.archived = true
+        return copy
     }
 }
 
@@ -210,8 +223,12 @@ public struct ClaudeImportResult: Hashable, Sendable {
     public var trusted: [String]
     /// Folders that could not be trusted, with the reason.
     public var notTrusted: [String: String]
+    /// Ids of the sessions added.
+    public var addedSessionIDs: [String]
 
-    public init(imported: Int = 0, alreadyThere: Int = 0, folders: Int = 0, trusted: [String] = [], notTrusted: [String: String] = [:]) {
+    public init(imported: Int = 0, alreadyThere: Int = 0, folders: Int = 0, trusted: [String] = [], notTrusted: [String: String] = [:],
+                addedSessionIDs: [String] = []) {
+        self.addedSessionIDs = addedSessionIDs
         self.imported = imported
         self.alreadyThere = alreadyThere
         self.folders = folders

@@ -111,8 +111,12 @@ struct ClaudeImportSheet: View {
                 environments(scan.environments)
                     .padding(.top, theme.z(16))
             }
+            if model.showsArchiveOption {
+                archiveBox
+                    .padding(.top, theme.z(16))
+            }
             trustBox
-                .padding(.top, theme.z(16))
+                .padding(.top, theme.z(model.showsArchiveOption ? 12 : 16))
             notes(scan)
                 .padding(.top, theme.z(12))
         }
@@ -214,6 +218,34 @@ struct ClaudeImportSheet: View {
                         .foregroundStyle(theme.textTertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+            }
+        }
+    }
+
+    // MARK: Archive
+
+    private var archiveBox: some View {
+        let count = model.outsideDesktopAppCount
+        return HStack(alignment: .top, spacing: theme.z(10)) {
+            ImportCheckbox(isOn: model.archiveOutsideDesktopApp && count > 0) { model.archiveOutsideDesktopApp.toggle() }
+                .disabled(count == 0)
+                .padding(.top, theme.z(1))
+            VStack(alignment: .leading, spacing: theme.z(4)) {
+                HStack(spacing: theme.z(7)) {
+                    Button { model.archiveOutsideDesktopApp.toggle() } label: {
+                        Text("Archive sessions started outside the desktop app")
+                            .font(theme.font(size: 13, weight: .medium))
+                            .foregroundStyle(theme.textPrimary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(count == 0)
+                    CountBadge(count, color: theme.textTertiary.opacity(count == 0 ? 0.5 : 1))
+                        .accessibilityLabel(Self.count(count, "session"))
+                }
+                Text("Terminal and headless claude -p sessions come in archived and stay out of the sidebar. Search still finds and opens them.")
+                    .font(theme.font(size: 11.5))
+                    .foregroundStyle(theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -321,6 +353,16 @@ struct ClaudeImportSheet: View {
                         .foregroundStyle(theme.textPrimary)
                     if result.alreadyThere > 0 {
                         Text("\(Self.count(result.alreadyThere, "session")) Ensemble already had \(result.alreadyThere == 1 ? "was" : "were") left as \(result.alreadyThere == 1 ? "it was" : "they were").")
+                            .font(theme.font(size: 12))
+                            .foregroundStyle(theme.textSecondary)
+                    }
+                    if model.archivedOutside > 0 {
+                        Text("Archived \(Self.count(model.archivedOutside, "session")) started outside the desktop app. Search finds them.")
+                            .font(theme.font(size: 12))
+                            .foregroundStyle(theme.textSecondary)
+                    }
+                    if model.pinned > 0 {
+                        Text("Pinned \(Self.count(model.pinned, "starred session")).")
                             .font(theme.font(size: 12))
                             .foregroundStyle(theme.textSecondary)
                     }

@@ -38,7 +38,7 @@ extension ClaudeCodeEngine {
         let records = sessions.map { Self.record(for: $0, permissionMode: permissionMode) }
         let added = await core.adopt(records)
         var result = ClaudeImportResult(imported: added.count, alreadyThere: sessions.count - added.count,
-                                        folders: Set(added.map(\.directory)).count)
+                                        folders: Set(added.map(\.directory)).count, addedSessionIDs: added.map(\.id))
         for folder in Set(trustedFolders).sorted() {
             if configuration.trust.isTrusted(folder) { continue }
             do {

@@ -260,6 +260,10 @@ struct ClaudeImportTests {
         #expect(!known.archived)
         #expect(known.model == ModelRef(providerID: "claude-code", id: "opus", variant: "high"))
         #expect(known.created == Date(timeIntervalSince1970: 1_790_000_000))
+        #expect(known.inDesktopApp)
+        #expect(byID[ID.summary]?.inDesktopApp == true)
+        #expect(byID[ID.renamed]?.inDesktopApp == false)
+        #expect(byID[ID.long]?.inDesktopApp == false)
         #expect(byID[ID.summary]?.archived == true)
         #expect(byID[ID.summary]?.title == "Sync design")
 
@@ -350,6 +354,25 @@ struct ClaudeImportTests {
         var after = box.snapshotOfSources()
         after = after.filter { !$0.key.contains(fresh) }
         #expect(after == before)
+    }
+
+    @Test func sessionsStartedOutsideTheDesktopAppCanComeInArchived() async throws {
+        let box = try Box()
+        let engine = box.engine()
+        let scan = await engine.scanForImport(sources: box.sources)
+        let chosen = scan.folders.filter(\.selectedByDefault).flatMap(\.newSessions)
+        #expect(chosen.map { $0.prepared(archiveOutsideDesktopApp: false) } == chosen)
+        let prepared = chosen.map { $0.prepared(archiveOutsideDesktopApp: true) }
+        #expect(prepared.filter { $0.archived && !$0.inDesktopApp }.count == 3)
+
+        let result = await engine.importSessions(prepared, permissionMode: .auto)
+        #expect(Set(result.addedSessionIDs) == Set(chosen.map(\.id)))
+        let listed = Dictionary(uniqueKeysWithValues: try await engine.listSessions().map { ($0.id, $0) })
+        // Desktop sessions keep their own state; the rest come in archived and can still be opened.
+        #expect(listed[ID.desktopKnown]?.archived == false)
+        #expect(listed[ID.summary]?.archived == true)
+        for id in [ID.renamed, ID.long, ID.relocated] { #expect(listed[id]?.archived == true) }
+        #expect(!(try await engine.transcript(ID.renamed)).isEmpty)
     }
 
     @Test func foldersAreTrustedOnlyWhenAsked() async throws {

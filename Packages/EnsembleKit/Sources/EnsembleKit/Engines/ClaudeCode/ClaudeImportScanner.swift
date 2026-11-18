@@ -122,7 +122,8 @@ struct ClaudeImportScanner: Sendable {
             model: Self.modelRef(entry?.model ?? probe.model, effort: entry?.effort),
             transcriptPath: file.url.path,
             alreadyImported: knownSessionIDs.contains(file.sessionID),
-            recentlyWritten: now.timeIntervalSince(modified) < recentWindow)
+            recentlyWritten: now.timeIntervalSince(modified) < recentWindow,
+            inDesktopApp: entry != nil)
     }
 
     /// A model id the CLI or the desktop app recorded (`claude-opus-5-5`, `claude-sonnet-5-5[1m]`) as the Claude

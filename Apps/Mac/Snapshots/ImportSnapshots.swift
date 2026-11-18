@@ -52,12 +52,17 @@ enum ImportSnapshots {
             trusting.toggle(scan.folders[2])
             save("import-sheet-trust-\(tone)", width: 640, scheme: scheme) { ClaudeImportSheet(model: trusting) }
 
+            let keepVisible = ClaudeImportModel(engine: nil, permissionMode: .auto, scan: scan)
+            keepVisible.archiveOutsideDesktopApp = false
+            save("import-sheet-archive-off-\(tone)", width: 640, scheme: scheme) { ClaudeImportSheet(model: keepVisible) }
+
             let scanning = ClaudeImportModel(engine: nil, permissionMode: .auto)
             save("import-sheet-scanning-\(tone)", width: 640, scheme: scheme) { ClaudeImportSheet(model: scanning) }
 
             let done = ClaudeImportModel(engine: nil, permissionMode: .auto, scan: scan)
             done.showResult(ClaudeImportResult(imported: 38, alreadyThere: 5, folders: 5, trusted: [scan.folders[0].path],
-                                               notTrusted: [NSHomeDirectory(): WorkspaceTrustError.tooBroad(NSHomeDirectory()).errorDescription ?? ""]))
+                                               notTrusted: [NSHomeDirectory(): WorkspaceTrustError.tooBroad(NSHomeDirectory()).errorDescription ?? ""]),
+                            archivedOutside: 14, pinned: 1)
             save("import-sheet-done-\(tone)", width: 640, scheme: scheme) { ClaudeImportSheet(model: done) }
 
             save("import-offer-card-\(tone)", width: 380, scheme: scheme) {
@@ -110,7 +115,7 @@ enum ImportSnapshots {
         func days(_ value: Double) -> Date { now.addingTimeInterval(-value * 86_400) }
         var counter = 0
         func sessions(_ folder: String, count: Int, from: Double, to: Double, imported: Int = 0, archived: Int = 0,
-                      recent: Bool = false) -> [ClaudeImportSession] {
+                      recent: Bool = false, outside: Int = 0, starred: Int = 0) -> [ClaudeImportSession] {
             (0..<count).map { index in
                 counter += 1
                 let step = count > 1 ? (from - to) / Double(count - 1) : 0
@@ -118,10 +123,10 @@ enum ImportSnapshots {
                 return ClaudeImportSession(
                     id: String(format: "00000000-0000-4000-8000-%012d", counter), directory: folder,
                     title: "Sample session \(counter)", titleSource: .desktopApp, created: updated.addingTimeInterval(-3600),
-                    updated: updated, archived: index < archived,
+                    updated: updated, archived: index < archived, starred: index >= count - starred,
                     model: ModelRef(providerID: "claude-code", id: "opus", variant: "high"),
                     transcriptPath: "/dev/null", alreadyImported: index >= count - imported,
-                    recentlyWritten: recent && index == 0)
+                    recentlyWritten: recent && index == 0, inDesktopApp: index >= outside)
             }
         }
         let weather = home + "/Developer/weather-app"
@@ -133,11 +138,11 @@ enum ImportSnapshots {
         let scratch = home + "/Developer/scratch"
         let folders = [
             ClaudeImportFolder(path: weather, exists: true, trustedInCLI: true,
-                               sessions: sessions(weather, count: 14, from: 46, to: 0, archived: 9, recent: true)),
+                               sessions: sessions(weather, count: 14, from: 46, to: 0, archived: 4, recent: true, outside: 6, starred: 1)),
             ClaudeImportFolder(path: notes, exists: true, trustedInCLI: true, sessions: sessions(notes, count: 9, from: 30, to: 2, archived: 4)),
             ClaudeImportFolder(path: site, exists: true, trustedInCLI: true, sessions: sessions(site, count: 6, from: 61, to: 5, imported: 2)),
-            ClaudeImportFolder(path: design, exists: true, sessions: sessions(design, count: 3, from: 20, to: 12)),
-            ClaudeImportFolder(path: api, exists: true, trustedInCLI: true, sessions: sessions(api, count: 8, from: 90, to: 33, archived: 8)),
+            ClaudeImportFolder(path: design, exists: true, sessions: sessions(design, count: 3, from: 20, to: 12, outside: 3)),
+            ClaudeImportFolder(path: api, exists: true, trustedInCLI: true, sessions: sessions(api, count: 8, from: 90, to: 33, archived: 5, outside: 8)),
             ClaudeImportFolder(path: scratch, exists: true, sessions: sessions(scratch, count: 4, from: 15, to: 14, imported: 4)),
             ClaudeImportFolder(path: gone, exists: false, trustedInCLI: true, sessions: sessions(gone, count: 2, from: 400, to: 380)),
         ]

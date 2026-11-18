@@ -18,14 +18,21 @@ final class ClaudeImportModel {
     var selected: Set<String> = []
     /// Off until the user ticks it: trusted folders load their own settings, hooks and MCP servers.
     var trustFolders = false
+    /// On by default: sessions started outside the desktop app (the terminal, headless `claude -p` runs) come in
+    /// archived, so they stay out of the sidebar. Search still finds and opens them.
+    var archiveOutsideDesktopApp = true
+    /// After an import: sessions archived by that option, and starred sessions pinned.
+    private(set) var archivedOutside = 0
+    private(set) var pinned = 0
     /// The mode imported sessions start in (Ensemble's default).
     let permissionMode: PermissionMode
 
     @ObservationIgnored private let engine: ClaudeCodeEngine?
-    @ObservationIgnored private let onImported: @MainActor (ClaudeImportResult) async -> Void
+    /// Called with the result and the sessions added (as imported: archived, starred).
+    @ObservationIgnored private let onImported: @MainActor (ClaudeImportResult, [ClaudeImportSession]) async -> Void
 
     init(engine: ClaudeCodeEngine?, permissionMode: PermissionMode, scan: ClaudeImportScan? = nil,
-         onImported: @escaping @MainActor (ClaudeImportResult) async -> Void = { _ in }) {
+         onImported: @escaping @MainActor (ClaudeImportResult, [ClaudeImportSession]) async -> Void = { _, _ in }) {
         self.engine = engine
         self.permissionMode = permissionMode
         self.onImported = onImported
@@ -46,7 +53,11 @@ final class ClaudeImportModel {
     }
 
     /// Shows a finished import (snapshots).
-    func showResult(_ result: ClaudeImportResult) { phase = .finished(result) }
+    func showResult(_ result: ClaudeImportResult, archivedOutside: Int = 0, pinned: Int = 0) {
+        self.archivedOutside = archivedOutside
+        self.pinned = pinned
+        phase = .finished(result)
+    }
 
     // MARK: Selection
 
@@ -72,14 +83,38 @@ final class ClaudeImportModel {
     /// Ticked folders the user already trusted in the claude CLI.
     var trustedInCLI: [ClaudeImportFolder] { selectedFolders.filter { $0.trustedInCLI && !$0.trustedInEnsemble } }
 
+    // MARK: Sessions started outside the desktop app
+
+    /// Only offered when the desktop app's session list was read: without it every session would count as outside.
+    var showsArchiveOption: Bool {
+        scan?.desktopAppFound == true && selectableFolders.contains { $0.newSessions.contains { !$0.inDesktopApp } }
+    }
+
+    /// Ticked sessions the option would archive.
+    var outsideDesktopAppCount: Int {
+        guard scan?.desktopAppFound == true else { return 0 }
+        return selectedSessions.filter { !$0.inDesktopApp && !$0.archived }.count
+    }
+
+    /// The ticked sessions as they will be imported.
+    var sessionsToImport: [ClaudeImportSession] {
+        let archive = archiveOutsideDesktopApp && scan?.desktopAppFound == true
+        return selectedSessions.map { $0.prepared(archiveOutsideDesktopApp: archive) }
+    }
+
     // MARK: Import
 
     func runImport() async {
         guard let engine, phase == .ready, !selectedSessions.isEmpty else { return }
         phase = .importing
-        let result = await engine.importSessions(selectedSessions, permissionMode: permissionMode,
+        let sessions = sessionsToImport
+        let result = await engine.importSessions(sessions, permissionMode: permissionMode,
                                                  trusting: trustFolders ? trustCandidates : [])
-        await onImported(result)
+        let addedIDs = Set(result.addedSessionIDs)
+        let added = sessions.filter { addedIDs.contains($0.id) }
+        archivedOutside = added.filter { !$0.inDesktopApp && $0.archived }.count
+        pinned = added.filter(\.starred).count
+        await onImported(result, added)
         phase = .finished(result)
     }
 }
@@ -151,8 +186,10 @@ final class ClaudeImportCenter {
     }
 
     private func makeModel(engine: ClaudeCodeEngine, store: SessionStore, scan: ClaudeImportScan?) -> ClaudeImportModel {
-        ClaudeImportModel(engine: engine, permissionMode: store.defaultPermissionMode, scan: scan) { [defaults] result in
+        ClaudeImportModel(engine: engine, permissionMode: store.defaultPermissionMode, scan: scan) { [defaults] result, added in
             defaults.set(true, forKey: Self.offeredKey)
+            // Starred in the desktop app: pinned here (the sidebar's Pinned section).
+            for session in added where session.starred { AttentionCenter.shared.setPinned(session.id, true) }
             if result.imported > 0 { await store.reloadSessions() }
         }
     }
