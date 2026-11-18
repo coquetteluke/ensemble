@@ -36,6 +36,21 @@ public enum RoomWorktreePaths {
         let relative = String(real.dropFirst(prefix.count))
         return PermissionRules.isWorktreeFolder(relative) ? relative : nil
     }
+
+    /// `directory`'s place inside its git repository, like `git rev-parse --show-prefix` without the trailing slash:
+    /// found by walking up to the nearest folder holding `.git` (a folder or, in worktrees and submodules, a file).
+    /// Empty at the top or outside any repository.
+    public static func repoPrefix(of directory: String) -> String {
+        guard let real = WorkspaceTrust.resolvedPath(directory) else { return "" }
+        var current = real
+        while current != "/" && !current.isEmpty {
+            if FileManager.default.fileExists(atPath: (current as NSString).appendingPathComponent(".git")) {
+                return current == real ? "" : String(real.dropFirst(current.count + 1))
+            }
+            current = (current as NSString).deletingLastPathComponent
+        }
+        return ""
+    }
 }
 
 // MARK: OpenCode
@@ -52,7 +67,8 @@ extension OpenCodeClient: EngineWorktreeAccess {
         guard let directory = session.location?.directory,
               let worktree = RoomWorktreePaths.relative(worktreePath, inside: directory),
               let mode = PermissionRules.mode(for: current), mode == .acceptEdits || mode == .auto else { return false }
-        let rules = PermissionRules.ruleset(for: mode, worktree: worktree)
+        let rules = PermissionRules.ruleset(for: mode, worktree: worktree,
+                                            repoPrefix: RoomWorktreePaths.repoPrefix(of: directory))
         guard rules != current else { return true }
         let body = try JSONValue(encoding: rules)
         try await sendIgnoringBody("PATCH", "/api/session/\(sessionID)", body: ["permissions": body])

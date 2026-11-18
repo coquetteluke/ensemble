@@ -242,9 +242,12 @@ public enum PermissionRules {
     /// The ruleset for a permission mode, for a Team agent that works in its own git worktree: in Accept edits and
     /// Auto, `ruleset(for:)` plus `worktreeEditRules(worktree)`. Ask and Bypass, and a path that is not a worktree
     /// folder, get `ruleset(for:)` unchanged.
-    public static func ruleset(for mode: PermissionMode, worktree: String?) -> [PermissionRule] {
+    /// `repoPrefix` is the room folder's place inside its repository (`git rev-parse --show-prefix`, without the
+    /// trailing slash; empty at the top), so config files are protected at every folder the merged branch can reach.
+    public static func ruleset(for mode: PermissionMode, worktree: String?, repoPrefix: String = "") -> [PermissionRule] {
         let rules = ruleset(for: mode)
-        guard let worktree, mode == .acceptEdits || mode == .auto, let extra = worktreeEditRules(worktree) else { return rules }
+        guard let worktree, mode == .acceptEdits || mode == .auto,
+              let extra = worktreeEditRules(worktree, repoPrefix: repoPrefix) else { return rules }
         return rules + extra
     }
 
@@ -259,15 +262,36 @@ public enum PermissionRules {
     /// (those starting with `*`; the others match only names at the top of the project). Paths outside this worktree,
     /// other agents' worktrees included, keep the mode's rules. `nil` unless `worktree` is
     /// `.ensemble/worktrees/<name>` with a plain name, so the allow can never cover a real dot folder.
-    public static func worktreeEditRules(_ worktree: String) -> [PermissionRule]? {
-        guard isWorktreeFolder(worktree) else { return nil }
+    ///
+    /// The worktree is a whole checkout of the repository, and its branch is merged back at the repository's top. So
+    /// OpenCode's config shape asks at the worktree's top and at every folder from there down to the room's folder
+    /// (`repoPrefix`): after the merge those are the room's folder and its parents, which OpenCode reads config from.
+    public static func worktreeEditRules(_ worktree: String, repoPrefix: String = "") -> [PermissionRule]? {
+        guard isWorktreeFolder(worktree), let levels = configLevels(repoPrefix) else { return nil }
         var rules = [PermissionRule("edit", worktree + "/*", "allow")]
-        rules += opencodeConfigEditPatterns.map { PermissionRule("edit", worktree + "/" + $0, "ask") }
-        rules += configLookalikesAllowed.map { PermissionRule("edit", worktree + "/" + $0, "allow") }
+        for level in levels {
+            let base = level.isEmpty ? worktree : worktree + "/" + level
+            rules += opencodeConfigEditPatterns.map { PermissionRule("edit", base + "/" + $0, "ask") }
+            rules += configLookalikesAllowed.map { PermissionRule("edit", base + "/" + $0, "allow") }
+        }
         rules += dotPathEditPatterns.map { PermissionRule("edit", worktree + "/" + $0, "ask") }
         rules += (ignorableCharacterEditPatterns + protectedEditPatterns.filter { $0.hasPrefix("*") })
             .map { PermissionRule("edit", $0, "ask") }
         return rules
+    }
+
+    /// `""` and then each folder from the repository's top down to `repoPrefix` (`"a"`, `"a/b"`), or nil when the
+    /// prefix is not plain folder names (wildcard characters would change what the rules match).
+    static func configLevels(_ repoPrefix: String) -> [String]? {
+        let parts = repoPrefix.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard parts.allSatisfy({ $0 != "." && $0 != ".." && !$0.contains("*") && !$0.contains("?") }) else { return nil }
+        var levels = [""]
+        var current = ""
+        for part in parts {
+            current = current.isEmpty ? part : current + "/" + part
+            levels.append(current)
+        }
+        return levels
     }
 
     /// True for `.ensemble/worktrees/<name>` where the name is ASCII letters, digits, `-`, `_` and `.`, and does not
@@ -290,9 +314,24 @@ public enum PermissionRules {
             let first = rules[base.count]
             guard first.action == "edit", first.effect == "allow", first.resource.hasSuffix("/*") else { continue }
             let worktree = String(first.resource.dropLast(2))
-            if let extra = worktreeEditRules(worktree), Array(rules.dropFirst(base.count)) == extra { return worktree }
+            let extraRules = Array(rules.dropFirst(base.count))
+            if let extra = worktreeEditRules(worktree, repoPrefix: repoPrefix(in: extraRules, worktree: worktree)),
+               extraRules == extra { return worktree }
         }
         return nil
+    }
+
+    /// The deepest folder that has config ask rules inside `worktree`: the room folder's place in its repository.
+    static func repoPrefix(in rules: [PermissionRule], worktree: String) -> String {
+        let marker = opencodeConfigEditPatterns[0]
+        var deepest = ""
+        for rule in rules where rule.action == "edit" && rule.effect == "ask" && rule.resource.hasPrefix(worktree + "/") {
+            let rest = String(rule.resource.dropFirst(worktree.count + 1))
+            guard rest != marker, rest.hasSuffix("/" + marker) else { continue }
+            let level = String(rest.dropLast(marker.count + 1))
+            if level.count > deepest.count { deepest = level }
+        }
+        return deepest
     }
 
     /// Best guess of the mode a ruleset came from (for sessions created elsewhere). `nil` when it does not match.
@@ -301,7 +340,8 @@ public enum PermissionRules {
         if rules.isEmpty { return nil }
         if let mode = PermissionMode.allCases.first(where: { ruleset(for: $0) == rules }) { return mode }
         guard let worktree = worktree(in: rules) else { return nil }
-        return [PermissionMode.acceptEdits, .auto].first { ruleset(for: $0, worktree: worktree) == rules }
+        let prefix = repoPrefix(in: rules, worktree: worktree)
+        return [PermissionMode.acceptEdits, .auto].first { ruleset(for: $0, worktree: worktree, repoPrefix: prefix) == rules }
     }
 
     /// The mode of a ruleset that an earlier Ensemble version wrote for Ask, Accept edits or Auto (it starts with a

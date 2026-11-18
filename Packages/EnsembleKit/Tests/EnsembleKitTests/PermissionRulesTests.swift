@@ -375,6 +375,29 @@ import Testing
         }
     }
 
+    /// A room below the repository's top: its worktree is a whole checkout, and the branch merges back at the top, so
+    /// OpenCode's config shape asks in every folder from the worktree's top down to the room's folder.
+    @Test func worktreeConfigAsksAlongTheRoomsPathInTheRepository() {
+        let own = ".ensemble/worktrees/ensemble-room-ada"
+        let rules = PermissionRules.ruleset(for: .auto, worktree: own, repoPrefix: "apps/web")
+        func edit(_ path: String) -> String { PermissionRules.effect(action: "edit", resource: path, rules: rules) }
+        for path in ["\(own)/OpenCode.JSON", "\(own)/apps/OpEnCoDe.json", "\(own)/apps/web/OPENCODE.JSONC",
+                     "\(own)/apps/web/opencode.json"] {
+            #expect(edit(path) == "ask", "\(path)")
+        }
+        for path in ["\(own)/apps/web/index.ts", "\(own)/apps/web/tsconfig.json", "\(own)/apps/web/src/MainView.swift",
+                     "\(own)/apps/other/notes.md"] {
+            #expect(edit(path) == "allow", "\(path)")
+        }
+        // Read back as the same worktree and mode, so the launch-time check keeps these rules.
+        #expect(PermissionRules.worktree(in: rules) == own)
+        #expect(PermissionRules.mode(for: rules) == .auto)
+        #expect(PermissionRules.outdatedMode(for: rules) == nil)
+        // A prefix with wildcard characters gets no worktree allow at all.
+        #expect(PermissionRules.worktreeEditRules(own, repoPrefix: "a*/b") == nil)
+        #expect(PermissionRules.worktreeEditRules(own, repoPrefix: "../x") == nil)
+    }
+
     @Test func worktreeRulesOnlyForWorktreeFoldersAndEditModes() {
         let own = ".ensemble/worktrees/ensemble-room-ada"
         #expect(PermissionRules.ruleset(for: .ask, worktree: own) == PermissionRules.ruleset(for: .ask))
