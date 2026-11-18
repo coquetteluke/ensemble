@@ -49,7 +49,7 @@ An agent's model decides which engine runs it. Every engine implements the same 
 | Engine | Runs | Pays with | How |
 |---|---|---|---|
 | OpenCode | any API-key model, local models, ChatGPT, Grok | API keys; ChatGPT Plus/Pro sign-in; SuperGrok sign-in | OpenCode service (OpenAI and xAI allow their subscriptions in other tools) |
-| Claude Code | Claude Opus, Sonnet, Haiku | your Claude Pro/Max subscription | Ensemble runs the official `claude` CLI headless (`-p`, stream-json in and out), one process per agent session, logged in as you. Ensemble never touches the login itself. |
+| Claude Code | Claude Opus, Sonnet, Haiku | your Claude Pro/Max subscription | Ensemble runs the official, unmodified `claude` CLI headless (`-p`, stream-json in and out), one process per agent session, logged in as you; Anthropic's docs allow this and it draws from your plan limits. Ensemble never touches the login. Rules and flags: `docs/reference/claude-code-engine-notes.md`. |
 | Antigravity | Gemini models (and Claude models Google includes) | your Google AI Pro/Ultra subscription | Ensemble runs Google's official `agy` CLI headless, logged in as you |
 | Codex, Grok CLI (optional) | GPT, Grok | ChatGPT or SuperGrok subscription | official CLIs, if OpenCode's sign-ins stop working |
 
