@@ -16,6 +16,8 @@ final class AppEngine {
     /// The iPhone remote, available once the store exists.
     private(set) var remote: RemoteControlController?
     @ObservationIgnored private var watchTask: Task<Void, Never>?
+    /// Sends each session to OpenCode or to the Claude engine (Claude models on the user's own subscription).
+    @ObservationIgnored private(set) var router: EngineRouter?
 
     var status: EngineStatus {
         if Self.usePreview, let url = URL(string: "preview://local") { return .running(version: "preview", url: url) }
@@ -32,8 +34,18 @@ final class AppEngine {
         watchTask = Task { [weak self] in
             guard let self else { return }
             for await status in self.manager.statusUpdates() {
-                guard case .running = status, self.store == nil, let client = self.manager.client else { continue }
-                self.open(SessionStore(engine: client))
+                guard case .running = status, let client = self.manager.client else { continue }
+                if let router = self.router {
+                    // OpenCode came back with a new address or password: swap the client in place.
+                    if (router.registration(id: "opencode")?.engine as? OpenCodeClient) !== client {
+                        router.register(client, providers: [], id: "opencode")
+                    }
+                    continue
+                }
+                guard self.store == nil else { continue }
+                let router = EngineRouter.standard(openCode: client, claude: ClaudeCodeEngine())
+                self.router = router
+                self.open(SessionStore(engine: router))
             }
         }
     }

@@ -1,7 +1,7 @@
 import SwiftUI
 import EnsembleKit
 
-/// Settings window: General, Providers (API keys), Models, Engine.
+/// Settings window: General, Accounts (subscriptions, sign-ins and API keys), Models, Engine, Power.
 struct SettingsView: View {
     let store: SessionStore
     @AppStorage(Zoom.storageKey) private var zoom = 1.0
@@ -22,8 +22,8 @@ private struct SettingsTabs: View {
             Tab("General", systemImage: "gearshape") {
                 GeneralSettingsView(store: store)
             }
-            Tab("Providers", systemImage: "key") {
-                ProvidersSettingsView(store: store)
+            Tab("Accounts", systemImage: "person.crop.circle") {
+                AccountsSettingsView(store: store)
             }
             Tab("Models", systemImage: "cpu") {
                 ModelsSettingsView(store: store)
@@ -37,138 +37,6 @@ private struct SettingsTabs: View {
         }
         .frame(width: theme.z(640), height: theme.z(560))
         .background(theme.background)
-    }
-}
-
-/// A provider Ensemble can add a key for.
-struct ProviderEntry: Identifiable, Hashable {
-    let id: String
-    let name: String
-    let keyHint: String
-    /// The custom provider also needs a base URL.
-    var needsBaseURL = false
-
-    static let all: [ProviderEntry] = [
-        ProviderEntry(id: "anthropic", name: "Anthropic", keyHint: "sk-ant-..."),
-        ProviderEntry(id: "openai", name: "OpenAI", keyHint: "sk-..."),
-        ProviderEntry(id: "xai", name: "xAI", keyHint: "xai-..."),
-        ProviderEntry(id: "google", name: "Google", keyHint: "AIza..."),
-        ProviderEntry(id: "openrouter", name: "OpenRouter", keyHint: "sk-or-..."),
-        ProviderEntry(id: "custom", name: "Custom (OpenAI-compatible)", keyHint: "API key", needsBaseURL: true),
-    ]
-}
-
-/// One card per provider with a secure key field, Save and Remove.
-struct ProvidersSettingsView: View {
-    let store: SessionStore
-    @Environment(\.theme) private var theme
-
-    var body: some View {
-        AdaptiveScroll(.vertical) {
-            VStack(alignment: .leading, spacing: theme.z(10)) {
-                Text("API keys are handed to the engine, which stores them. Ensemble never writes them to disk or logs.")
-                    .font(theme.font(size: 12))
-                    .foregroundStyle(theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.bottom, theme.z(4))
-                ForEach(ProviderEntry.all) { entry in
-                    ProviderRow(store: store, entry: entry)
-                }
-            }
-            .padding(theme.z(20))
-        }
-        .background(theme.background)
-    }
-}
-
-struct ProviderRow: View {
-    let store: SessionStore
-    let entry: ProviderEntry
-    @Environment(\.theme) private var theme
-    @State private var key = ""
-    @State private var working = false
-    @State private var message: String?
-    @State private var failed = false
-    @AppStorage("customProviderBaseURL") private var baseURL = ""
-
-    private var connected: Bool {
-        store.providers.first { $0.id == entry.id }?.connected ?? false
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: theme.z(10)) {
-            HStack(spacing: theme.z(10)) {
-                LetterAvatar(entry.name, size: 22)
-                Text(entry.name)
-                    .font(theme.font(size: 13, weight: .medium))
-                    .foregroundStyle(theme.textPrimary)
-                Spacer()
-                HStack(spacing: theme.z(6)) {
-                    StatusDot(connected ? theme.success : theme.textTertiary.opacity(0.6))
-                    Text(connected ? "Connected" : "No key")
-                        .font(theme.font(size: 12))
-                        .foregroundStyle(connected ? theme.textSecondary : theme.textTertiary)
-                }
-            }
-            if entry.needsBaseURL {
-                InputField("Base URL, e.g. http://localhost:11434/v1", text: $baseURL, monospaced: true)
-            }
-            HStack(spacing: theme.z(8)) {
-                InputField(connected ? "Replace key (\(entry.keyHint))" : entry.keyHint, text: $key, secure: true, monospaced: true)
-                    .onSubmit(save)
-                Button("Save", action: save)
-                    .buttonStyle(PrimaryButtonStyle())
-                    .disabled(key.trimmingCharacters(in: .whitespaces).isEmpty || working || (entry.needsBaseURL && baseURL.isEmpty))
-                if connected {
-                    Button("Remove", action: remove)
-                        .buttonStyle(SecondaryButtonStyle(foreground: theme.danger))
-                        .disabled(working)
-                }
-            }
-            if let message {
-                Text(message)
-                    .font(theme.font(size: 11.5))
-                    .foregroundStyle(failed ? theme.danger : theme.textTertiary)
-            }
-        }
-        .padding(theme.z(14))
-        .background(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).fill(theme.elevated))
-        .overlay(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).strokeBorder(theme.border))
-    }
-
-    private func save() {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        working = true
-        message = nil
-        Task {
-            do {
-                try await store.setAPIKey(providerID: entry.id, key: trimmed)
-                key = ""
-                failed = false
-                message = "Saved"
-            } catch {
-                failed = true
-                message = "Could not save the key: \(error.localizedDescription)"
-            }
-            working = false
-        }
-    }
-
-    private func remove() {
-        working = true
-        message = nil
-        Task {
-            do {
-                try await store.removeAPIKey(providerID: entry.id)
-                failed = false
-                message = "Removed"
-            } catch {
-                failed = true
-                message = "Could not remove the key: \(error.localizedDescription)"
-            }
-            working = false
-        }
     }
 }
 
@@ -189,7 +57,7 @@ struct ModelsSettingsView: View {
                     }
                 }
             } footer: {
-                Text("Used for new sessions. Models without a key are disabled until you add one under Providers.")
+                Text("Used for new sessions. Models without an account are disabled until you add one under Accounts.")
                     .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textTertiary)
             }

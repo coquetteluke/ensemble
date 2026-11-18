@@ -102,11 +102,11 @@ enum SnapshotRenderer {
             ComposerMenuSnapshot(store: store, session: main, window: window)
         }
 
-        // Settings, Providers tab.
-        save("settings-providers", width: 640, height: 780) {
+        // Settings, Accounts tab.
+        save("settings-accounts", width: 640, height: 780) {
             VStack(spacing: 0) {
-                SettingsTabStrip(selected: "Providers")
-                ProvidersSettingsView(store: store)
+                SettingsTabStrip(selected: "Accounts")
+                AccountsSettingsView(store: store)
             }
         }
 
@@ -364,7 +364,7 @@ private struct SettingsTabStrip: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            ForEach([("General", "gearshape"), ("Providers", "key"), ("Models", "cpu"), ("Engine", "server.rack")], id: \.0) { title, symbol in
+            ForEach([("General", "gearshape"), ("Accounts", "person.crop.circle"), ("Models", "cpu"), ("Engine", "server.rack"), ("Power", "cup.and.saucer")], id: \.0) { title, symbol in
                 VStack(spacing: 3) {
                     Image(systemName: symbol).font(.system(size: 16))
                     Text(title).font(.system(size: 11))
