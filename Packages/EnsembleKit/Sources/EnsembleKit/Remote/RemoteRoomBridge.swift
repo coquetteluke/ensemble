@@ -57,7 +57,9 @@ public enum RemoteRoomBridge {
             phaseLabel: state.isPaused ? "Paused" : state.phase.label,
             pauseReason: state.isPaused ? state.pauseReason : nil,
             decision: decision(for: state),
-            permissions: permissions.sorted { ($0.created, $0.id) < ($1.created, $1.id) })
+            permissions: permissions.sorted { ($0.created, $0.id) < ($1.created, $1.id) },
+            goal: state.goal.map(RemoteGoal.init),
+            members: RoomSwarm.members(state, activity: activity).map(RemoteMember.init))
     }
 
     /// The room's Session Hub row. `pausedForUser` marks a pause the room made itself (a spending cap).

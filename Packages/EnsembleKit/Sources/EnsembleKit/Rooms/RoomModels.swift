@@ -72,6 +72,8 @@ public enum RoomPhase: String, Codable, Hashable, Sendable, CaseIterable {
     case discussing
     /// Round table: one agent builds, the others review each step.
     case building
+    /// Goal mode: the run is done and an agent checks whether the room's goal is met.
+    case checkingGoal
     case finished
     case stopped
 
@@ -88,6 +90,7 @@ public enum RoomPhase: String, Codable, Hashable, Sendable, CaseIterable {
         case .verdict: "Verdict ready"
         case .discussing: "Discussing"
         case .building: "Building"
+        case .checkingGoal: "Checking the goal"
         case .finished: "Finished"
         case .stopped: "Stopped"
         }
@@ -96,7 +99,7 @@ public enum RoomPhase: String, Codable, Hashable, Sendable, CaseIterable {
     /// True while the engine is driving agents.
     public var isRunning: Bool {
         switch self {
-        case .planning, .working, .merging, .summarizing, .debating, .judging, .discussing, .building: true
+        case .planning, .working, .merging, .summarizing, .debating, .judging, .discussing, .building, .checkingGoal: true
         default: false
         }
     }
@@ -291,6 +294,8 @@ public enum TurnPurpose: Codable, Hashable, Sendable {
     case propose(round: Int)
     case build
     case roundTableReview
+    /// Goal mode: check the room's goal and answer GOAL MET or GOAL NOT MET.
+    case goalCheck
 
     var round: Int? {
         switch self {
@@ -376,6 +381,8 @@ public struct RoomState: Codable, Hashable, Sendable, Identifiable {
     /// They wait until the turn ends: OpenCode reads such a message at the end of a running turn and takes another
     /// step, which would add a reply to the turn the room is parsing.
     public var held: [UUID: [String]]
+    /// Goal mode: the room keeps starting runs until an agent confirms this goal (`RoomEngine+Goal.swift`).
+    public var goal: GoalRun?
 
     public var id: UUID { spec.id }
 
@@ -403,6 +410,7 @@ public struct RoomState: Codable, Hashable, Sendable, Identifiable {
         self.outbox = [:]
         self.interruptedAgents = []
         self.held = [:]
+        self.goal = nil
     }
 
     /// Total spend across the room's agents.
@@ -418,6 +426,7 @@ public struct RoomState: Codable, Hashable, Sendable, Identifiable {
     private enum CodingKeys: String, CodingKey {
         case spec, runMode, briefedMode, run, sessions, board, phase, isPaused, pauseReason, task, plan, assignments
         case debate, roundTable, pendingDecision, usage, cappedAgents, userIsLead, git, duties, outbox, interruptedAgents, held
+        case goal
     }
 
     /// Lenient decoding so rooms saved by older builds still load.
@@ -446,5 +455,6 @@ public struct RoomState: Codable, Hashable, Sendable, Identifiable {
         outbox = try c.decodeIfPresent([UUID: [OutgoingMessage]].self, forKey: .outbox) ?? [:]
         interruptedAgents = try c.decodeIfPresent([UUID].self, forKey: .interruptedAgents) ?? []
         held = try c.decodeIfPresent([UUID: [String]].self, forKey: .held) ?? [:]
+        goal = try? c.decodeIfPresent(GoalRun.self, forKey: .goal)
     }
 }

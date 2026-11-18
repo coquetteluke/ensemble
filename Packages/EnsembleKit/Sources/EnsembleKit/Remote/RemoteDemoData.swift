@@ -162,6 +162,14 @@ public struct RemoteDemoData: Sendable {
             roundTable.permissions = [lint, migrate]
             roundTable.phaseLabel = RoomPhase.building.label
             for i in roundTable.agents.indices { roundTable.agents[i].activity = .waitingForPermission }
+            roundTable.goal = RemoteGoal(condition: "the sync API tests pass", active: true, statusLabel: "Run 2 of 5", turns: 2,
+                                         maxTurns: 5, costSpentUSD: 0.84, lastReason: "the conflict test still fails")
+            roundTable.members = [
+                RemoteMember(agentID: IDs.agentA, role: "Builder", state: "waitingOnYou", stateLabel: "Waiting on you",
+                             step: "Waiting for permission", costUSD: 0.98),
+                RemoteMember(agentID: IDs.agentB, role: "Reviewer", state: "waitingOnYou", stateLabel: "Waiting on you",
+                             step: "Waiting for permission", costUSD: 0.39),
+            ]
             data.rooms[0] = roundTable
             data.transcripts[IDs.roomSession]?.items += [.permission(lint), .permission(migrate)]
             data.transcripts[IDs.roomSession]?.agents = roundTable.agents
@@ -193,7 +201,15 @@ public struct RemoteDemoData: Sendable {
                               sessionID: IDs.teamRoomID.uuidString,
                               usage: Usage(inputTokens: 42_000, outputTokens: 5_600, costUSD: 0.51),
                               lastActivity: now.addingTimeInterval(-6 * minute),
-                              phaseLabel: RoomPhase.awaitingApproval.label, decision: decision)
+                              phaseLabel: RoomPhase.awaitingApproval.label, decision: decision,
+                              members: [
+                                  RemoteMember(agentID: IDs.agentA, role: "Lead", state: "waitingOnYou", stateLabel: "Waiting on you",
+                                               step: "Waiting for you to approve the plan", costUSD: 0.33),
+                                  RemoteMember(agentID: IDs.agentB, role: "Builder", state: "standingBy", stateLabel: "Standing by",
+                                               step: "Assigned: Sync queue with retry and backoff", costUSD: 0.12),
+                                  RemoteMember(agentID: IDs.agentC, role: "Builder", state: "standingBy", stateLabel: "Standing by",
+                                               step: "Assigned: Tests for offline edits and conflicts", costUSD: 0.06),
+                              ])
         data.rooms.append(team)
         data.sessions.append(RemoteRoomBridge.hubRow(team))
         data.transcripts[team.sessionID] = RemoteTranscript(

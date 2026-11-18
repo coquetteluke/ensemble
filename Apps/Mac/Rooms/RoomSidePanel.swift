@@ -1,13 +1,18 @@
 import SwiftUI
 import EnsembleKit
 
-/// Right-hand panel of a room: agents with spend and caps, the mode's state (Team pieces, debate rounds,
-/// round table turns), and the room's folder and usage. Clicking an agent opens its own session transcript.
+/// Right-hand panel of a room: Members (role, state, current step, spend and caps), the message graph with replay,
+/// the mode's state (Team pieces, debate rounds, round table turns), and the room's folder and usage. Clicking an agent
+/// opens its own session transcript.
 struct RoomSidePanel: View {
     let controller: RoomsController
     let engine: RoomEngine
     @Binding var selectedAgentID: UUID?
     var openSession: (@MainActor @Sendable (String) -> Void)?
+    /// Replay of the board (`nil` is live), shared with the board column.
+    var replayStep: Binding<Int?> = .constant(nil)
+    /// Follow mode picks the agent shown.
+    var following = false
     var topInset: CGFloat = 52
 
     @Environment(\.theme) private var theme
@@ -17,12 +22,16 @@ struct RoomSidePanel: View {
             Color.clear.frame(height: topInset)
             if let id = selectedAgentID, let agent = engine.agent(id), let sid = engine.sessionID(for: id) {
                 AgentSessionPanel(controller: controller, engine: engine, agent: agent, sessionID: sid,
-                                  openSession: openSession) { selectedAgentID = nil }
+                                  openSession: openSession, following: following) { selectedAgentID = nil }
             } else {
                 AdaptiveScroll(.vertical) {
                     VStack(alignment: .leading, spacing: theme.z(0)) {
                         agentsSection
                         PanelDivider()
+                        if engine.agents.count > 1 {
+                            RoomGraphSection(engine: engine, replayStep: replayStep)
+                            PanelDivider()
+                        }
                         switch engine.state.runMode {
                         case .team:
                             TeamPanelSection(engine: engine)
@@ -51,12 +60,16 @@ struct RoomSidePanel: View {
     // MARK: Agents
 
     private var agentsSection: some View {
-        VStack(alignment: .leading, spacing: theme.z(4)) {
-            RoomSectionTitle(text: "Agents", trailing: "\(engine.agents.count)")
+        let activity = Dictionary(engine.agents.map { ($0.id, controller.activity(of: $0.id, in: engine)) },
+                                  uniquingKeysWith: { a, _ in a })
+        let members = RoomSwarm.members(engine.state, activity: activity)
+        return VStack(alignment: .leading, spacing: theme.z(4)) {
+            RoomSectionTitle(text: "Members", trailing: membersSummary(members))
                 .padding(.bottom, theme.z(6))
-            ForEach(engine.agents) { agent in
-                AgentPanelRow(agent: agent, engine: engine,
-                              activity: controller.activity(of: agent.id, in: engine),
+            ForEach(members) { member in
+                let agent = member.agent
+                AgentPanelRow(agent: agent, member: member, engine: engine,
+                              activity: activity[agent.id] ?? .idle,
                               models: controller.models(for: engine.state.spec.directory)) {
                     selectedAgentID = agent.id
                 }
@@ -72,6 +85,12 @@ struct RoomSidePanel: View {
             }
         }
         .padding(.top, theme.z(4))
+    }
+
+    /// "2 active of 3", or the count when nobody works.
+    private func membersSummary(_ members: [RoomMember]) -> String {
+        let active = members.filter { $0.state == .active }.count
+        return active == 0 ? "\(members.count)" : "\(active) active of \(members.count)"
     }
 
     // MARK: Room
@@ -119,9 +138,11 @@ private struct PanelDivider: View {
     }
 }
 
-/// One agent in the panel: name, lead tag, model and role, activity, spend against its cap.
+/// One member in the panel: colour and name, its part in the run (lead, builder, reviewer), its state, model and role,
+/// what it is doing now, and spend against its cap.
 private struct AgentPanelRow: View {
     let agent: AgentSpec
+    let member: RoomMember
     let engine: RoomEngine
     let activity: AgentActivity
     let models: [ModelInfo]
@@ -139,17 +160,33 @@ private struct AgentPanelRow: View {
                     Text(agent.name)
                         .font(theme.font(size: 13, weight: .semibold))
                         .foregroundStyle(theme.textPrimary)
-                    if engine.leadID == agent.id && engine.state.spec.mode != .solo {
-                        RoomTag(text: engine.state.runMode == .debate ? "Judge" : "Lead", color: theme.accent)
+                        .lineLimit(1)
+                    if engine.state.spec.mode != .solo {
+                        RoomTag(text: member.role.label, color: [.lead, .judge].contains(member.role) ? theme.accent : nil)
                     }
                     Spacer(minLength: 4)
-                    ActivityBadge(activity: activity, color: Color(hexString: agent.colorHex))
+                    MemberStateBadge(state: member.state, agentColor: Color(hexString: agent.colorHex))
+                        .help(member.state == .stopped && activity == .capped ? "Reached its spending cap" : member.state.label)
                 }
                 Text([shortModelName(agent.model, models: models), agent.role].filter { !$0.isEmpty }.joined(separator: " \u{00B7} "))
                     .font(theme.font(size: 12))
                     .foregroundStyle(theme.textSecondary)
                     .lineLimit(2)
                     .padding(.leading, theme.z(16))
+                if let step = member.step {
+                    HStack(alignment: .firstTextBaseline, spacing: theme.z(5)) {
+                        Image(systemName: "arrow.turn.down.right")
+                            .font(theme.font(size: 9.5))
+                            .foregroundStyle(theme.textTertiary)
+                        Text(step)
+                            .font(theme.font(size: 12))
+                            .foregroundStyle(member.state == .waitingOnYou ? theme.warning : theme.textPrimary.opacity(0.85))
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.leading, theme.z(16))
+                    .help(step)
+                }
                 HStack(spacing: theme.z(6)) {
                     Text(Format.usd(spent))
                         .font(theme.font(size: 11.5).monospacedDigit())
@@ -184,6 +221,8 @@ private struct AgentPanelRow: View {
         .onHover { hovering = $0 }
         .padding(.horizontal, theme.z(-8))
         .help("Show \(agent.name)'s session")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(agent.name), \(member.role.label), \(member.state.label)\(member.step.map { ", \($0)" } ?? "")")
         .accessibilityAddTraits(.isButton)
     }
 
@@ -514,6 +553,8 @@ struct AgentSessionPanel: View {
     let agent: AgentSpec
     let sessionID: String
     var openSession: (@MainActor @Sendable (String) -> Void)?
+    /// Follow mode chose this agent.
+    var following = false
     let onClose: () -> Void
     @Environment(\.theme) private var theme
 
@@ -543,6 +584,10 @@ struct AgentSessionPanel: View {
             .padding(.bottom, theme.z(10))
             HStack(spacing: theme.z(8)) {
                 AgentHeader(agent: agent, models: controller.models(for: engine.state.spec.directory))
+                if following {
+                    RoomTag(text: "Following", color: theme.accent)
+                        .help("Follow is on: this panel moves to whichever agent is working")
+                }
                 Spacer(minLength: 4)
                 ActivityBadge(activity: controller.activity(of: agent.id, in: engine), color: Color(hexString: agent.colorHex))
             }

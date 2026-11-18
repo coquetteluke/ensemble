@@ -121,6 +121,11 @@ public final class RoomEngine {
                 $0.interruptedAgents = waiting
             }
             engine.notice("Paused because Ensemble closed during the run. Resume to continue.")
+        } else if var goal = saved.goal, goal.status == .working || goal.status == .checking {
+            // The run had finished but its goal check never went out: nothing is sent until the user starts a run.
+            goal.status = .waiting
+            goal.note = "Ensemble closed. Start a run to carry on."
+            engine.update { $0.goal = goal }
         }
         return engine
     }
@@ -222,8 +227,10 @@ public final class RoomEngine {
     // MARK: - Saving and the board
 
     func update(_ body: (inout RoomState) -> Void) {
+        let phaseBefore = state.phase
         body(&state)
         persist()
+        if state.phase != phaseBefore { phaseChanged(from: phaseBefore) }
     }
 
     func persist() {
@@ -545,7 +552,7 @@ public final class RoomEngine {
         switch purpose {
         case .plan: .plan
         case .work, .resolveConflict, .build, .summary: .update
-        case .review, .roundTableReview: .review
+        case .review, .roundTableReview, .goalCheck: .review
         case .argue: .argument
         case .verdict: .verdict
         case .propose, .chat, .solo: parsed.boardText.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?") ? .question : .chat
@@ -765,6 +772,7 @@ public final class RoomEngine {
         case .roundTableReview: return reply.takeover || reply.reviewVerdict != nil
         case .verdict: return !(reply.verdict ?? "").isEmpty
         case .summary, .argue, .propose, .build: return hasText
+        case .goalCheck: return GoalVerdictParser.parse(text) != .malformed
         }
     }
 
@@ -802,6 +810,7 @@ public final class RoomEngine {
         case .propose(let round): await proposed(id, round: round, parsed: parsed, text: text)
         case .build: await built(id, parsed: parsed, text: text)
         case .roundTableReview: await roundTableReviewed(id, parsed: parsed)
+        case .goalCheck: await goalChecked(id, text: text)
         }
     }
 

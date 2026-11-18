@@ -277,6 +277,8 @@ extension RoomEngine {
             "[Room] Please restate your decision in the room format: a line starting VERDICT: with the decision, then the reasons and the strongest dissent."
         case .roundTableReview:
             "[Room] Please reply APPROVE, CHANGES: followed by what to change, or TAKEOVER."
+        case .goalCheck:
+            "[Room] Please answer the goal check with one line: GOAL MET, or GOAL NOT MET: followed by why."
         case .chat, .solo, .summary, .argue, .propose, .build:
             "[Room] Your last reply was empty. Please answer again."
         }
@@ -297,6 +299,7 @@ extension RoomEngine {
         case .propose: return "\(who) passed its turn."
         case .build: return "\(who) sent an empty build update."
         case .summary: return "\(who) sent no summary."
+        case .goalCheck: return "\(who) did not answer the goal check, so the room counts the goal as not met."
         case .plan, .chat, .solo: return nil
         }
     }

@@ -24,6 +24,8 @@ struct RoomView: View {
     var initialTab: RoomTab = .board
     var initialAgentID: UUID?
     var snapshotDraft: String?
+    var initialReplayStep: Int?
+    var initialFollow = false
 
     @Environment(\.theme) private var theme
     @State private var tab: RoomTab?
@@ -31,6 +33,12 @@ struct RoomView: View {
     @State private var agentSelectionSet = false
     @State private var draft = ""
     @State private var recipients: [UUID] = []
+    /// Replay: how many board messages are shown (`nil` is live).
+    @State private var replayStep: Int?
+    @State private var replaySet = false
+    /// Follow mode: the side panel shows whichever agent is working.
+    @State private var followSet: Bool?
+    @State private var followTracker = RoomFollow()
 
     static let columnWidth: CGFloat = 760
     static let panelWidth: CGFloat = 303
@@ -42,7 +50,8 @@ struct RoomView: View {
                 RoomHeader(controller: controller, engine: engine, leadingInset: leadingInset,
                            trailingInset: showsSidePanel ? 0 : trailingInset)
                 AgentChipRow(controller: controller, engine: engine, selectedAgentID: agentSelection,
-                             tab: tabBinding, showsTabs: engine.state.runMode == .debate || engine.state.debate != nil)
+                             tab: tabBinding, showsTabs: engine.state.runMode == .debate || engine.state.debate != nil,
+                             follow: showsSidePanel && engine.agents.count > 1 ? followBinding : nil)
                 content
                 VStack(spacing: theme.z(0)) {
                     if engine.state.isPaused, let reason = engine.state.pauseReason {
@@ -59,12 +68,42 @@ struct RoomView: View {
             .background(theme.background)
             if showsSidePanel {
                 VLine()
-                RoomSidePanel(controller: controller, engine: engine, selectedAgentID: agentSelection, openSession: openSession)
+                RoomSidePanel(controller: controller, engine: engine, selectedAgentID: agentSelection, openSession: openSession,
+                              replayStep: replayBinding, following: isFollowing)
                     .frame(width: theme.z(agentSelection.wrappedValue == nil ? Self.panelWidth : Self.transcriptPanelWidth))
             }
         }
         .environment(\.transcriptActions, actions)
         .environment(\.sessionDirectory, engine.state.spec.directory)
+        .onChange(of: workingAgentIDs) { followWorkingAgent() }
+        .onChange(of: isFollowing) { if isFollowing { followWorkingAgent() } }
+    }
+
+    // MARK: Replay and Follow
+
+    private var replayBinding: Binding<Int?> {
+        Binding(get: { replaySet ? replayStep : initialReplayStep },
+                set: { replayStep = $0; replaySet = true })
+    }
+
+    private var isFollowing: Bool { followSet ?? initialFollow }
+
+    private var followBinding: Binding<Bool> {
+        Binding(get: { isFollowing }, set: { followSet = $0 })
+    }
+
+    /// Agents in a turn or waiting for permission, in roster order.
+    private var workingAgentIDs: [UUID] {
+        RoomFollow.working(engine.agents) { controller.activity(of: $0, in: engine) }
+    }
+
+    /// Follow mode: shows the agent that works now, moving on when it hands off. Leaves the panel alone when nobody works.
+    private func followWorkingAgent() {
+        guard isFollowing else { return }
+        if let id = followTracker.update(working: workingAgentIDs), id != agentSelection.wrappedValue {
+            selectedAgentID = id
+            agentSelectionSet = true
+        }
     }
 
     private var models: [ModelInfo] { controller.models(for: engine.state.spec.directory) }
@@ -73,9 +112,14 @@ struct RoomView: View {
         Binding(get: { tab ?? initialTab }, set: { tab = $0 })
     }
 
+    /// The agent whose session the side panel shows. Picking one by hand (or closing it) turns Follow off.
     private var agentSelection: Binding<UUID?> {
         Binding(get: { agentSelectionSet ? selectedAgentID : initialAgentID },
-                set: { selectedAgentID = $0; agentSelectionSet = true })
+                set: {
+                    selectedAgentID = $0
+                    agentSelectionSet = true
+                    if isFollowing { followSet = false }
+                })
     }
 
     private var actions: TranscriptActions {
@@ -97,8 +141,18 @@ struct RoomView: View {
                 }
             }
         } else {
-            RoomScroll(scrollKey: scrollKey, roomID: engine.state.id) {
-                RoomBoardContent(controller: controller, engine: engine, models: models)
+            let step = RoomReplay.clamp(replayBinding.wrappedValue, board: engine.state.board)
+            VStack(spacing: theme.z(0)) {
+                if let step {
+                    // Pinned above the thread so it stays in view however far the board scrolls.
+                    ReplayBanner(step: step, count: engine.state.board.count) { replayBinding.wrappedValue = nil }
+                        .frame(maxWidth: theme.z(RoomView.columnWidth))
+                        .padding(.horizontal, theme.z(32))
+                        .padding(.top, theme.z(6))
+                }
+                RoomScroll(scrollKey: scrollKey, roomID: engine.state.id) {
+                    RoomBoardContent(controller: controller, engine: engine, models: models, replayStep: step)
+                }
             }
         }
     }
@@ -107,6 +161,7 @@ struct RoomView: View {
     private var scrollKey: Int {
         var hasher = Hasher()
         hasher.combine(engine.state.board.count)
+        hasher.combine(replayBinding.wrappedValue)
         hasher.combine(engine.state.pendingDecision)
         hasher.combine(engine.state.phase)
         hasher.combine(engine.state.debate?.arguments.count)
@@ -124,10 +179,22 @@ struct RoomBoardContent: View {
     let controller: RoomsController
     let engine: RoomEngine
     let models: [ModelInfo]
+    /// Replay: the board as it was after this many messages (`nil` is live). Live text, prompts and decisions are left
+    /// out while replaying.
+    var replayStep: Int?
     @Environment(\.theme) private var theme
     @State private var dismissedError: String?
 
     var body: some View {
+        if let step = replayStep {
+            let agentsByID = Dictionary(engine.agents.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            RoomBoardThread(messages: RoomReplay.messages(engine.state.board, at: step), agents: agentsByID, models: models)
+        } else {
+            live
+        }
+    }
+
+    @ViewBuilder private var live: some View {
         let state = engine.state
         let agentsByID = Dictionary(engine.agents.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let live = engine.agents.compactMap { agent in controller.liveText(of: agent.id, in: engine).map { (agent, $0) } }
@@ -324,18 +391,27 @@ struct RoomHeader: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(spacing: 0) {
-            if leadingInset > 0 { Color.clear.frame(width: leadingInset, height: 1) }
-            // Narrow windows (or a large zoom) first drop the cost and shorten the title, then show icon-only controls.
-            ViewThatFits(in: .horizontal) {
-                row(compact: false, showsCost: true, titleLimit: nil)
-                row(compact: false, showsCost: false, titleLimit: theme.z(180))
-                row(compact: true, showsCost: false, titleLimit: nil)
+        VStack(spacing: theme.z(0)) {
+            HStack(spacing: 0) {
+                if leadingInset > 0 { Color.clear.frame(width: leadingInset, height: 1) }
+                // Narrow windows (or a large zoom) first drop the cost and shorten the title, then show icon-only controls.
+                ViewThatFits(in: .horizontal) {
+                    row(compact: false, showsCost: true, titleLimit: nil)
+                    row(compact: false, showsCost: false, titleLimit: theme.z(180))
+                    row(compact: true, showsCost: false, titleLimit: nil)
+                }
+            }
+            .padding(.leading, theme.z(20))
+            .padding(.trailing, theme.z(16) + trailingInset)
+            .frame(height: 52)
+            if let goal = engine.state.goal {
+                RoomGoalBar(engine: engine, goal: goal,
+                            waitingOnYou: engine.state.needsUser || !controller.pendingPermissions(in: engine).isEmpty)
+                    .padding(.leading, theme.z(20))
+                    .padding(.trailing, theme.z(16) + trailingInset)
+                    .padding(.bottom, theme.z(8))
             }
         }
-        .padding(.leading, theme.z(20))
-        .padding(.trailing, theme.z(16) + trailingInset)
-        .frame(height: 52)
         .background(theme.background)
     }
 
@@ -405,6 +481,9 @@ struct RoomHeader: View {
     @ViewBuilder private func controls(compact: Bool) -> some View {
         let state = engine.state
         HStack(spacing: theme.z(6)) {
+            if state.goal?.isActive != true {
+                GoalButton(engine: engine, compact: compact)
+            }
             if state.isPaused {
                 RoomHeaderButton(title: "Resume", symbol: "play.fill", compact: compact) { Task { await engine.resume() } }
             } else {
@@ -439,6 +518,8 @@ struct AgentChipRow: View {
     @Binding var selectedAgentID: UUID?
     @Binding var tab: RoomTab
     var showsTabs: Bool
+    /// Follow mode's switch; nil hides it (no side panel, or one agent).
+    var follow: Binding<Bool>?
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -459,6 +540,9 @@ struct AgentChipRow: View {
                 .padding(.vertical, theme.z(1))
             }
             .scrollIndicators(.never)
+            if let follow {
+                FollowToggle(isOn: follow)
+            }
             if showsTabs {
                 RoomTabs(tab: $tab)
             }
@@ -699,6 +783,11 @@ struct RoomComposer: View {
         guard canSend else { return }
         let to = recipients
         draft = ""
+        // `/goal <condition>`, `/goal stop` and `/goal` are the room's own command.
+        if let command = SlashCommands.parse(text), command.name.lowercased() == "goal" {
+            Task { await engine.runGoalCommand(command.arguments) }
+            return
+        }
         Task { await engine.send(text, to: to) }
     }
 }

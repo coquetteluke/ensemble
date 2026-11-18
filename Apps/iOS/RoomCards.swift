@@ -399,3 +399,120 @@ struct RoomControls: View {
         }
     }
 }
+
+// MARK: - Goal and Members (read only; the Mac runs them)
+
+/// The room's goal: what it is, how far it got, and what it spent. Goals are set and stopped on the Mac.
+struct RoomGoalStrip: View {
+    let goal: RemoteGoal
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(goal.condition)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(RemoteTheme.primaryText)
+                    .lineLimit(2)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(RemoteTheme.secondaryText)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 4)
+            Text(cost)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(RemoteTheme.tertiaryText)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(goal.active ? "Active goal" : "Goal"): \(goal.condition). \(detail)")
+    }
+
+    private var symbol: String { goal.active ? "target" : (goal.statusLabel.hasPrefix("Met") ? "checkmark.circle.fill" : "stop.circle") }
+
+    private var color: Color {
+        if goal.active { return .accentColor }
+        return goal.statusLabel.hasPrefix("Met") ? RemoteTheme.success : RemoteTheme.secondaryText
+    }
+
+    /// "Active goal · Run 2 of 10 · Not met yet: one test fails".
+    private var detail: String {
+        var parts = [goal.active ? "Active goal" : "Goal", goal.statusLabel]
+        if goal.active, let reason = goal.lastReason, !reason.isEmpty { parts.append("Not met yet: \(reason)") }
+        return parts.joined(separator: " \u{00B7} ")
+    }
+
+    private var cost: String {
+        if let cap = goal.maxCostUSD { return "\(RemoteFormat.cost(goal.costSpentUSD)) of \(RemoteFormat.cost(cap))" }
+        return RemoteFormat.cost(goal.costSpentUSD)
+    }
+}
+
+/// Each agent with its part in the run, its state, what it is doing and its spend.
+struct RoomMembersList: View {
+    let room: RemoteRoom
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(room.members) { member in
+                if let agent = room.agents.first(where: { $0.id == member.agentID }) {
+                    RoomMemberRow(agent: agent, member: member, showsRole: room.mode != .solo)
+                }
+            }
+        }
+    }
+}
+
+struct RoomMemberRow: View {
+    let agent: RemoteAgent
+    let member: RemoteMember
+    var showsRole = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                AgentTag(agent: agent)
+                if showsRole {
+                    Chip(text: member.role, color: member.role == "Lead" || member.role == "Judge" ? .accentColor : RemoteTheme.secondaryText)
+                }
+                Spacer(minLength: 4)
+                Text(member.stateLabel)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(RoomText.memberColor(member.state))
+            }
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if let step = member.step {
+                    Text(step)
+                        .font(.caption)
+                        .foregroundStyle(member.state == "waitingOnYou" ? RemoteTheme.warning : RemoteTheme.secondaryText)
+                        .lineLimit(2)
+                }
+                Spacer(minLength: 4)
+                Text(RemoteFormat.cost(member.costUSD))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(RemoteTheme.tertiaryText)
+            }
+            .padding(.leading, 13)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(agent.name), \(member.role), \(member.stateLabel)\(member.step.map { ", \($0)" } ?? "")")
+    }
+}
+
+extension RoomText {
+    /// Colour of a member state the phone knows; the rest are grey.
+    static func memberColor(_ state: String) -> Color {
+        switch state {
+        case "active": .accentColor
+        case "waitingOnYou": RemoteTheme.warning
+        case "finished": RemoteTheme.success
+        case "stopped": RemoteTheme.danger
+        default: RemoteTheme.tertiaryText
+        }
+    }
+}

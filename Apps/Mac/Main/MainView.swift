@@ -469,6 +469,7 @@ struct CenterHeader: View {
                         .foregroundStyle(theme.textTertiary)
                         .lineLimit(1)
                         .truncationMode(.head)
+                    SessionGoalPill(store: store, sessionID: session.id)
                 }
             case .hub:
                 Text("Session Hub").font(theme.font(size: 13, weight: .semibold)).foregroundStyle(theme.textPrimary)

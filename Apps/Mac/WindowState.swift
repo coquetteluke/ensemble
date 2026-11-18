@@ -544,6 +544,8 @@ final class WindowState {
         switch name.lowercased() {
         case "new":
             beginNewSession(in: session.directory)
+        case "goal":
+            store.runGoalCommand(args, in: session.id)
         case "model":
             let query = args.lowercased()
             if !query.isEmpty, let model = store.models.first(where: {

@@ -88,18 +88,14 @@ struct RoomCard: View {
             .buttonStyle(.plain)
             .accessibilityHint("Opens the room")
 
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(room.agents) { agent in
-                    HStack(spacing: 8) {
-                        AgentTag(agent: agent)
-                        if agent.id == room.leadAgentID { Chip(text: "Lead") }
-                        Spacer(minLength: 4)
-                        AgentActivityIcon(agent: agent)
-                        Text(RoomText.activity(agent))
-                            .font(.caption)
-                            .foregroundStyle(agent.activity == .waitingForPermission ? RemoteTheme.warning : RemoteTheme.tertiaryText)
-                    }
-                }
+            if let goal = room.goal {
+                RoomGoalStrip(goal: goal)
+            }
+
+            if !room.members.isEmpty {
+                RoomMembersList(room: room)
+            } else {
+                agentRows
             }
 
             if let reason = room.pauseReason, room.state == .paused {
@@ -137,6 +133,23 @@ struct RoomCard: View {
             RoomControls(room: room, client: client, onError: onError)
         }
         .remoteCard(selected: selected)
+    }
+
+    /// Each agent and what it does, for a Mac that sends no Members list.
+    private var agentRows: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(room.agents) { agent in
+                HStack(spacing: 8) {
+                    AgentTag(agent: agent)
+                    if agent.id == room.leadAgentID { Chip(text: "Lead") }
+                    Spacer(minLength: 4)
+                    AgentActivityIcon(agent: agent)
+                    Text(RoomText.activity(agent))
+                        .font(.caption)
+                        .foregroundStyle(agent.activity == .waitingForPermission ? RemoteTheme.warning : RemoteTheme.tertiaryText)
+                }
+            }
+        }
     }
 }
 

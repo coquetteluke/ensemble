@@ -77,6 +77,8 @@ public final class SessionStore {
     public let rewinds = SessionRewindState()
     /// Sessions that work in their own git worktree (`SessionWorktree+Store.swift`).
     public let worktrees = SessionWorktrees()
+    /// Goals that keep a session working until a condition is met (`GoalStore.swift`).
+    public let goals = SessionGoals()
 
     private enum EditableField: Hashable { case title, archived, model }
 
@@ -309,6 +311,7 @@ public final class SessionStore {
         defer {
             afterApply(event)
             backgroundDidApply(event)
+            goalDidApply(event)
         }
         switch event {
         case .sessionCreated(let info), .sessionUpdated(let info):
@@ -419,6 +422,11 @@ public final class SessionStore {
 
     /// While the agent works the message is held in the session's queue and goes out when the turn ends.
     public func send(_ text: String, files: [URL] = [], to sessionID: String) async {
+        // `/goal` is Ensemble's own command wherever the text comes from (composer, phone, queue).
+        if files.isEmpty, let command = SlashCommands.parse(text), command.name.lowercased() == "goal" {
+            runGoalCommand(command.arguments, in: sessionID)
+            return
+        }
         if enqueueIfBusy(text, files: files, to: sessionID) { return }
         await deliver(text, files: files, to: sessionID)
     }

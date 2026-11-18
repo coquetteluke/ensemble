@@ -280,6 +280,7 @@ enum SnapshotRenderer {
         written += TerminalSnapshots.render(to: outputDirectory, zoom: zoom)
         written += PhoneAlertsSnapshots.render(to: outputDirectory, zoom: zoom)
         written += NarrowPaneSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += SwarmSnapshots.render(to: outputDirectory, zoom: zoom)
 
         print("Rendered \(written.count) snapshots:")
         for path in written { print(path) }

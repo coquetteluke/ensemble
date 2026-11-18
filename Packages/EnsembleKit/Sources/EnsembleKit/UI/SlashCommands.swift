@@ -36,6 +36,7 @@ public enum SlashCommands {
         SlashCommand(name: "mode", summary: "Change the permission mode", argumentHint: "<ask|edits|auto|bypass>", source: .ensemble, symbol: "hand.raised"),
         SlashCommand(name: "compact", summary: "Summarise the conversation to free up context", source: .ensemble, symbol: "arrow.down.right.and.arrow.up.left"),
         SlashCommand(name: "btw", summary: "Ask about this session without adding to it", argumentHint: "<question>", source: .ensemble, symbol: "text.bubble"),
+        SlashCommand(name: "goal", summary: "Keep working until a condition is met", argumentHint: "<condition> or stop", source: .ensemble, symbol: "target"),
         SlashCommand(name: "fork", summary: "Copy this session into a new one", source: .ensemble, symbol: "arrow.triangle.branch"),
         SlashCommand(name: "rewind", summary: "Go back to before your last message", source: .ensemble, symbol: "arrow.counterclockwise"),
         SlashCommand(name: "clear", summary: "Start fresh in the same folder and model", source: .ensemble, symbol: "eraser"),

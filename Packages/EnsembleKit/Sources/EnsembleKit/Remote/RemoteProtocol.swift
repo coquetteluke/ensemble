@@ -373,11 +373,15 @@ public struct RemoteRoom: Codable, Hashable, Sendable, Identifiable {
     /// Open permission prompts from the room's agents and their subagents, oldest first. Answer them with
     /// `replyPermission` like any other prompt (each carries its own session id).
     public var permissions: [PermissionRequest]
+    /// The room's goal (goal mode), while it runs and after it ends (`RemoteSwarm.swift`).
+    public var goal: RemoteGoal?
+    /// Each agent's role, state, current step and spend, in roster order (`RemoteSwarm.swift`).
+    public var members: [RemoteMember]
 
     public init(id: UUID, title: String, directory: String, mode: RoomMode, agents: [RemoteAgent], leadAgentID: UUID? = nil,
                 state: State, permissionMode: PermissionMode, sessionID: String, usage: Usage = .zero, lastActivity: Date = Date(),
                 phaseLabel: String? = nil, pauseReason: String? = nil, decision: RemoteRoomDecision? = nil,
-                permissions: [PermissionRequest] = []) {
+                permissions: [PermissionRequest] = [], goal: RemoteGoal? = nil, members: [RemoteMember] = []) {
         self.id = id
         self.title = title
         self.directory = directory
@@ -393,11 +397,13 @@ public struct RemoteRoom: Codable, Hashable, Sendable, Identifiable {
         self.pauseReason = pauseReason
         self.decision = decision
         self.permissions = permissions
+        self.goal = goal
+        self.members = members
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, title, directory, mode, agents, leadAgentID, state, permissionMode, sessionID, usage, lastActivity
-        case phaseLabel, pauseReason, decision, permissions
+        case phaseLabel, pauseReason, decision, permissions, goal, members
     }
 
     public init(from decoder: any Decoder) throws {
@@ -418,6 +424,8 @@ public struct RemoteRoom: Codable, Hashable, Sendable, Identifiable {
         // A decision this phone cannot read is left out rather than losing the whole room.
         decision = (try? c.decodeIfPresent(RemoteRoomDecision.self, forKey: .decision)) ?? nil
         permissions = (try? c.decodeIfPresent([PermissionRequest].self, forKey: .permissions)) ?? []
+        goal = (try? c.decodeIfPresent(RemoteGoal.self, forKey: .goal)) ?? nil
+        members = (try? c.decodeIfPresent([RemoteMember].self, forKey: .members)) ?? []
     }
 
     /// True while a run exists that Stop would end.

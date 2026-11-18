@@ -12,6 +12,7 @@ struct ChatView: View {
     @State private var loadError: String?
     @State private var actionError: String?
     @State private var confirmStop = false
+    @State private var showMembers = false
     /// Where the reader was when this view appeared (nil: the end). Read once, before the transcript arrives, because the
     /// scroll view records its first row as the position while the rows come in.
     @State private var startAnchor: String??
@@ -116,7 +117,37 @@ struct ChatView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if let room { RoomAgentsBar(room: room) }
+            if let room {
+                VStack(spacing: 0) {
+                    RoomAgentsBar(room: room)
+                    if let goal = room.goal {
+                        RoomGoalStrip(goal: goal)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 8)
+                    }
+                }
+                .background(RemoteTheme.background)
+            }
+        }
+        .sheet(isPresented: $showMembers) {
+            if let room {
+                NavigationStack {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            if let goal = room.goal { RoomGoalStrip(goal: goal) }
+                            RoomMembersList(room: room)
+                        }
+                        .padding(16)
+                    }
+                    .remoteScreen()
+                    .navigationTitle("Members")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) { Button("Done") { showMembers = false } }
+                    }
+                }
+                .presentationDetents([.medium, .large])
+            }
         }
         .safeAreaInset(edge: .bottom) { composer }
         .navigationTitle(transcript?.title ?? title)
@@ -158,6 +189,9 @@ struct ChatView: View {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
                 if let room {
+                    if !room.members.isEmpty {
+                        Button { showMembers = true } label: { Label("Members", systemImage: "person.3") }
+                    }
                     // A room keeps the permission mode it was made with.
                     Section("Permission mode: \(room.permissionMode.label)") {
                         if room.state == .paused {
