@@ -23,9 +23,9 @@ struct MainView: View {
     static let panelWidth: CGFloat = 303
     /// The narrowest the centre gets when a wide pane (file viewer, review) opens on the right.
     static let centreMinWidth: CGFloat = 400
-    /// Room the window's five toolbar buttons (background, changes, browser, customizations, context panel) take at
-    /// the top right, when no pane is open.
-    static let toolbarButtonsWidth: CGFloat = 210
+    /// Room the window's six toolbar buttons (background, changes, browser, terminal, customizations, context panel)
+    /// take at the top right, when no pane is open.
+    static let toolbarButtonsWidth: CGFloat = 246
 
     /// Snapshots pass a fixed zoom; the app uses the stored View > Zoom setting.
     var zoomOverride: CGFloat?
@@ -91,6 +91,10 @@ struct MainView: View {
             .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .primaryAction) {
                 BrowserToolbarButton(isOpen: window.browserOpen) { window.toggleBrowser() }
+            }
+            .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .primaryAction) {
+                TerminalToolbarButton(isOpen: window.terminalOpen) { window.toggleTerminal() }
             }
             .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .navigation) {
@@ -168,6 +172,8 @@ struct MainView: View {
                     window.closeSidePane()
                 }
             }
+        case .terminal:
+            TerminalPane(store: store, rooms: rooms, route: window.route, onClose: { window.closeSidePane() })
         }
     }
 
@@ -537,6 +543,9 @@ struct SnapshotWindowChrome: View {
                 Image(systemName: "globe")
                     .font(.system(size: 14))
                     .foregroundStyle(window.browserOpen ? theme.textPrimary : theme.textSecondary)
+                Image(systemName: "terminal")
+                    .font(.system(size: 14))
+                    .foregroundStyle(window.terminalOpen ? theme.textPrimary : theme.textSecondary)
                 Image(systemName: "puzzlepiece.extension")
                     .font(.system(size: 14))
                     .foregroundStyle(theme.textSecondary)

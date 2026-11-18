@@ -277,6 +277,7 @@ enum SnapshotRenderer {
         written += CustomizationsSnapshots.render(to: outputDirectory, zoom: zoom)
         written += HubSplitSnapshots.render(to: outputDirectory, zoom: zoom)
         written += BrowserSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += TerminalSnapshots.render(to: outputDirectory, zoom: zoom)
         written += PhoneAlertsSnapshots.render(to: outputDirectory, zoom: zoom)
         written += NarrowPaneSnapshots.render(to: outputDirectory, zoom: zoom)
 

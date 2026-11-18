@@ -141,6 +141,8 @@ final class AppEngine {
 
 @main
 struct EnsembleApp: App {
+    /// Asks before quitting with programs running in terminal tabs, and ends the terminal shells on quit.
+    @NSApplicationDelegateAdaptor(EnsembleAppDelegate.self) private var appDelegate
     @State private var app = AppEngine()
     @State private var window = WindowState()
     @State private var search = SearchCenter()
@@ -304,6 +306,7 @@ struct EnsembleCommands: Commands {
                 .keyboardShortcut("i", modifiers: [.command, .option])
             ReviewMenuCommand(isOpen: window.reviewOpen, isAvailable: reviewAvailable) { window.toggleReview() }
             BrowserMenuCommand(isOpen: window.browserOpen) { window.toggleBrowser() }
+            TerminalMenuCommand(isOpen: window.terminalOpen, isAvailable: app.store != nil) { window.toggleTerminal() }
             Divider()
             // Command-= also zooms in (handled by WindowState.installZoomShortcut).
             Button("Zoom In") { window.zoomIn() }

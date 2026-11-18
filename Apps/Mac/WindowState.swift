@@ -22,6 +22,8 @@ enum SidePane: Hashable {
     case review
     /// The browser (`BrowserPane`), with the session's dev servers.
     case browser
+    /// Terminal tabs in the session's (or room's) folder (`TerminalPane`).
+    case terminal
 
     /// Width before zoom.
     var width: CGFloat {
@@ -30,6 +32,7 @@ enum SidePane: Hashable {
         case .file: FileViewerPane.width
         case .review: 560
         case .browser: BrowserPane.width
+        case .terminal: TerminalPane.width
         }
     }
 }
@@ -225,6 +228,20 @@ final class WindowState {
     /// Opens or closes the browser pane (Option-Command-B).
     func toggleBrowser() {
         if browserOpen { closeSidePane() } else { openSidePane(.browser) }
+    }
+
+    /// True while the pane shows the terminal.
+    var terminalOpen: Bool { showContextPanel && sidePane == .terminal }
+
+    /// Shows or hides the terminal pane (Control-backquote). Hiding it puts focus back in the composer; the shells
+    /// keep running.
+    func toggleTerminal() {
+        if terminalOpen {
+            closeSidePane()
+            composerFocusToken &+= 1
+        } else {
+            openSidePane(.terminal)
+        }
     }
 
     /// Closes a file or review pane: the context panel comes back if it was open before.

@@ -14,6 +14,7 @@ enum CommandArea: String, CaseIterable, Identifiable {
     case transcript = "Transcript"
     case view = "View"
     case split = "Split view"
+    case terminal = "Terminal"
     case search = "Search"
 
     var id: String { rawValue }
@@ -92,6 +93,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
     case nextTranscriptView, viewNormal, viewThinking, viewVerbose
     case toggleSidebar, toggleContextPanel, toggleBrowser, closeFileViewer, zoomIn, zoomOut, actualSize
     case openInSplit, closePane, nextPane, previousPane, equalizePanes, closeSplit
+    case toggleTerminal, newTerminalTab
     case appearanceDark, appearanceLight, appearanceSystem
 
     var id: String { rawValue }
@@ -146,6 +148,8 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .previousPane: "Previous split pane"
         case .equalizePanes: "Make split panes equal"
         case .closeSplit: "Close split view"
+        case .toggleTerminal: "Show or hide the terminal"
+        case .newTerminalTab: "New terminal tab"
         case .appearanceDark: "Appearance: Dark"
         case .appearanceLight: "Appearance: Light"
         case .appearanceSystem: "Appearance: Match system"
@@ -164,6 +168,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .toggleSidebar, .toggleContextPanel, .toggleBrowser, .closeFileViewer, .zoomIn, .zoomOut, .actualSize,
              .appearanceDark, .appearanceLight, .appearanceSystem: .view
         case .openInSplit, .closePane, .nextPane, .previousPane, .equalizePanes, .closeSplit: .split
+        case .toggleTerminal, .newTerminalTab: .terminal
         }
     }
 
@@ -216,6 +221,8 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .previousPane: "arrow.left.square"
         case .equalizePanes: "equal.square"
         case .closeSplit: "rectangle"
+        case .toggleTerminal: "terminal"
+        case .newTerminalTab: "plus.rectangle.on.rectangle"
         case .appearanceDark: "moon"
         case .appearanceLight: "sun.max"
         case .appearanceSystem: "circle.lefthalf.filled"
@@ -248,6 +255,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .closePane: AppShortcut("w", [.command, .control])
         case .nextPane: AppShortcut(.rightArrow, [.command, .option])
         case .previousPane: AppShortcut(.leftArrow, [.command, .option])
+        case .toggleTerminal: AppShortcut("`", .control)
         default: nil
         }
     }
@@ -277,6 +285,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .appearanceDark, .appearanceLight, .appearanceSystem: ["theme", "dark mode", "light mode"]
         case .openInSplit: ["split view", "side by side", "beside", "pane"]
         case .closePane, .nextPane, .previousPane, .equalizePanes, .closeSplit: ["split view", "pane", "side by side"]
+        case .toggleTerminal, .newTerminalTab: ["shell", "console", "command line", "zsh", "bash"]
         default: []
         }
     }
@@ -288,6 +297,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .toggleContextPanel: "Context panel"
         case .toggleBrowser: "Browser"
         case .keyboardShortcuts: "Keyboard shortcuts"
+        case .toggleTerminal: "Terminal"
         default: title
         }
     }
@@ -345,6 +355,9 @@ enum CommandRegistry {
         ShortcutNote(title: "Open the result", area: .search, caps: ["\u{21A9}"]),
         ShortcutNote(title: "Next search filter", area: .search, caps: ["\u{21E5}"]),
         ShortcutNote(title: "Close", area: .search, caps: ["esc"]),
+        ShortcutNote(title: "New tab", area: .terminal, caps: ["\u{2318}", "T"]),
+        ShortcutNote(title: "Close tab", area: .terminal, caps: ["\u{2318}", "W"]),
+        ShortcutNote(title: "Select while a program uses the mouse", area: .terminal, caps: ["\u{2325}", "Drag"]),
     ]
 
     /// Every shortcut, grouped by area, in area order.
@@ -371,6 +384,7 @@ enum CommandRegistry {
         case .toggleSidebar: context.window.showSidebar ? "Hide sidebar" : "Show sidebar"
         case .toggleContextPanel: context.window.contextPanelVisible ? "Hide context panel" : "Show context panel"
         case .toggleBrowser: context.window.browserOpen ? "Hide browser" : "Show browser"
+        case .toggleTerminal: context.window.terminalOpen ? "Hide terminal" : "Show terminal"
         case .toggleFastMode: (context.store?.selected?.fastMode ?? false) ? "Turn fast mode off" : "Turn fast mode on"
         default: id.title
         }
@@ -400,6 +414,8 @@ enum CommandRegistry {
             return context.window.split.isActive ? !context.window.split.isFull : store.sessions.contains { !$0.isSubagent && !$0.info.archived && $0.id != store.selectedSessionID }
         case .closePane, .nextPane, .previousPane, .equalizePanes, .closeSplit: return context.window.split.isActive
         case .settings, .customizations: return context.openSettings != nil
+        case .toggleTerminal: return store != nil
+        case .newTerminalTab: return TerminalOwner.current(store: store, rooms: context.search.rooms, route: context.window.route) != nil
         case .pairIPhone: return context.openWindow != nil
         default: return true
         }
@@ -475,6 +491,13 @@ enum CommandRegistry {
         case .previousPane: if let store { window.focusNeighbourPane(-1, store: store) }
         case .equalizePanes: window.equalizePanes()
         case .closeSplit: if let store { window.closeSplit(store: store) }
+        case .toggleTerminal: window.toggleTerminal()
+        case .newTerminalTab:
+            guard let owner = TerminalOwner.current(store: store, rooms: search.rooms, route: window.route) else { return }
+            let list = TerminalCenter.shared.list(for: owner.key)
+            // Opening the pane on a session without tabs starts one by itself.
+            if window.terminalOpen || !list.tabs.isEmpty { list.newTab(directory: owner.directory) }
+            if !window.terminalOpen { window.openSidePane(.terminal) }
         case .appearanceDark: UserDefaults.standard.set(AppearanceSetting.dark.rawValue, forKey: "appearance")
         case .appearanceLight: UserDefaults.standard.set(AppearanceSetting.light.rawValue, forKey: "appearance")
         case .appearanceSystem: UserDefaults.standard.set(AppearanceSetting.system.rawValue, forKey: "appearance")
