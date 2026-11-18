@@ -7,7 +7,7 @@ Owner: Luke (GitHub `coquetteluke`). Started 2026-11-17. Public, MIT licensed.
 ## Goals
 
 1. Feel like the Claude Code desktop app: left session sidebar, chat with tool-call cards, composer with model and permission-mode menus, right-hand context panel (environment, context usage, outputs, connectors), split view.
-2. Any provider by API key: Anthropic (Claude Platform), OpenAI, xAI (Grok), Google (Gemini), OpenRouter, any OpenAI-compatible URL, local models.
+2. Your subscriptions first, API keys too: Claude Pro/Max, ChatGPT Plus/Pro, SuperGrok and Google AI Pro/Ultra through each company's own official app or sign-in, plus API keys for Anthropic, OpenAI, xAI, Google, OpenRouter, any OpenAI-compatible URL, and local models. (See "Engines".)
 3. Several equal agents per project. Every agent has a real role. None are side helpers. You choose who leads, or nobody.
 4. Agents talk to each other in the open: you see every message they send each other.
 5. Each agent can start its own subagents.
@@ -18,7 +18,7 @@ Owner: Luke (GitHub `coquetteluke`). Started 2026-11-17. Public, MIT licensed.
 ## Non-goals
 
 - Copying Claude Code's code or branding. Ensemble has its own name, icon and code. Only the layout and feel are similar.
-- Using Claude or Google subscriptions through unofficial logins. Ensemble uses API keys only. (Both companies suspend accounts for routing subscriptions through third-party apps.)
+- Copying or reusing subscription logins inside Ensemble. Anthropic and Google suspend accounts whose subscription sign-ins are used by third-party apps. Ensemble instead runs each company's own official program (Claude Code CLI, Antigravity CLI) under your own login, and uses the official sign-ins that OpenAI and xAI allow in other tools.
 - Windows or Linux apps (SwiftUI, Apple platforms only).
 
 ## Architecture
@@ -41,6 +41,19 @@ Owner: Luke (GitHub `coquetteluke`). Started 2026-11-17. Public, MIT licensed.
 ### Why OpenCode underneath
 
 OpenCode (github.com/anomalyco/opencode, MIT) is a mature open-source coding agent that already does the hard parts: the tool loop, file editing, shell, subagents (child sessions), permission prompts, 75+ providers, MCP servers, compaction, scheduling, and per-session cost. Version 2.x runs as one background service with a full HTTP API (139 endpoints, OpenAPI spec saved in `docs/reference/opencode-2.3.0-openapi.json`) and a live event stream (98 event types). Ensemble is a new front end and a multi-agent layer on top of it. Ensemble does not copy or modify OpenCode's code; it talks to the installed service. Writing our own agent engine would take months and be worse.
+
+### Engines: subscriptions and keys
+
+An agent's model decides which engine runs it. Every engine implements the same `OpenCodeAPI` protocol (to be renamed `AgentEngine`), and an `EngineRouter` sends each session to the right one, so rooms can mix them: a Claude agent on your Claude subscription can debate a Gemini agent on your Google subscription.
+
+| Engine | Runs | Pays with | How |
+|---|---|---|---|
+| OpenCode | any API-key model, local models, ChatGPT, Grok | API keys; ChatGPT Plus/Pro sign-in; SuperGrok sign-in | OpenCode service (OpenAI and xAI allow their subscriptions in other tools) |
+| Claude Code | Claude Opus, Sonnet, Haiku | your Claude Pro/Max subscription | Ensemble runs the official `claude` CLI headless (`-p`, stream-json in and out), one process per agent session, logged in as you. Ensemble never touches the login itself. |
+| Antigravity | Gemini models (and Claude models Google includes) | your Google AI Pro/Ultra subscription | Ensemble runs Google's official `agy` CLI headless, logged in as you |
+| Codex, Grok CLI (optional) | GPT, Grok | ChatGPT or SuperGrok subscription | official CLIs, if OpenCode's sign-ins stop working |
+
+The model picker groups models under "Your subscriptions" and "API keys". The usage popover shows each subscription's remaining limits where the engine reports them, so a long debate does not quietly use up a weekly allowance.
 
 ### Talking to OpenCode
 

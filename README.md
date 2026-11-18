@@ -8,7 +8,7 @@ Ensemble is a native Mac app, with an iPhone remote, for coding with Claude, GPT
 
 ## What it does
 
-- **Any model, your keys.** Anthropic, OpenAI, xAI, Google, OpenRouter, any OpenAI-compatible URL, or local models.
+- **Your subscriptions or your keys.** Use your Claude, ChatGPT, SuperGrok or Google AI subscription through each company's own official app or sign-in, or API keys for Anthropic, OpenAI, xAI, Google, OpenRouter, any OpenAI-compatible URL, or local models.
 - **Teams of equal agents.** Pick a lead or none. Modes: Team (split the work, build in parallel, review each other), Debate (argue it out, then a verdict), Round table (agree on a plan, one builds, the rest review), or Solo.
 - **See them talk.** Every message between agents shows up live, colour-coded by agent.
 - **Subagents.** Any agent can start helpers for side tasks.

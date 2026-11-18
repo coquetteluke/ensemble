@@ -30,6 +30,14 @@ Done when: `xcodegen && xcodebuild` builds both apps, `swift test` passes in Ens
 
 Done when: you can add a key (or use the mock), start a session in a folder, chat, watch tools run, approve a permission, see context and usage update.
 
+## M1.5: Subscription engines
+
+- **WP-J Claude Code engine** (owns `Packages/EnsembleKit/Sources/EnsembleKit/Engines/ClaudeCode/`): runs the official `claude` CLI headless per agent session with stream-json input and output, maps its events to `EngineEvent`s and `TranscriptItem`s, permission prompts answered from Ensemble, resume by session id, subagents shown nested, usage and limits.
+- **WP-K Antigravity engine** (owns `Engines/Antigravity/`): same for Google's official `agy` CLI. Install check and sign-in hint if missing.
+- **WP-L Router and sign-ins** (owns `Engines/EngineRouter.swift`, `Apps/Mac/Settings/Subscriptions*`): `EngineRouter` picks the engine per session; Settings shows "Your subscriptions" (Claude: detected `claude` login; Google: `agy` login; ChatGPT and SuperGrok: OpenCode's official sign-in flows) next to API keys.
+
+Done when: one room runs a Claude agent on the Claude subscription and a Gemini agent on the Google subscription, and they debate.
+
 ## M2: Rooms (multi-agent)
 
 - **WP-C RoomEngine** (owns `Rooms/`, its tests): room model and persistence, Team / Debate / Round table / Solo, board, relay via `session/synthetic`, lead plan and assignments, worktrees per agent in git projects, review step, pause/resume, `@agent` routing, spending caps.
