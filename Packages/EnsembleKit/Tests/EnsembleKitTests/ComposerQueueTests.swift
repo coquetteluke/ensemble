@@ -185,6 +185,23 @@ struct ComposerQueueTests {
         #expect(store.queue(for: session.id).isEmpty)
     }
 
+    @Test func aLateWorkingEventAfterStopKeepsTheHold() async throws {
+        let engine = SteeringTestEngine(delayScale: TestWait.longTurnScale)
+        let (store, session) = try await started(engine)
+        await store.send("Long task", to: session.id)
+        await store.send("Follow up", to: session.id)
+        #expect(store.queue(for: session.id).map(\.text) == ["Follow up"])
+        await store.stop()
+        try await waitUntil("the interrupt") { !session.isWorking }
+        // A late event from the stopped turn looks like a new turn starting and ending; it must not release the hold.
+        store.apply(.activity(sessionID: session.id, .working))
+        store.apply(.activity(sessionID: session.id, .idle))
+        try await Task.sleep(for: SessionStore.queueSettleDelay * 2 + .milliseconds(100))
+        #expect(store.isQueueHeld(session.id))
+        #expect(store.queue(for: session.id).map(\.text) == ["Follow up"])
+        #expect(!engine.calls.contains("prompt:Follow up"))
+    }
+
     @Test func sendNowSteersTheRunningTurn() async throws {
         let engine = SteeringTestEngine(delayScale: TestWait.longTurnScale)
         let (store, session) = try await started(engine)

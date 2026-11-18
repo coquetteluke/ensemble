@@ -156,9 +156,10 @@ extension SessionStore {
         return text.isEmpty ? "Attached: \(names)" : "\(text)\n\nAttached: \(names)"
     }
 
-    /// Stops held messages from going out on their own (the user stopped the turn).
+    /// Stops held messages from going out on their own (the user stopped the turn). It holds whether or not the
+    /// session already shows as working: the turn's first events may not have arrived yet. Only a message that is
+    /// actually sent (`deliver`, which Send now uses) releases it.
     func holdQueue(_ sessionID: String) {
-        guard byID[sessionID]?.isWorking == true else { return }
         queueRuntime[sessionID, default: QueueRuntime()].held = true
     }
 
@@ -178,7 +179,7 @@ extension SessionStore {
         case .activity(let sessionID, let activity):
             var runtime = queueRuntime[sessionID] ?? QueueRuntime()
             let working = activity == .working || activity == .waitingForPermission
-            if working, !runtime.wasWorking { runtime.held = false }
+            // A hold is never released here: a late event from the stopped turn would look like a new turn starting.
             if activity == .failed { runtime.held = true }
             runtime.wasWorking = working
             queueRuntime[sessionID] = runtime
