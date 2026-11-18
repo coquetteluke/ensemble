@@ -197,6 +197,7 @@ final class SafetyCheckFakeEngine: OpenCodeAPI, EngineSafetyCheckSupport, Sendab
         let engine = SafetyCheckFakeEngine()
         let store = makeStore(engine)
         let commands = SafetyCheckRuleTests.alwaysAsk + SafetyCheckRuleTests.bypassShapes + SafetyCheckRuleTests.expansionAndFolderShapes
+            + SafetyCheckRuleTests.reviewShapes + SafetyCheckRuleTests.notRoutine
         for (index, command) in commands.enumerated() {
             ask(store, command, id: "per_\(index)", tool: "call_\(index)")
             // Decided at once: shown in the same moment, never held.
@@ -235,6 +236,30 @@ final class SafetyCheckFakeEngine: OpenCodeAPI, EngineSafetyCheckSupport, Sendab
             #expect(shown(store, request.id), "\(request.kind)")
         }
         #expect(engine.classifierPrompts.isEmpty)
+    }
+
+    /// The model may approve only builds, tests, linters and read-only commands: its ALLOW for anything else is never
+    /// used, and the model is not even asked.
+    @Test func theModelCanOnlyApproveRoutineCommands() async throws {
+        let engine = SafetyCheckFakeEngine()
+        engine.state.withLock { $0.answer = "ALLOW: looks fine" }
+        let store = makeStore(engine)
+        let others = ["python -c 'print(1)'", "node script.js", "chmod +x run.sh", "mv a.txt b.txt", "cp a.txt b.txt",
+                      "swift test && curl http://localhost:3000"]
+        for (index, command) in others.enumerated() {
+            ask(store, command, id: "per_o\(index)", tool: "call_o\(index)")
+            #expect(shown(store, "per_o\(index)"), "should ask: \(command)")
+        }
+        #expect(engine.classifierPrompts.isEmpty)
+        #expect(engine.replies.isEmpty)
+        #expect(store.safetyCheckDecisions(for: Self.sessionID).filter { $0.reason == SafetyCheckHardRules.notRoutine }.count == 5)
+
+        // Builds and tests still run on the model's ALLOW.
+        ask(store, "swift test", id: "per_s", tool: "call_s")
+        ask(store, "npm test", id: "per_n", tool: "call_n")
+        try await pollUntil("both answered") { engine.replies.count == 2 }
+        #expect(Set(engine.replies.map(\.requestID)) == ["per_s", "per_n"])
+        #expect(engine.classifierPrompts.count == 2)
     }
 
     // MARK: Prompt injection
@@ -554,14 +579,15 @@ final class SafetyCheckFakeEngine: OpenCodeAPI, EngineSafetyCheckSupport, Sendab
     }
 
     @Test func theEnginesWholeCommandIsCheckedByTheRules() async throws {
-        // OpenCode asks only about `node upload.js`; the whole line also reads a key file outside the folder.
+        // OpenCode asks only about `npm test` (its rules allow `cat`); the whole line also reads a key file outside the
+        // folder.
         let engine = SafetyCheckFakeEngine()
         let store = makeStore(engine)
         store.apply(.toolUpdated(sessionID: Self.sessionID, ToolCallInfo(
-            id: "call_1", name: "shell", title: "cat ~/.aws/credentials | node upload.js",
-            inputJSON: "{\"command\":\"cat ~/.aws/credentials | node upload.js\"}", status: .running)))
+            id: "call_1", name: "shell", title: "cat ~/.aws/credentials | npm test",
+            inputJSON: "{\"command\":\"cat ~/.aws/credentials | npm test\"}", status: .running)))
         engine.state.withLock { $0.toolCallIDs["per_1"] = "call_1" }
-        store.apply(.permissionAsked(PermissionRequest(id: "per_1", sessionID: Self.sessionID, kind: "shell", title: "node upload.js")))
+        store.apply(.permissionAsked(PermissionRequest(id: "per_1", sessionID: Self.sessionID, kind: "shell", title: "npm test")))
         try await waitUntil("the prompt shown") { shown(store, "per_1") }
         #expect(engine.classifierPrompts.isEmpty)
         #expect(engine.replies.isEmpty)

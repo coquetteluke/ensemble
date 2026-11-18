@@ -18,9 +18,13 @@ import Foundation
 ///   targets with variables or wildcards), set variables that change what runs or where it connects (`PATH`,
 ///   `DYLD_*`, `*_PROXY`, ...), give an interpreter code inline (`python -c`, `node -e`, here-documents), or hand a
 ///   command line to a wrapper flag (`env -S`, `tar --to-command`);
-/// - commands with hidden characters, and commands longer than `PermissionRules.safetyCheckCommandLimit`.
+/// - commands with hidden characters, and commands longer than `PermissionRules.safetyCheckCommandLimit`;
+/// - every change of working folder, variables in any word, redirections before the program, and inline awk;
+/// - every command whose programs are not all on the routine list (`routineAnyArguments`, `routineSubcommands`,
+///   `routineSpecial`): the model may approve only builds, tests, linters and read-only commands.
 ///
-/// Fetches to this Mac go to the model only with a short list of flags that cannot change where the request goes.
+/// Fetches to this Mac (the fetch tool) go to the model only with a short list of flags that cannot change where the
+/// request goes.
 public enum SafetyCheckHardRules {
     static let outside = "Outside the project folder"
     static let hidden = "Hidden files and folders always ask"
@@ -76,7 +80,8 @@ public enum SafetyCheckHardRules {
         for raw in segment.raw where isAssignment(raw) {
             if let reason = sensitiveVariableReason(raw) { return reason }
         }
-        if segment.afterPipe, let first = programs.first, PermissionRules.safetyCheckInterpreters.contains(programName(words[first])) {
+        // Into a shell or interpreter, also through a wrapper (`x | env bash`, `x | nice sh`).
+        if segment.afterPipe, programs.contains(where: { PermissionRules.safetyCheckInterpreters.contains(programName(words[$0])) }) {
             return "Pipes text into a shell"
         }
         for index in programs {
@@ -107,8 +112,11 @@ public enum SafetyCheckHardRules {
             if let reason = installReason(program: program, rest: rest) { return reason }
         }
         let programSet = Set(programs)
-        for (index, word) in words.enumerated() {
-            if let reason = wordReason(word, directory: directory, isProgram: programSet.contains(index)) { return reason }
+        // Every word gets every path and name check; nothing is spared as a search pattern, because argument order and
+        // clustered flags make "which word is the pattern" a guess.
+        func check(_ word: String, raw: String, isProgram: Bool) -> String? {
+            if let reason = variableReason(raw) { return reason }
+            if let reason = wordReason(word, directory: directory, isProgram: isProgram) { return reason }
             // Quoted text is also read piece by piece, so a path, address or name inside a string still counts.
             let pieces = word.split(whereSeparator: { " \t\n;|&()<>'\"".contains($0) }).map(String.init)
             if pieces.count > 1 || pieces.first != word {
@@ -116,8 +124,43 @@ public enum SafetyCheckHardRules {
                     if let reason = wordReason(piece, directory: directory, isProgram: false) { return reason }
                 }
             }
+            return nil
         }
-        return nil
+        for (index, word) in words.enumerated() {
+            if let reason = check(word, raw: segment.raw[index], isProgram: programSet.contains(index)) {
+                return reason
+            }
+        }
+        // Redirection targets are paths like any other (`> .git/hooks/x`, `>> Makefile`, `< ~/.ssh/id_rsa`).
+        for (index, target) in segment.redirects.enumerated() {
+            if let reason = check(target, raw: segment.redirectRaws[index], isProgram: false) { return reason }
+        }
+        return routineReason(segment, programs: programs)
+    }
+
+    static let variable = "Uses a variable the check cannot resolve"
+    static let folderChange = "Changes the working folder"
+
+    /// A variable in a word (`$NAME`, `${NAME}`, outside single quotes): its value is unknown, so the word could be any
+    /// path. Variables that name places outside the folder say so.
+    static func variableReason(_ raw: String) -> String? {
+        guard hasVariable(raw) else { return nil }
+        return outsideVariables.contains(where: { raw.contains($0) }) ? outside : variable
+    }
+
+    /// True when `raw` has a `$` outside single quotes (inside them it is a plain character).
+    static func hasVariable(_ raw: String) -> Bool {
+        var single = false
+        var double = false
+        for character in raw {
+            switch character {
+            case "'" where !double: single.toggle()
+            case "\"" where !single: double.toggle()
+            case "$" where !single: return true
+            default: break
+            }
+        }
+        return false
     }
 
     /// Programs that run a command given in a flag or in their own script text (`tar --to-command`, `awk` with
@@ -132,39 +175,36 @@ public enum SafetyCheckHardRules {
                 }
             }
         }
+        // An awk program written into the command can run commands and write files (`system`, `print | "sh"`,
+        // `print > "/path"`); only a script file (`-f`) is left to the other rules.
         if ["awk", "gawk", "nawk", "mawk"].contains(program),
-           arguments.contains(where: { $0.contains("system") || $0.contains("getline") }) {
-            return "Runs text as a command"
+           !arguments.contains(where: { $0 == "-f" || $0.hasPrefix("--file") }) {
+            return "Runs a script written into the command"
         }
+        // `env -C dir`, `env --chdir=dir`: a change of working folder, as `cd`.
         if program == "env" {
-            for (offset, word) in arguments.enumerated() {
-                let value: String? = if word == "-C" || word == "--chdir" {
-                    offset + 1 < arguments.count ? arguments[offset + 1] : nil
-                } else if word.hasPrefix("--chdir=") {
-                    String(word.dropFirst("--chdir=".count))
-                } else if word.hasPrefix("-C"), word.count > 2 {
-                    String(word.dropFirst(2))
-                } else {
-                    nil
+            let valueFlags = wrapperValueFlags["env"] ?? []
+            var index = 0
+            while index < arguments.count {
+                let word = arguments[index]
+                index += 1
+                if word == "--" { break }
+                guard word.hasPrefix("-"), word.count > 1 else {
+                    if isAssignment(word) { continue }
+                    break
                 }
-                if let value, value.contains(where: { "$`{}*?[]~".contains($0) }) { return outside }
+                if word.hasPrefix("--chdir") || (!word.hasPrefix("--") && word.dropFirst().contains("C")) { return folderChange }
+                if valueFlags.contains(word) { index += 1 }
             }
         }
         return nil
     }
 
-    /// A change of working folder the rules cannot follow asks: later relative paths would be read against the wrong
-    /// folder. `cd` alone (home), `cd -` (the previous folder), `pushd`, `popd`, and a target with a variable, braces,
-    /// wildcards or `~`. Other targets are paths like any other (`cd /tmp` and `cd ..` are outside), and paths after a
-    /// `cd` into a subfolder are read against the session's folder, which can only make them look further out.
+    /// Every change of working folder asks (`cd`, `chdir`, `pushd`, `popd`, and `env -C`): later relative paths would be
+    /// read against the wrong folder (`cd ..; rm -r x`, `cd link-to-elsewhere; rm x`). Agents rarely need one in a
+    /// command line, so asking is cheap.
     static func directoryChangeReason(program: String, arguments: [String]) -> String? {
-        if program == "pushd" || program == "popd" { return outside }
-        guard program == "cd" || program == "chdir" else { return nil }
-        let targets = arguments.filter { !["-P", "-L", "-e", "-@", "--"].contains($0) }
-        guard let target = targets.first else { return outside }
-        if target == "-" { return outside }
-        if target.contains(where: { "$`{}*?[]~".contains($0) }) { return outside }
-        return nil
+        ["cd", "chdir", "pushd", "popd"].contains(program) ? folderChange : nil
     }
 
     /// Plain program text: no quotes, backslashes, variables, wildcards, braces or `~`. The test builtins `[` and `[[`
@@ -205,6 +245,120 @@ public enum SafetyCheckHardRules {
             if word.dropFirst().contains(where: { flags.contains("-" + String($0)) }) { return true }
         }
         return false
+    }
+
+    // MARK: Routine commands
+
+    /// The reason a command outside the routine list asks.
+    static let notRoutine = "Not a build, test, lint or read-only command"
+
+    /// The only commands the model may approve. Every program in the line, through every wrapper, must be one of these;
+    /// anything else asks, whatever the model would answer (the user can still allow it). A gap in the other rules can
+    /// at worst let the model approve a build, a test, a linter or a read-only command, never an arbitrary program.
+    ///
+    /// Programs with any arguments: the project's own build and test runners and linters, and read-only tools (their
+    /// paths are checked by the other rules, so they stay inside the folder).
+    static let routineAnyArguments: Set<String> = [
+        "make", "pytest", "ruff", "eslint", "prettier", "tsc",
+        "ls", "cat", "head", "tail", "wc", "grep", "diff", "stat", "file", "tree",
+        // Already allowed in Auto by OpenCode's own rules (`PermissionRules.autoAllowedShell`).
+        "echo", "pwd", "which",
+    ]
+
+    /// Programs allowed only with one of these as their first plain word.
+    static let routineSubcommands: [String: Set<String>] = [
+        "swift": ["build", "test"],
+        "npm": ["test", "run", "build", "lint"], "pnpm": ["test", "run", "build", "lint"],
+        "yarn": ["test", "run", "build", "lint"], "bun": ["test", "run", "build", "lint"],
+        "cargo": ["build", "test", "check", "clippy", "fmt"],
+        "go": ["build", "test", "vet"],
+        "gradle": ["test", "build"], "gradlew": ["test", "build"],
+    ]
+
+    /// Programs with a rule of their own (`isRoutine`): `xcodebuild` (build and test actions only), `python -m pytest`,
+    /// `find` (without `-exec`, `-delete` or file output), `rg` (without `--pre`), and wrappers that only run the next
+    /// program (`time`, `timeout`, `nice`, and `env` with nothing but variables).
+    static let routineSpecial: Set<String> = ["xcodebuild", "python", "python3", "find", "rg", "time", "timeout", "gtimeout", "nice", "env"]
+
+    /// Every program the routine list names.
+    static var routinePrograms: Set<String> {
+        routineAnyArguments.union(routineSubcommands.keys).union(routineSpecial)
+    }
+
+    /// Why the segment cannot be approved by the model, or nil when every program in it is routine.
+    static func routineReason(_ segment: ShellSegment, programs: [Int]) -> String? {
+        for index in programs {
+            let arguments = Array(segment.words[(index + 1)...])
+            guard isRoutine(program: programName(segment.words[index]), arguments: arguments) else { return notRoutine }
+        }
+        return nil
+    }
+
+    static func isRoutine(program: String, arguments: [String]) -> Bool {
+        if routineAnyArguments.contains(program) { return true }
+        let firstPlain = arguments.first { !$0.hasPrefix("-") }
+        if let allowed = routineSubcommands[program] {
+            guard let subcommand = firstPlain, allowed.contains(subcommand) else { return false }
+            guard subcommand == "run" else { return true }
+            // `npm run <script>`: a script name from package.json, not a file (`bun run x.ts` runs any file).
+            guard let index = arguments.firstIndex(of: "run"), index + 1 < arguments.count else { return false }
+            let script = arguments[index + 1]
+            return !script.isEmpty && script.unicodeScalars.allSatisfy {
+                $0.isASCII && (CharacterSet.alphanumerics.contains($0) || ":_-".unicodeScalars.contains($0))
+            }
+        }
+        switch program {
+        case "time", "timeout", "gtimeout", "nice":
+            return true
+        case "env":
+            // Only variables before the program (`env NODE_ENV=test npm test`); no flags.
+            for word in arguments {
+                if isAssignment(word) { continue }
+                return !word.hasPrefix("-")
+            }
+            return true
+        case "python", "python3":
+            return arguments.count >= 2 && arguments[0] == "-m" && arguments[1] == "pytest"
+        case "find":
+            let unsafe: Set<String> = ["-exec", "-execdir", "-ok", "-okdir", "-delete", "-fprint", "-fprint0", "-fprintf", "-fls"]
+            return !arguments.contains { unsafe.contains($0.lowercased()) }
+        case "rg":
+            return !arguments.contains { $0.hasPrefix("--pre") }
+        case "xcodebuild":
+            return isRoutineXcodebuild(arguments)
+        default:
+            return false
+        }
+    }
+
+    /// `xcodebuild` with at least one build or test action and nothing else: no `archive`, `install`, `clean`,
+    /// `-exportArchive`, `-importLocalizations` and the like. Values of its options are skipped.
+    static func isRoutineXcodebuild(_ arguments: [String]) -> Bool {
+        let actions: Set<String> = ["build", "test", "build-for-testing", "test-without-building"]
+        let valueFlags: Set<String> = [
+            "-project", "-workspace", "-scheme", "-target", "-configuration", "-destination", "-sdk", "-arch", "-derivedDataPath",
+            "-resultBundlePath", "-xcconfig", "-testPlan", "-only-testing", "-skip-testing", "-jobs", "-toolchain",
+            "-destination-timeout", "-parallel-testing-worker-count", "-testProductsPath", "-xctestrun",
+            "-clonedSourcePackagesDirPath", "-packageCachePath", "-only-test-configuration", "-skip-test-configuration",
+            "-test-iterations", "-maximum-concurrent-test-device-destinations", "-maximum-concurrent-test-simulator-destinations",
+        ]
+        let commandPrefixes = ["-export", "-import", "-download", "-install", "-create", "-run", "-license", "-check", "-show",
+                               "-list", "-find", "-version", "-usage", "-help"]
+        var found = 0
+        var index = 0
+        while index < arguments.count {
+            let word = arguments[index]
+            index += 1
+            if word.hasPrefix("-") {
+                if commandPrefixes.contains(where: { word.hasPrefix($0) }) { return false }
+                if valueFlags.contains(word) { index += 1 }
+                continue
+            }
+            if isAssignment(word) { continue }
+            guard actions.contains(word) else { return false }
+            found += 1
+        }
+        return found > 0
     }
 
     // MARK: Programs
@@ -501,8 +655,8 @@ public enum SafetyCheckHardRules {
         // `~` is the home folder at the start of a word and after `:` or `=`; any `~` counts.
         if text.contains("~") { return outside }
         if outsideVariables.contains(where: { text.contains($0) }) { return outside }
-        // Other variables and regular expressions (`/^#/d`) cannot be resolved here; the model sees them.
-        if text.contains("$") || text.contains("^") { return nil }
+        // `^` is an ordinary character here: a word with a `/` is resolved and checked like any path.
+        if text.contains("$"), text.hasPrefix("/") || text.hasPrefix(".") || text.contains("/") { return variable }
         guard text.hasPrefix("/") || text.hasPrefix(".") || text.contains("/") else {
             // A plain name can still be a link in the folder that points out of it (`cd docs`).
             return !text.hasPrefix("-") && leavesFolderOnDisk(directory + "/" + text, root: directory) ? outside : nil
@@ -650,16 +804,22 @@ public enum SafetyCheckHardRules {
 
 /// One simple command of a line: its words in order (as read, and as written), and whether a pipe feeds it.
 struct ShellSegment: Hashable, Sendable {
-    /// Each word with its quotes removed.
+    /// Each word with its quotes removed. Redirections and their targets are not words.
     var words: [String]
     /// Each word exactly as written (quotes and `$` kept), for telling plain words from quoted or built ones.
     var raw: [String]
     var afterPipe: Bool
+    /// The targets of the segment's redirections (`> out.txt`, `2>&1`, `< in`), quotes removed, and as written. They are
+    /// never words, so a redirection can never pose as the program; their paths are checked like any other.
+    var redirects: [String] = []
+    var redirectRaws: [String] = []
 
-    init(words: [String], raw: [String]? = nil, afterPipe: Bool) {
+    init(words: [String], raw: [String]? = nil, afterPipe: Bool, redirects: [String] = [], redirectRaws: [String]? = nil) {
         self.words = words
         self.raw = raw ?? words
         self.afterPipe = afterPipe
+        self.redirects = redirects
+        self.redirectRaws = redirectRaws ?? redirects
     }
 }
 
@@ -680,7 +840,9 @@ struct ShellReading: Hashable, Sendable {
 ///   than a plain variable;
 /// - plain variables, `$NAME` and `${NAME}` (a name only, with its closing brace);
 /// - separators `;`, `&&`, `||`, `|`, `|&`, `&` (background), newlines, and `(` `)` for subshells;
-/// - redirections `>`, `>>`, `<`, `>|`, `2>&1`, `&>`, `&>>`, `<&`.
+/// - redirections `>`, `>>`, `<`, `>|`, `N>`, `N<`, `N>&M`, `>&N`, `&>`, `&>>`, `<&`, each with its target read as one
+///   token kept apart from the words (a digit word right before the operator is its descriptor and is dropped). A
+///   redirection before the program, or without a target, makes the line uncheckable.
 ///
 /// Everything else makes the line uncheckable: command substitution (`$(...)`, backticks, also inside `${...}`),
 /// process substitution (`<(...)`, `>(...)`), here-documents and here-strings, `${...}` with anything beyond a name or
@@ -701,11 +863,23 @@ enum ShellText {
         var raw = String.UnicodeScalarView()
         var inWord = false
         var afterPipe = false
+        var redirects: [String] = []
+        var redirectRaws: [String] = []
+        /// The next word is a redirection's target.
+        var pendingRedirect = false
+        var problem: String?
+        let redirection = "Uses a redirection the check cannot read"
 
         func endWord() {
             if inWord {
-                words.append(String(word))
-                raws.append(String(raw))
+                if pendingRedirect {
+                    redirects.append(String(word))
+                    redirectRaws.append(String(raw))
+                    pendingRedirect = false
+                } else {
+                    words.append(String(word))
+                    raws.append(String(raw))
+                }
             }
             word = String.UnicodeScalarView()
             raw = String.UnicodeScalarView()
@@ -713,10 +887,33 @@ enum ShellText {
         }
         func endSegment(nextAfterPipe: Bool) {
             endWord()
-            if !raws.isEmpty { segments.append(ShellSegment(words: words, raw: raws, afterPipe: afterPipe)) }
+            // A redirection with no target (`npm test >`, `> ;`).
+            if pendingRedirect, problem == nil { problem = redirection }
+            if !raws.isEmpty || !redirects.isEmpty {
+                segments.append(ShellSegment(words: words, raw: raws, afterPipe: afterPipe, redirects: redirects,
+                                             redirectRaws: redirectRaws))
+            }
             words = []
             raws = []
+            redirects = []
+            redirectRaws = []
             afterPipe = nextAfterPipe
+        }
+        /// Starts a redirection at the operator: a digit word written right before it is its descriptor (`2>`) and is
+        /// dropped; the next word becomes the target. Nil, or why the line is uncheckable.
+        func beginRedirect() -> String? {
+            if inWord, !raw.isEmpty, !pendingRedirect, raw.allSatisfy({ ("0"..."9").contains($0) }) {
+                word = String.UnicodeScalarView()
+                raw = String.UnicodeScalarView()
+                inWord = false
+            } else {
+                endWord()
+            }
+            if pendingRedirect { return redirection }
+            // Before the program (`>out rm -rf ~`, `2>/dev/null rm`, `FOO=1 >x rm`): the shell would run what follows.
+            if raws.allSatisfy(SafetyCheckHardRules.isAssignment) { return redirection }
+            pendingRedirect = true
+            return nil
         }
         func fail(_ reason: String) -> ShellReading {
             ShellReading(segments: segments, problem: reason)
@@ -775,6 +972,7 @@ enum ShellText {
         }
 
         while index < scalars.count {
+            if let problem { return fail(problem) }
             let scalar = scalars[index]
             switch scalar {
             case " ", "\t":
@@ -794,21 +992,24 @@ enum ShellText {
                     index += 1
                     endSegment(nextAfterPipe: false)
                 } else if next() == ">" {
-                    endWord()
+                    // `&>` and `&>>`: output and errors to the target.
+                    if let reason = beginRedirect() { return fail(reason) }
                     index += 1
                     if next() == ">" { index += 1 }
+                    if next() == "(" { return fail(substitution) }
                 } else {
                     endSegment(nextAfterPipe: false)
                 }
             case ">":
-                endWord()
                 if next() == "(" { return fail(substitution) }
+                if let reason = beginRedirect() { return fail(reason) }
                 if next() == ">" || next() == "|" { index += 1 }
                 if next() == "&" { index += 1 }
+                if next() == "(" { return fail(substitution) }
             case "<":
-                endWord()
                 if next() == "(" { return fail(substitution) }
                 if next() == "<" { return fail("Uses a here-document the check cannot read") }
+                if let reason = beginRedirect() { return fail(reason) }
                 if next() == "&" || next() == ">" { index += 1 }
             case "'":
                 raw.append(scalar)
@@ -861,6 +1062,7 @@ enum ShellText {
             index += 1
         }
         endSegment(nextAfterPipe: false)
+        if let problem { return fail(problem) }
         return ShellReading(segments: segments, problem: nil)
     }
 }

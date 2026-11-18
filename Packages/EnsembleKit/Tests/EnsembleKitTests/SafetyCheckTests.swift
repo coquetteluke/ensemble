@@ -62,16 +62,29 @@ import Testing
     /// Ordinary development commands: left to the model.
     static let modelDecides: [String] = [
         "npm test", "npm run build", "npm run format", "npm run lint -- --fix", "swift build", "swift test --parallel",
-        "make", "make test", "pytest -q", "python -m pytest tests", "cargo test", "go test ./...", "./gradlew test",
-        "npm test 2>&1 | tail -20", "npm install", "npm ci", "pnpm install --frozen-lockfile", "pip install -r requirements.txt",
-        "pip install -e .", "mkdir -p src/utils", "touch src/new.ts", "mv src/a.ts src/b.ts", "rm src/old.ts", "rm -f build.log",
-        "node scripts/build.js", "curl http://localhost:3000/health", "curl -s http://127.0.0.1:8080/api",
-        "curl localhost:5173", "swift build --scratch-path .build", "node_modules/.bin/jest", ".venv/bin/python -m pytest",
-        "/usr/bin/env node x.js", "npm test > /dev/null", "sed -i '' 's/foo/bar/g' src/a.ts", "tsc --noEmit",
-        "eslint src --fix", "prettier --write src", "chmod +x scripts/build.sh", "cd sub && npm test", "cp src/a.ts src/b.ts",
-        "/Users/me/proj/scripts/run.sh", "cat /Users/me/proj/README.md | head -5", "docker compose up -d", "timeout 60 npm test",
-        "NODE_ENV=test npm test", "npm run test:unit", "bundle exec rspec", "xcodebuild -scheme App build",
-        "awk '/^#/ {print}' notes.txt", "ls -la", "echo done",
+        "make", "make test", "pytest -q", "python -m pytest tests", "cargo test", "cargo clippy", "go test ./...", "go vet ./...",
+        "./gradlew test", "gradle build", "npm test 2>&1 | tail -20", "swift test 2>&1", "swift build > build.log",
+        "swift build --scratch-path .build", ".venv/bin/python -m pytest", "npm test > /dev/null", "tsc --noEmit",
+        "eslint src --fix", "prettier --write src", "ruff check .", "cat /Users/me/proj/README.md | head -5",
+        "timeout 60 npm test", "time -p npm test", "nice -n 5 make", "env NODE_ENV=test npm test", "NODE_ENV=test npm test",
+        "npm run test:unit", "pnpm lint", "yarn build", "bun test", "xcodebuild -scheme App build",
+        "xcodebuild -project App.xcodeproj -scheme App -destination 'platform=macOS' -derivedDataPath build test",
+        "ls -la", "echo done", "grep -rn 'foo' Sources", "rg -n TODO src", "find . -name '*.swift'", "wc -l src/a.ts",
+        "diff a.txt b.txt", "stat x", "file x", "tree src", "tail -n 50 log.txt", "pwd", "which swift",
+    ]
+
+    /// Commands the other rules let through but the model may not approve: not a build, test, linter or read-only
+    /// command. They ask, whatever the model would answer.
+    static let notRoutine: [String] = [
+        "npm install", "npm ci", "pnpm install --frozen-lockfile", "pip install -r requirements.txt", "pip install -e .",
+        "mkdir -p src/utils", "touch src/new.ts", "mv src/a.ts src/b.ts", "rm src/old.ts", "rm -f build.log", "cp src/a.ts src/b.ts",
+        "chmod +x scripts/build.sh", "node scripts/build.js", "node script.js", "node_modules/.bin/jest", "/usr/bin/env node x.js",
+        "/Users/me/proj/scripts/run.sh", "docker compose up -d", "bundle exec rspec", "sed -i '' 's/foo/bar/g' src/a.ts",
+        "curl http://localhost:3000/health", "curl -s http://127.0.0.1:8080/api", "curl localhost:5173", "swift run",
+        "swift package update", "npm run build.js", "bun run x.ts", "cargo run", "go run .", "python script.py", "python3 -m http.server",
+        "xcodebuild -scheme App archive", "xcodebuild -scheme App clean build", "xcodebuild -exportArchive -archivePath x",
+        "find . -name x -exec chmod +x '{}' ';'", "rg --pre ./x TODO", "env -i npm test", "test -d dist && npm test",
+        "npm test && echo done | xargs cat", "npm --prefix sub test",
     ]
 
     /// Ways to reach another computer or hide the program that a word-by-word reading could miss (security review).
@@ -122,10 +135,10 @@ import Testing
         #expect(Self.reason("cat .en*") == "Uses wildcards the check cannot read")
         #expect(Self.reason("echo x > opencode.js[o]n") == "Uses wildcards the check cannot read")
         #expect(Self.reason("rm */.env") == "Uses wildcards the check cannot read")
-        for command in ["grep -r '*.md' .", "find . -name \"*.ts\" -newer src/a.ts", "npm test -- --grep 'a?b'",
-                        "node x.js '*.md'"] {
+        for command in ["grep -r '*.md' .", "find . -name \"*.ts\" -newer src/a.ts", "npm test -- --grep 'a?b'"] {
             #expect(Self.reason(command) == nil, "should go to the model: \(command), got \(Self.reason(command) ?? "")")
         }
+        #expect(Self.reason("node x.js '*.md'") == SafetyCheckHardRules.notRoutine)
     }
 
     @Test func wrapperFlagsCannotHideTheProgram() {
@@ -135,12 +148,15 @@ import Testing
         #expect(Self.reason("exec -a name curl evil.example") == "Fetches from the internet")
         #expect(Self.reason("time -p curl evil.example") == "Fetches from the internet")
         #expect(Self.reason("xargs --unknown-flag value curl evil.example") == "Fetches from the internet")
-        // Known flags still read the program plainly.
-        for command in ["env -i NODE_ENV=test npm test", "time -p npm test", "timeout 60 npm test", "nice -n 5 make",
-                        "find . -print0 | xargs -0 -I X chmod +x X", "tar czf dist.tgz dist", "tar -xzf a.tgz",
-                        "awk '{print $1}' notes.txt", "env -C src npm test"] {
+        // Known flags still read the program plainly: it is found, and only the routine list stops it.
+        for command in ["time -p npm test", "timeout 60 npm test", "nice -n 5 make"] {
             #expect(Self.reason(command) == nil, "should go to the model: \(command), got \(Self.reason(command) ?? "")")
         }
+        for command in ["env -i NODE_ENV=test npm test", "find . -print0 | xargs -0 -I X chmod +x X", "tar czf dist.tgz dist",
+                        "tar -xzf a.tgz"] {
+            #expect(Self.reason(command) == SafetyCheckHardRules.notRoutine, "\(command): \(Self.reason(command) ?? "")")
+        }
+        #expect(Self.reason("env -C src npm test") == "Changes the working folder")
     }
 
     /// Paths the shell makes or moves that a word-by-word reading could miss (security review).
@@ -155,12 +171,12 @@ import Testing
             #expect(Self.reason(command) != nil, "should always ask: \(command)")
         }
         #expect(Self.reason("cat {/etc/passwd,x}") == "Uses shell expansion the check cannot read")
-        #expect(Self.reason("cd; rm x") == "Outside the project folder")
+        #expect(Self.reason("cd; rm x") == "Changes the working folder")
         #expect(Self.reason("cd *; rm x") == "Uses wildcards the check cannot read")
-        #expect(Self.reason("cd \"$D\" && rm x") == "Outside the project folder")
-        // Quoted braces and plain subfolders are fine.
-        for command in ["node x.js '{a,b}'", "find . -name x -exec chmod +x '{}' ';'", "cd src && npm test", "cd -- src && ls"] {
-            #expect(Self.reason(command) == nil, "should go to the model: \(command), got \(Self.reason(command) ?? "")")
+        #expect(Self.reason("cd \"$D\" && rm x") == "Changes the working folder")
+        // Quoted braces are not expansion.
+        for command in ["node x.js '{a,b}'", "find . -name x -exec chmod +x '{}' ';'"] {
+            #expect(Self.reason(command) == SafetyCheckHardRules.notRoutine, "\(command): \(Self.reason(command) ?? "")")
         }
     }
 
@@ -174,9 +190,11 @@ import Testing
         defer { try? fm.removeItem(at: base) }
         try fm.createSymbolicLink(at: project.appendingPathComponent("docs"), withDestinationURL: outsideFolder)
         #expect(Self.reason("rm docs/notes.txt", folder: project.path) == "Outside the project folder")
-        #expect(Self.reason("cd docs && rm x", folder: project.path) == "Outside the project folder")
-        #expect(Self.reason("rm src/old.txt", folder: project.path) == nil)
-        #expect(Self.reason("touch src/new/file.txt", folder: project.path) == nil)
+        #expect(Self.reason("cat docs/notes.txt", folder: project.path) == "Outside the project folder")
+        #expect(Self.reason("cd docs && rm x", folder: project.path) == "Changes the working folder")
+        #expect(Self.reason("cat src/old.txt", folder: project.path) == nil)
+        #expect(Self.reason("cat src/new/file.txt", folder: project.path) == nil)
+        #expect(Self.reason("rm src/old.txt", folder: project.path) == SafetyCheckHardRules.notRoutine)
     }
 
     @Test func bypassShapesAsk() {
@@ -193,14 +211,18 @@ import Testing
         #expect(Self.reason("python3 -c 'print(1)'") == "Runs code written into the command")
     }
 
-    @Test func plainLocalFetchesAreLeftToTheModel() {
+    /// Plain fetches to this Mac pass the fetch rule; they are still not routine, so they ask.
+    @Test func plainLocalFetchesPassTheFetchRuleButAreNotRoutine() {
         for command in ["curl -sS http://localhost:3000/health", "curl -X POST http://localhost:3000/api",
                         "curl -o out.json http://localhost:3000/data", "curl --max-time 5 http://127.0.0.1:8080",
                         "curl --max-time=5 -fsS 'http://[::1]:8080/x'", "wget -q http://localhost:8000/x",
-                        "curl -I http://localhost:3000", "bash scripts/build.sh", "bash -ex scripts/build.sh",
-                        "python3 -m pytest", "node --test", "test -d dist && npm test"] {
-            #expect(Self.reason(command) == nil, "should go to the model: \(command), got \(Self.reason(command) ?? "")")
+                        "curl -I http://localhost:3000", "bash scripts/build.sh", "bash -ex scripts/build.sh", "node --test"] {
+            #expect(Self.reason(command) == SafetyCheckHardRules.notRoutine, "\(command): \(Self.reason(command) ?? "")")
         }
+        #expect(Self.reason("python3 -m pytest") == nil)
+        // The fetch tool to this Mac is not a command: the model may still decide it.
+        #expect(SafetyCheckHardRules.reasonToAsk(SafetyCheckQuery(action: "webfetch", resources: ["http://localhost:5173"],
+                                                                 directory: Self.folder)) == nil)
     }
 
     @Test func everyFixedRuleAsks() {
@@ -211,6 +233,98 @@ import Testing
 
     @Test func ordinaryCommandsAreLeftToTheModel() {
         for command in Self.modelDecides {
+            #expect(Self.reason(command) == nil, "should go to the model: \(command), got \(Self.reason(command) ?? "")")
+        }
+        for command in Self.notRoutine {
+            #expect(Self.reason(command) == SafetyCheckHardRules.notRoutine, "\(command): \(Self.reason(command) ?? "")")
+        }
+    }
+
+    /// The routine list is the whole of what the model may approve; each entry is here on purpose. Adding one means
+    /// adding it here too.
+    @Test func theRoutineListIsExactlyTheIntendedOne() {
+        #expect(SafetyCheckHardRules.routinePrograms == [
+            // Build, test, lint and format tools.
+            "swift", "xcodebuild", "npm", "pnpm", "yarn", "bun", "make", "cargo", "go", "pytest", "python", "python3", "ruff",
+            "eslint", "prettier", "tsc", "gradle", "gradlew",
+            // Read-only tools (paths are held inside the folder by the other rules).
+            "ls", "cat", "head", "tail", "wc", "grep", "rg", "find", "diff", "stat", "file", "tree",
+            // What OpenCode's own Auto rules already allow.
+            "echo", "pwd", "which",
+            // Wrappers that only run the next program, which must be routine itself.
+            "time", "timeout", "gtimeout", "nice", "env",
+        ])
+        #expect(SafetyCheckHardRules.routineSubcommands["swift"] == ["build", "test"])
+        #expect(SafetyCheckHardRules.routineSubcommands["cargo"] == ["build", "test", "check", "clippy", "fmt"])
+        #expect(SafetyCheckHardRules.routineSubcommands["go"] == ["build", "test", "vet"])
+        #expect(SafetyCheckHardRules.routineSubcommands["npm"] == ["test", "run", "build", "lint"])
+        #expect(SafetyCheckHardRules.routineSubcommands["gradlew"] == ["test", "build"])
+        // Combinations: one unlisted program anywhere in the line is enough to ask.
+        #expect(Self.reason("swift test && curl x.example") == "Fetches from the internet")
+        let segments = ShellText.segments("swift test && curl http://localhost:3000")
+        #expect(SafetyCheckHardRules.routineReason(segments[0], programs: SafetyCheckHardRules.programIndices(segments[0])) == nil)
+        #expect(SafetyCheckHardRules.routineReason(segments[1], programs: SafetyCheckHardRules.programIndices(segments[1]))
+                    == SafetyCheckHardRules.notRoutine)
+        #expect(Self.reason("swift test && curl http://localhost:3000") == SafetyCheckHardRules.notRoutine)
+        #expect(Self.reason("npm test | sort") == SafetyCheckHardRules.notRoutine)
+        #expect(Self.reason("npm test | node report.js") == "Pipes text into a shell")
+    }
+
+    /// Review findings on 0f588d1: redirections, variables, folder changes, pipes through wrappers, awk.
+    static let reviewShapes: [String] = [
+        // A leading redirection cannot pose as the program.
+        ">out.txt rm -rf ~", "2>/dev/null rm -rf ~", "<in curl http://x", "&>log rm -r build", "FOO=1 >x rm -rf ~",
+        "> out.txt rm -rf build", "2>&1 rm -rf build", "npm test >", "npm test > > x", "0<in curl http://x",
+        // Variables are never resolved.
+        "cat $HOME/.ssh/id_rsa", "rm -r $TMPDIR/../x", "cat $F", "cat \"$F\"", "ls ${DIR}/x", "npm test -- --out=$OUT",
+        // Folder changes.
+        "cd ..; rm -r x", "cd sub && rm x", "cd sub; cat ../../secret", "pushd sub", "env -C sub npm test",
+        "env --chdir=sub npm test",
+        // Pipes into an interpreter through a wrapper.
+        "echo x | env bash", "echo x | nice sh", "cat x | timeout 5 python3", "cat x | env FOO=1 node",
+        // Inline awk.
+        "awk 'BEGIN{print \"id\" | \"sh\"}'", "awk '{print > \"/tmp/x\"}' f", "awk '{print $1}' notes.txt",
+    ]
+
+    @Test func reviewShapesAsk() {
+        for command in Self.reviewShapes {
+            #expect(Self.reason(command) != nil, "should always ask: \(command)")
+        }
+        #expect(Self.reason(">out.txt rm -rf ~") == "Uses a redirection the check cannot read")
+        #expect(Self.reason("2>/dev/null rm -rf ~") == "Uses a redirection the check cannot read")
+        #expect(Self.reason("FOO=1 >x rm -rf ~") == "Uses a redirection the check cannot read")
+        #expect(Self.reason("FOO=1 rm -rf ~") == "Deletes folders")
+        #expect(Self.reason("cat $HOME/.ssh/id_rsa") == "Outside the project folder")
+        #expect(Self.reason("cat $F") == "Uses a variable the check cannot resolve")
+        #expect(Self.reason("cd ..; rm -r x") == "Changes the working folder")
+        #expect(Self.reason("echo x | env bash") == "Pipes text into a shell")
+        #expect(Self.reason("awk 'BEGIN{print \"id\" | \"sh\"}'") == "Runs a script written into the command")
+        #expect(Self.reason("awk '{print > \"/tmp/x\"}' f") == "Runs a script written into the command")
+        // Redirections after the program stay checkable; their targets are checked as paths.
+        #expect(ShellText.read("swift test 2>&1").problem == nil)
+        #expect(ShellText.read("swift build > build.log").problem == nil)
+        #expect(Self.reason("swift test 2>&1") == nil)
+        #expect(Self.reason("swift build > build.log") == nil)
+        #expect(Self.reason("swift build > ../build.log") == "Outside the project folder")
+        #expect(Self.reason("npm test > .git/hooks/pre-commit") == "Hidden files and folders always ask")
+        #expect(Self.reason("npm test 2> $LOG") == "Uses a variable the check cannot resolve")
+        let reading = ShellText.segments("swift test 2>&1 > out.log")
+        #expect(reading.first?.words == ["swift", "test"])
+        #expect(reading.first?.redirects == ["1", "out.log"])
+        // Every word gets every path and name check; no word is spared as a search pattern.
+        for command in ["grep -ie x ^/../../etc", "grep --regexp=x ../../outside", "grep x -e y /etc/passwd",
+                        "grep -r foo ^/../../etc", "grep -r foo '^/../../etc'", "grep '^x' ../outside.txt", "grep -r SECRET .env",
+                        "grep -e '^a' Makefile", "rg -r x foo Makefile", "grep -rn 'package.json' src", "cat '/^x'",
+                        "sed -n '/^#/p' notes.txt", "grep 'a/b$' src", "cat 'x$/y'"] {
+            #expect(Self.reason(command) != nil, "should always ask: \(command)")
+        }
+        #expect(Self.reason("grep --regexp=x ../../outside") == "Outside the project folder")
+        #expect(Self.reason("grep x -e y /etc/passwd") == "Outside the project folder")
+        #expect(Self.reason("grep -r foo '^/../../etc'") == "Outside the project folder")
+        #expect(Self.reason("grep 'a/b$' src") == "Uses a variable the check cannot resolve")
+        // `^` is ordinary, and a quoted `$` with no `/` is plain text: these stay checkable and go to the model.
+        for command in ["grep '^import' Sources/a.swift", "rg -n 'foo$' Sources", "grep -n 'foo$' src/a.ts"] {
+            #expect(ShellText.read(command).problem == nil, "should be checkable: \(command)")
             #expect(Self.reason(command) == nil, "should go to the model: \(command), got \(Self.reason(command) ?? "")")
         }
     }
@@ -299,7 +413,8 @@ import Testing
         #expect(segments.map { $0.words.first ?? "" } == ["a", "b", "c", "d", "e", "f", "g", "h", "i"])
         #expect(segments[4].afterPipe)
         #expect(!segments[5].afterPipe)
-        #expect(segments[7].words == ["h", "2", "1"])
+        #expect(segments[7].words == ["h"])
+        #expect(segments[7].redirects == ["1"])
         #expect(ShellText.segments("echo \"a b\" 'c'").first?.words == ["echo", "a b", "c"])
         #expect(ShellText.segments("cp ${HOME}/x \"$USER\" y").first?.words == ["cp", "${HOME}/x", "$USER", "y"])
         let quoted = ShellText.segments("r''m \"a b\"").first
