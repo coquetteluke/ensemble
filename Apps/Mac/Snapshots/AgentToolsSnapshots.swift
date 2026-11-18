@@ -95,6 +95,12 @@ enum AgentToolsSnapshots {
                                                   summary: "Type 11 characters into textbox \"Project name\" (e4)", origin: "http://localhost:5173",
                                                   address: address.absoluteString, typedText: "Status page", allowsAlways: true)
             coordinator.seedForSnapshot(requests: [typing], states: [:])
+            let shared = BrowserPermissionRequest(sessionID: session.id, tool: .browserClick, summary: request.summary,
+                                                  origin: request.origin, address: request.address, allowsAlways: false,
+                                                  alwaysNote: BrowserPermissionRequest.claudeOnlyNote)
+            written += save("agent-browser-card-shared-\(tone)", to: directory, width: 760, zoom: zoom, scheme: scheme) {
+                AgentBrowserPermissionCard(request: shared) { _ in }
+            }
             written += save("agent-browser-card-composer-\(tone)", to: directory, width: 760, zoom: zoom, scheme: scheme) {
                 AgentBrowserPermissionHost(session: session, center: center)
             }

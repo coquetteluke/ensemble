@@ -8,23 +8,29 @@ import Security
 
 // Who may speak on the agent tools socket. A key alone is not enough: any process running as the user can read another
 // process's environment (`ps -E`) and could run the real helper with a borrowed key. So every connection must also come
-// from the signed `ensemble-agent-tools` helper of this app, started by the exact engine process the key was issued to.
+// from the signed `ensemble-agent-tools` helper of this app, started by an engine process.
+//
+// Only Claude's binding is exact: one `claude` process per session, started by Ensemble with that session's private
+// `--mcp-config` file. agy serves every session from one process, and OpenCode's server can be told by anyone who reads
+// its password (in its `service.json`) to start an MCP server with any command and a borrowed key; so for those the
+// check only stops helpers started some other way (from an agent's shell), and "Always for this site" is never used.
 
 /// The engine process a key belongs to, checked against the helper's parent on every connection.
 public enum AgentToolsBinding: Equatable, Sendable {
     /// A `claude` process Ensemble started with this private `--mcp-config` file (one process per session).
     case claude(configPath: String)
     /// An engine process Ensemble started that serves several sessions (ACP agents such as `agy`): the helper's parent
-    /// must be a process Ensemble started, but which one is not checked, so "Always for this site" is never used.
+    /// must be a process Ensemble started, but which one is not checked.
     case appChild
-    /// The OpenCode server at this address (its process id comes from its own `service.json`).
+    /// An OpenCode server (the helper's parent must be an `opencode` executable). Not tied to one server process, since
+    /// any process with the server's password can make it start a helper.
     case openCode(url: String)
 
-    /// Tied to one engine process, so site grants may be used through it.
+    /// Tied to one engine process, so "Always for this site" may be used through it. Only Claude's binding is.
     public var isExact: Bool {
         switch self {
-        case .claude, .openCode: true
-        case .appChild: false
+        case .claude: true
+        case .appChild, .openCode: false
         }
     }
 }
@@ -50,8 +56,8 @@ public protocol AgentToolsProcesses: Sendable {
     func arguments(of pid: Int32) -> [String]?
     /// Whether the peer is the signed `ensemble-agent-tools` helper from this app's bundle.
     func isHelper(_ peer: AgentToolsPeer) -> Bool
-    /// The process id of the OpenCode server at this address.
-    func openCodeServer(at url: String) -> Int32?
+    /// A process's executable, with every symlink resolved.
+    func executable(of pid: Int32) -> String?
 }
 
 /// The checks on a peer, kept apart from the system lookups so they can be tested.
@@ -70,9 +76,9 @@ public enum AgentToolsPeerCheck {
         case .appChild:
             guard processes.parent(of: parent) == processes.appPID else { return "the helper was not started by an agent Ensemble started" }
             return nil
-        case .openCode(let url):
-            guard let server = processes.openCodeServer(at: url), server == parent else {
-                return "the helper was not started by this OpenCode server"
+        case .openCode:
+            guard let executable = processes.executable(of: parent), (executable as NSString).lastPathComponent == "opencode" else {
+                return "the helper was not started by an OpenCode server"
             }
             return nil
         }
@@ -95,32 +101,19 @@ public enum AgentToolsPeerCheck {
         }
         return found
     }
-
-    /// An address as service files and clients write it: no trailing slash, lowercased scheme and host.
-    public static func normalizedServer(_ url: String) -> String {
-        var text = url.trimmingCharacters(in: .whitespaces)
-        while text.hasSuffix("/") { text.removeLast() }
-        guard let parsed = URL(string: text), let scheme = parsed.scheme, let host = parsed.host(percentEncoded: false) else { return text }
-        let shownHost = host.contains(":") ? "[\(host)]" : host
-        return "\(scheme.lowercased())://\(shownHost.lowercased())" + (parsed.port.map { ":\($0)" } ?? "")
-    }
 }
 
 #if os(macOS)
-/// The real lookups: `sysctl` for parents and arguments, code signing for the helper, OpenCode's service files.
+/// The real lookups: `sysctl` for parents and arguments, `proc_pidpath` for executables, code signing for the helper.
 public struct SystemAgentToolsProcesses: AgentToolsProcesses {
     /// The helper in this app's bundle; the peer must be this exact signed binary.
     public let helperPath: String
-    /// OpenCode `service.json` files to look servers up in (the shared service and Ensemble's private server).
-    public let serviceFiles: [URL]
     /// The signing team the helper must have: this app's own (nil for ad hoc builds).
     public let team: String?
 
     /// `team` defaults to this app's signing team; tests that run the helper from a test runner name the helper's.
-    public init(helperPath: String, serviceFiles: [URL] = SystemAgentToolsProcesses.defaultServiceFiles,
-                team: String?? = .none) {
+    public init(helperPath: String, team: String?? = .none) {
         self.helperPath = helperPath
-        self.serviceFiles = serviceFiles
         self.team = team ?? Self.ownTeam()
     }
 
@@ -131,10 +124,6 @@ public struct SystemAgentToolsProcesses: AgentToolsProcesses {
         guard SecCodeCopySelf([], &me) == errSecSuccess, let me, SecCodeCopyStaticCode(me, [], &mine) == errSecSuccess,
               let mine else { return nil }
         return signing(mine)?.team
-    }
-
-    public static var defaultServiceFiles: [URL] {
-        [ServiceFile.defaultURL, PrivateOpenCodeServer.defaultDataDirectory.appendingPathComponent("state/opencode/service.json")]
     }
 
     public var appPID: Int32 { getpid() }
@@ -187,18 +176,12 @@ public struct SystemAgentToolsProcesses: AgentToolsProcesses {
             && peerInfo.team == helperInfo.team && peerInfo.team == team
     }
 
-    public func openCodeServer(at url: String) -> Int32? {
-        struct Service: Decodable {
-            var url: String
-            var pid: Int32?
-        }
-        let wanted = AgentToolsPeerCheck.normalizedServer(url)
-        for file in serviceFiles {
-            guard let data = try? Data(contentsOf: file), let service = try? JSONDecoder().decode(Service.self, from: data),
-                  AgentToolsPeerCheck.normalizedServer(service.url) == wanted, let pid = service.pid, pid > 0 else { continue }
-            return pid
-        }
-        return nil
+    public func executable(of pid: Int32) -> String? {
+        var buffer = [CChar](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0 else { return nil }
+        let path = String(decoding: buffer.prefix(Int(length)).map { UInt8(bitPattern: $0) }, as: UTF8.self)
+        return WorkspaceTrust.resolvedPath(path) ?? path
     }
 
     private struct Signing: Equatable {

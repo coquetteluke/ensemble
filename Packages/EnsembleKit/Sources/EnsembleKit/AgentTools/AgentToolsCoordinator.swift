@@ -57,7 +57,7 @@ public struct SessionProposal: Identifiable, Equatable, Sendable {
     public var hereMessage: String { "Go ahead with the task you proposed: \(title)\n\n\(brief)" }
 }
 
-/// A browser call waiting for the user: Allow once, Always for this site (trusted folders only), or Deny.
+/// A browser call waiting for the user: Allow once, Always for this site (Claude sessions in trusted folders only), or Deny.
 public struct BrowserPermissionRequest: Identifiable, Equatable, Sendable {
     public let id: String
     public let sessionID: String
@@ -69,11 +69,16 @@ public struct BrowserPermissionRequest: Identifiable, Equatable, Sendable {
     public let address: String
     /// The text a `browser_type` call would enter.
     public let typedText: String?
-    /// False in folders the user has not trusted: nothing is remembered there.
+    /// Only for Claude sessions (the one engine whose bridge is tied to its own process) in trusted folders.
     public let allowsAlways: Bool
+    /// Why "Always" is not offered, for the card; nil when it is.
+    public let alwaysNote: String?
+
+    public static let untrustedNote = "This folder is not trusted, so each browser action asks."
+    public static let claudeOnlyNote = "Always is only offered for Claude sessions, so each browser action asks."
 
     public init(id: String = UUID().uuidString, sessionID: String, tool: AgentToolName, summary: String, origin: String,
-                address: String, typedText: String? = nil, allowsAlways: Bool) {
+                address: String, typedText: String? = nil, allowsAlways: Bool, alwaysNote: String? = nil) {
         self.id = id
         self.sessionID = sessionID
         self.tool = tool
@@ -82,6 +87,7 @@ public struct BrowserPermissionRequest: Identifiable, Equatable, Sendable {
         self.address = address
         self.typedText = typedText
         self.allowsAlways = allowsAlways
+        self.alwaysNote = allowsAlways ? nil : (alwaysNote ?? Self.untrustedNote)
     }
 
     /// The site as people read it: `localhost:5173`.
@@ -320,8 +326,8 @@ public final class AgentToolsCoordinator: AgentToolsHost {
         permissionRequests.first { $0.sessionID == sessionID }
     }
 
-    /// One browser call. `siteGrants` is false for bridges that cannot be tied to one engine process
-    /// (`AgentToolsBinding.appChild`): then "Always for this site" is neither offered nor used, and every call asks.
+    /// One browser call. `siteGrants` is false for bridges that cannot be tied to one engine process (agy and OpenCode,
+    /// `AgentToolsBinding.isExact`): then "Always for this site" is neither offered nor used, and every call asks.
     func browser(_ action: BrowserAgentAction, session: AgentToolsEnvironment.Session, siteGrants: Bool) async -> AgentToolResult {
         // One browser call at a time per session, in order.
         await acquire(session.id)
@@ -346,7 +352,9 @@ public final class AgentToolsCoordinator: AgentToolsHost {
         if !(siteGrants && grants.allows(origin, session: session.id)) {
             let request = BrowserPermissionRequest(sessionID: session.id, tool: action.tool, summary: summary, origin: origin,
                                                    address: target.absoluteString, typedText: action.typedText,
-                                                   allowsAlways: siteGrants && environment.isTrusted(session.directory))
+                                                   allowsAlways: siteGrants && environment.isTrusted(session.directory),
+                                                   alwaysNote: siteGrants ? BrowserPermissionRequest.untrustedNote
+                                                       : BrowserPermissionRequest.claudeOnlyNote)
             environment.showBrowser(session.id)
             touch(session.id, action: summary)
             let answer = await ask(request)

@@ -121,7 +121,7 @@ struct AgentBrowserBar: View {
     }
 }
 
-/// Allow once, Always for this site (trusted folders only), or Deny for one browser call.
+/// Allow once, Always for this site (Claude sessions in trusted folders only), or Deny for one browser call.
 struct AgentBrowserPermissionCard: View {
     let request: BrowserPermissionRequest
     let answer: (BrowserPermissionAnswer) -> Void
@@ -169,8 +169,8 @@ struct AgentBrowserPermissionCard: View {
             .overlay(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).strokeBorder(theme.separator))
             .textSelection(.enabled)
 
-            if !request.allowsAlways {
-                Text("This folder is not trusted, so each browser action asks.")
+            if let note = request.alwaysNote {
+                Text(note)
                     .font(theme.font(size: 12))
                     .foregroundStyle(theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)

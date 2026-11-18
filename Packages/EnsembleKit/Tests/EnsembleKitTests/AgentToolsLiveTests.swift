@@ -155,17 +155,30 @@ enum AgentToolsLive {
         #expect(app.started.isEmpty)
         #expect(app.logs.contains { $0.0 == session.id && $0.1.contains("propose_session") })
 
-        // The browser: the test answers the first card with Always for this site.
+        // The browser: the test answers each card with Allow once.
         try await client.prompt(session.id, text: "now browse the page", files: [])
         try await agentToolsWait("the browser card", timeout: 120, { coordinator.permissionRequest(for: session.id) != nil },
                                  whilePolling: allowOpenCode)
         let request = try #require(coordinator.permissionRequest(for: session.id))
         #expect(request.tool == .browserNavigate)
         #expect(request.site == "127.0.0.1:\(pagePort)")
-        coordinator.answer(request.id, .always)
+        // OpenCode bridges are not tied to one server process, so Always is not offered: every call gets its card.
+        #expect(!request.allowsAlways)
+        #expect(request.alwaysNote == BrowserPermissionRequest.claudeOnlyNote)
+        coordinator.answer(request.id, .once)
+        var cards = 1
+        let allowEverything = {
+            await allowOpenCode()
+            for card in coordinator.permissionRequests where card.sessionID == session.id {
+                cards += 1
+                coordinator.answer(card.id, .once)
+            }
+        }
         try await agentToolsWait("the form to be submitted", timeout: 180, {
             app.logs.contains { $0.1.contains("browser_type") && $0.1.contains("e1") }
-        }, whilePolling: allowOpenCode)
+        }, whilePolling: allowEverything)
+        // Open, read, type into the name (the card field is refused before any card).
+        #expect(cards == 3)
         let out = try await surface.agentWebView.evaluateJavaScript("document.getElementById('out').textContent + '|' + document.getElementById('card').value") as? String
         #expect(out == "Saved Ada|")
         let typed = app.logs.filter { $0.1.contains("browser_type") }.map(\.1)
