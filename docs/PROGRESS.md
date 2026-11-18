@@ -25,3 +25,4 @@ Newest first. One line per finished piece; details in commits.
 - Remote security fixes committed (protocol v2, mutual HMAC, pre-pairing limits). Mac side of the remote wired: Window > Pair iPhone.
 - Icon: Luke picked option 2, Constellation.
 - Luke paired his real iPhone Duo with the Mac over home Wi-Fi (protocol v2), confirmed 2026-11-18.
+- Auto mode hardened: dot paths ask in any case, Auto runs only read-only commands (committed). Remote protocol 3 (encrypted frames) committed. Zoom, Auto default, keep awake and lid lock committed and installed. Planned: AI safety check for Auto (like Claude Code's auto mode) so safe builds and tests run without asking.
