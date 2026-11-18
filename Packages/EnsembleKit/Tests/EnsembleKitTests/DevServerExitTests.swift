@@ -76,18 +76,24 @@ struct DevServerExitTests {
         defer { try? FileManager.default.removeItem(at: folder) }
         let marker = folder.appendingPathComponent("child-done")
         // The server starts a child in a new session (outside its group, so nothing stops it) that keeps stdout open
-        // for 8 seconds and then leaves a marker. The exit has to be reported while the child still holds the pipe.
+        // for a minute and then leaves a marker. The exit has to be reported while the child still holds the pipe; the
+        // child is killed when the test ends.
         let script = """
         import subprocess, sys
-        print('parent')
-        subprocess.Popen(['/bin/sh', '-c', 'sleep 8; touch "$0"', \(String(reflecting: marker.path))], start_new_session=True)
+        child = subprocess.Popen(['/bin/sh', '-c', 'sleep 60; touch "$0"', \(String(reflecting: marker.path))], start_new_session=True)
+        print(f'child {child.pid}')
         sys.exit(0)
         """
         // Held like the runner holds its servers: the exit is reported by the process object.
         let (process, events) = try run(script, folder: folder)
+        defer {
+            for line in events.lines where line.hasPrefix("child ") {
+                if let pid = Int32(line.dropFirst(6)), pid > 1 { kill(pid, SIGKILL) }
+            }
+        }
         try await waitUntil("the exit to be reported") { events.exit != nil }
         #expect(events.exit == 0)
-        #expect(events.lines.contains("parent"))
+        #expect(events.lines.contains { $0.hasPrefix("child ") })
         #expect(!FileManager.default.fileExists(atPath: marker.path), "the exit waited for the child to close the pipe")
         #expect(!process.isRunning)
     }

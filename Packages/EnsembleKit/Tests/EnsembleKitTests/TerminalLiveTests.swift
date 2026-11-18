@@ -61,7 +61,8 @@ import Testing
 
         /// Waits up to `seconds` for `condition`.
         @discardableResult
-        func wait(_ seconds: Double = 10, _ condition: (Session) -> Bool) async -> Bool {
+        /// Returns as soon as the condition holds; the ceiling only matters when it never does.
+        func wait(_ seconds: Double = TestWait.ceilingSeconds, _ condition: (Session) -> Bool) async -> Bool {
             let deadline = Date().addingTimeInterval(seconds)
             while Date() < deadline {
                 if condition(self) { return true }
