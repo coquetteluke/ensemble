@@ -1,6 +1,5 @@
 import SwiftUI
 import AppKit
-import UniformTypeIdentifiers
 import EnsembleKit
 
 /// A code editor installed on this Mac that files can be opened in.
@@ -98,40 +97,13 @@ enum FileActions {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: link.path)])
     }
 
-    static func openWithDefaultApp(_ link: FileLink) {
-        // Opens exactly the file that was checked: the real target, never the link that points at it.
-        guard let target = defaultAppTarget(link) else { return }
-        NSWorkspace.shared.open(URL(fileURLWithPath: target))
-    }
-
-    static func canOpenWithDefaultApp(_ link: FileLink) -> Bool { defaultAppTarget(link) != nil }
-
-    /// Document types the default app may open: things that are viewed, not run.
-    private static let viewable: [UTType] = [.plainText, .json, .image, .pdf, .audiovisualContent, .rtf, .spreadsheet, .presentation]
-    /// Types that run (or install, or mount) when opened, even where they also count as text.
-    private static let runnable: [UTType] = [.executable, .application, .applicationBundle, .script, .shellScript,
-                                             .unixExecutable, .diskImage, .archive, .package, .bundle, .internetShortcut]
-
-    /// The resolved file the default app may open, or nil. An allowlist checked on the symlink's real target, so a
-    /// link named `notes.txt` that points at a script, an app or an installer never runs with one click.
-    static func defaultAppTarget(_ link: FileLink) -> String? {
-        let resolved = (link.path as NSString).resolvingSymlinksInPath
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDirectory), !isDirectory.boolValue else { return nil }
-        if FileManager.default.isExecutableFile(atPath: resolved) { return nil }
-        if resolved.split(separator: "/").contains(where: { $0.lowercased().hasSuffix(".app") }) { return nil }
-        guard let type = UTType(filenameExtension: (resolved as NSString).pathExtension) else { return nil }
-        if runnable.contains(where: { type.conforms(to: $0) }) { return nil }
-        return viewable.contains(where: { type.conforms(to: $0) }) ? resolved : nil
-    }
-
-    /// "Open in" entries: each installed editor, then the default app for the file type (not for runnable files).
+    /// "Open in" entries: each installed editor, always launched explicitly. There is deliberately no "default app"
+    /// entry: Launch Services could pick a handler that runs the file (a script, an app, a macro document), and an
+    /// agent controls which paths appear in its text. Reveal in Finder leaves that choice to the user.
     static func openInItems(for link: FileLink) -> [FileLinkMenuItem] {
-        let editors = ExternalEditors.installed.map { editor in
+        ExternalEditors.installed.map { editor in
             FileLinkMenuItem(id: editor.bundleID, title: editor.name) { ExternalEditors.open(link, in: editor) }
         }
-        guard canOpenWithDefaultApp(link) else { return editors }
-        return editors + [FileLinkMenuItem(id: "default-app", title: "Default app") { openWithDefaultApp(link) }]
     }
 
     /// The right-click menu of a file link.

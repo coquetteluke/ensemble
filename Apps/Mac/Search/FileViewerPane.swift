@@ -200,14 +200,12 @@ private struct OpenInMenu: View {
                         Label { Text(editor.name) } icon: { Image(nsImage: ExternalEditors.icon(for: editor)) }
                     }
                 }
-                if !ExternalEditors.installed.isEmpty { Divider() }
-                if FileActions.canOpenWithDefaultApp(link) {
-                    Button("Default app") { FileActions.openWithDefaultApp(link) }
-                }
             } label: {
                 label
             }
             .menuStyle(.button)
+            .disabled(ExternalEditors.installed.isEmpty)
+            .help(ExternalEditors.installed.isEmpty ? "No supported editor is installed" : "Open in an editor")
             .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
