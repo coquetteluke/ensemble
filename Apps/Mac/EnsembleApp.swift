@@ -71,7 +71,8 @@ final class AppEngine {
         remote = remoteControl
         Task {
             await newStore.start()
-            await remoteControl.restore()
+            // Preview builds (often ad-hoc signed) never touch the real pairing in the keychain.
+            if !Self.usePreview { await remoteControl.restore() }
         }
     }
 

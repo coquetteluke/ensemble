@@ -680,6 +680,24 @@ actor ClaudeEngineCore {
         emit(.activity(sessionID: id, .working))
     }
 
+    /// Adds a message to the running turn without stopping it (priority `next`: the CLI folds it in after the tool
+    /// calls in flight). With no turn running it is an ordinary `send`. A folded message gets no `result` of its own,
+    /// and one the CLI runs as its own turn afterwards is counted in the running turn's `queued_turn_count`, which
+    /// `.turnEnded` already uses, so `turnsInFlight` is not raised here.
+    func steer(_ id: String, text: String, files attachments: [URL]) throws {
+        guard let session = live[id], session.turnsInFlight > 0, !session.interrupting else {
+            try send(id, text: text, files: attachments, synthetic: false)
+            return
+        }
+        var record = try rootRecord(id, action: "be messaged directly")
+        let blocks = try ClaudeCLI.contentBlocks(synthetic: [], text: text, files: attachments)
+        try write(id, ClaudeCLI.userMessage(blocks: blocks, priority: "next"))
+        record.updated = Date()
+        store[id] = record
+        save()
+        emit(.activity(sessionID: id, .working))
+    }
+
     func queueSynthetic(_ id: String, text: String) throws {
         var record = try rootRecord(id, action: "be messaged directly")
         record.queuedSynthetic.append(text)

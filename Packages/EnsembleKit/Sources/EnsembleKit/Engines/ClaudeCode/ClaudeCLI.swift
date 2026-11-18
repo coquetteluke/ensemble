@@ -122,14 +122,17 @@ enum ClaudeCLI {
         return nil
     }
 
-    /// The user message line for stdin.
-    static func userMessage(blocks: [JSONValue]) -> JSONValue {
-        [
+    /// The user message line for stdin. `priority` is the CLI's queue priority for a message that arrives while a turn
+    /// runs: `next` folds it into that turn after the tool calls in flight, `later` waits for the turn to end.
+    static func userMessage(blocks: [JSONValue], priority: String? = nil) -> JSONValue {
+        var line: [String: JSONValue] = [
             "type": "user",
             "session_id": "",
             "message": ["role": "user", "content": .array(blocks)],
             "parent_tool_use_id": nil,
         ]
+        if let priority { line["priority"] = .string(priority) }
+        return .object(line)
     }
 
     /// Content blocks for a prompt: queued synthetic texts, the text, then attachments. Images go inline (base64);

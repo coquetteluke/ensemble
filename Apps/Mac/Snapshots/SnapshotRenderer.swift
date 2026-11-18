@@ -185,6 +185,7 @@ enum SnapshotRenderer {
         // The live view hierarchy (real scroll views and text view) in windows that are never shown.
         written += renderLiveWindows(outputDirectory: outputDirectory, seededStore: store)
         written += AttentionSnapshots.render(to: outputDirectory, zoom: zoom)
+        ComposerQueueSnapshots.render(to: outputDirectory, zoom: zoom)
 
         print("Rendered \(written.count) snapshots:")
         for path in written { print(path) }

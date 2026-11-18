@@ -10,15 +10,19 @@ public struct SlashCommand: Identifiable, Hashable, Sendable {
     public var argumentHint: String?
     public var source: Source
     public var symbol: String
+    /// Set when the command cannot be used in this session; the menu greys it out and shows this as its tooltip.
+    public var disabledReason: String?
 
     public var id: String { "\(source.rawValue):\(name)" }
 
-    public init(name: String, summary: String, argumentHint: String? = nil, source: Source, symbol: String) {
+    public init(name: String, summary: String, argumentHint: String? = nil, source: Source, symbol: String,
+                disabledReason: String? = nil) {
         self.name = name
         self.summary = summary
         self.argumentHint = argumentHint
         self.source = source
         self.symbol = symbol
+        self.disabledReason = disabledReason
     }
 }
 
@@ -31,6 +35,7 @@ public enum SlashCommands {
         SlashCommand(name: "fast", summary: "Turn fast mode on or off", source: .ensemble, symbol: "bolt"),
         SlashCommand(name: "mode", summary: "Change the permission mode", argumentHint: "<ask|edits|auto|bypass>", source: .ensemble, symbol: "hand.raised"),
         SlashCommand(name: "compact", summary: "Summarise the conversation to free up context", source: .ensemble, symbol: "arrow.down.right.and.arrow.up.left"),
+        SlashCommand(name: "btw", summary: "Ask about this session without adding to it", argumentHint: "<question>", source: .ensemble, symbol: "text.bubble"),
         SlashCommand(name: "fork", summary: "Copy this session into a new one", source: .ensemble, symbol: "arrow.triangle.branch"),
         SlashCommand(name: "rewind", summary: "Go back to before your last message", source: .ensemble, symbol: "arrow.counterclockwise"),
         SlashCommand(name: "clear", summary: "Start fresh in the same folder and model", source: .ensemble, symbol: "eraser"),

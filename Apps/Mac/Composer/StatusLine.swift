@@ -33,7 +33,7 @@ struct StatusLine: View {
                 }
             }
             .popover(isPresented: $showUsage, arrowEdge: .top) {
-                UsagePopover(usage: usage, title: session.title)
+                UsagePopover(usage: usage, title: session.title, store: store)
                     .ensembleTheme()
             }
 
@@ -86,6 +86,7 @@ struct ContextRing: View {
 struct UsagePopover: View {
     let usage: Usage
     let title: String
+    let store: SessionStore
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -103,6 +104,7 @@ struct UsagePopover: View {
                 row("Cache read", usage.cacheReadTokens)
                 row("Cache write", usage.cacheWriteTokens)
             }
+            ClaudePlanLimitsSection(store: store)
         }
         .padding(theme.z(16))
         .frame(width: theme.z(240), alignment: .leading)

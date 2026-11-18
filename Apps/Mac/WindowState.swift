@@ -184,8 +184,17 @@ final class WindowState {
             route = .hub
         case "usage":
             showUsage = true
+        case "btw":
+            if let reason = store.sideQuestionUnavailableReason(session.id) {
+                store.addNotice(reason, to: session.id)
+            } else if args.isEmpty {
+                store.openSideQuestion(for: session.id)
+            } else {
+                Task { await store.askSideQuestion(args, about: session.id) }
+            }
         case "help":
             store.addNotice("Return sends, Shift-Return adds a line, Shift-Tab switches the permission mode, Esc stops the agent, "
+                            + "Command-semicolon asks a side question, "
                             + "Command-1 to 9 switch sessions, Option-Command-I shows the context panel. Type / for commands.", to: session.id)
         default:
             guard store.commandsControl != nil, store.engineHasCommand(name, sessionID: session.id) else { return false }

@@ -15,7 +15,8 @@ struct ComposerTextView: NSViewRepresentable {
     var onCycleMode: () -> Void
     /// Arrow keys, Tab, Return and Esc go here first (the slash menu uses them). Return true to consume.
     var onKey: (ComposerKey) -> Bool = { _ in false }
-
+    /// Voice dictation: its text goes in at the cursor (replacing the selection), updated as recognition improves.
+    var dictation: DictationController?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -46,6 +47,7 @@ struct ComposerTextView: NSViewRepresentable {
         textView.string = text
         textView.setAccessibilityLabel("Message")
         context.coordinator.textView = textView
+        context.coordinator.connect(dictation)
         DispatchQueue.main.async {
             context.coordinator.updateHeight()
             textView.window?.makeFirstResponder(textView)
@@ -55,8 +57,11 @@ struct ComposerTextView: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.connect(dictation)
         guard let textView = scroll.documentView as? NSTextView else { return }
         if textView.string != text {
+            // The draft was changed elsewhere (sent, edited from the queue): dictated text has no place to go now.
+            if context.coordinator.dictationRange != nil { dictation?.cancel() }
             textView.string = text
             context.coordinator.updateHeight()
         }
@@ -77,6 +82,11 @@ struct ComposerTextView: NSViewRepresentable {
         var parent: ComposerTextView
         weak var textView: NSTextView?
         var lastFocusToken: Int
+        /// Where the text dictated so far sits, while dictating.
+        var dictationRange: NSRange?
+        private var dictationNeedsSpace = false
+        private var applyingDictation = false
+        private weak var connectedDictation: DictationController?
 
         init(_ parent: ComposerTextView) {
             self.parent = parent
@@ -87,6 +97,48 @@ struct ComposerTextView: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             parent.text = textView.string
             updateHeight()
+            // Typing while dictating ends dictation; what was dictated stays.
+            if !applyingDictation, dictationRange != nil { parent.dictation?.cancel() }
+        }
+
+        // MARK: Dictation
+
+        func connect(_ dictation: DictationController?) {
+            guard let dictation, dictation !== connectedDictation else { return }
+            connectedDictation = dictation
+            dictation.onBegin = { [weak self] in self?.beginDictation() }
+            dictation.onText = { [weak self] text in self?.insertDictated(text) }
+            dictation.onEnd = { [weak self] in self?.dictationRange = nil }
+        }
+
+        private func beginDictation() {
+            guard let textView else { return }
+            textView.window?.makeFirstResponder(textView)
+            let range = textView.selectedRange()
+            dictationRange = range
+            let string = textView.string as NSString
+            if range.location > 0, range.location <= string.length {
+                let previous = string.substring(with: NSRange(location: range.location - 1, length: 1))
+                dictationNeedsSpace = previous.rangeOfCharacter(from: .whitespacesAndNewlines) == nil
+            } else {
+                dictationNeedsSpace = false
+            }
+        }
+
+        /// Replaces the text dictated so far with the newest transcription and keeps the cursor after it.
+        private func insertDictated(_ transcription: String) {
+            guard let textView, let range = dictationRange,
+                  NSMaxRange(range) <= (textView.string as NSString).length else { return }
+            let piece = (dictationNeedsSpace && !transcription.isEmpty ? " " : "") + transcription
+            guard textView.shouldChangeText(in: range, replacementString: piece) else { return }
+            applyingDictation = true
+            textView.replaceCharacters(in: range, with: piece)
+            textView.didChangeText()
+            applyingDictation = false
+            let inserted = NSRange(location: range.location, length: (piece as NSString).length)
+            dictationRange = inserted
+            textView.setSelectedRange(NSRange(location: NSMaxRange(inserted), length: 0))
+            textView.scrollRangeToVisible(textView.selectedRange())
         }
 
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {

@@ -35,6 +35,9 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: Ensemble
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_NSHumanReadableCopyright: "MIT License"
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Ensemble uses the microphone when you dictate a message."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Ensemble turns your dictation into text in the message box."
+        ENABLE_RESOURCE_ACCESS_AUDIO_INPUT: YES
         ENABLE_APP_SANDBOX: NO
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_STYLE: Automatic

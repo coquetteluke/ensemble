@@ -2,13 +2,18 @@ import SwiftUI
 import AppKit
 import EnsembleKit
 
-/// Message box: text, attachments, attach button, permission-mode menu, model chip, send or stop.
+/// Message box: text, attachments, attach button, permission-mode menu, model chip, dictation, send or stop.
+/// Above it: messages queued while the agent works, and the side question panel (`/btw`, Command-semicolon).
 struct ComposerView: View {
     let store: SessionStore
     let session: SessionModel
     @Bindable var window: WindowState
     /// Snapshots set the text directly.
     var snapshotDraft: String?
+    /// Snapshots draw the side question panel with this question and answer.
+    var snapshotSideQuestion: (question: SideQuestion, answer: String)?
+    /// Snapshots draw the microphone in this state.
+    var snapshotDictation: DictationController?
 
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
@@ -20,9 +25,63 @@ struct ComposerView: View {
     @State private var slashSelection = 0
     /// The draft the slash menu was closed for with Esc (it stays closed until the text changes).
     @State private var slashDismissedFor: String?
+    @State private var liveDictation = DictationController()
+    /// Who pays for each model (from the engine), for the model menu's groups.
+    @State private var modelBilling: [String: ModelBilling]?
+
+    private var dictation: DictationController { snapshotDictation ?? liveDictation }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: theme.z(6)) {
+            if !queue.isEmpty {
+                ComposerQueueStrip(
+                    messages: queue, held: store.isQueueHeld(session.id), delivery: store.queuedDelivery(for: session.id),
+                    sendNow: store.sendNowBehavior(for: session.id),
+                    onSendNow: { message in Task { await store.sendNow(message.id, in: session.id) } },
+                    onEdit: edit, onCancel: { store.cancelQueued($0.id, in: session.id) })
+            }
+            composerBox
+        }
+        .overlay(alignment: .top) {
+            // A zero-height anchor on the top edge; the menu or the side question panel grows upwards from it.
+            Color.clear
+                .frame(height: 0)
+                .overlay(alignment: .bottom) {
+                    if !slashMatches.isEmpty {
+                        SlashCommandMenu(commands: slashMatches, selection: min(slashSelection, slashMatches.count - 1),
+                                         onHover: { slashSelection = $0 }, onPick: pick)
+                            .padding(.bottom, theme.z(8))
+                    } else if let panel = sideQuestionPanel {
+                        panel.padding(.bottom, theme.z(8))
+                    }
+                }
+        }
+        .background { sideQuestionShortcut }
+        .task(id: session.info.model?.description) { await store.loadModelOptions(for: session.info.model) }
+        .task(id: session.directory) { await store.loadCommands(directory: session.directory) }
+        .task(id: store.models.count) {
+            guard !isSnapshot, let billing = store.engine as? any EngineModelBilling else { return }
+            modelBilling = try? await billing.modelBilling()
+        }
+        .onChange(of: window.requestedMenu) {
+            guard let menu = window.requestedMenu else { return }
+            window.requestedMenu = nil
+            switch menu {
+            case .model: showModelMenu = true
+            case .mode: showModeMenu = true
+            case .effort: showEffortMenu = true
+            }
+        }
+        .onChange(of: draft.wrappedValue) { slashSelection = 0 }
+        .onChange(of: session.id) { liveDictation.cancel() }
+        .onDisappear { liveDictation.cancel() }
+    }
+
+    private var composerBox: some View {
         VStack(alignment: .leading, spacing: theme.z(10)) {
+            if let problem = dictation.problem {
+                DictationProblemRow(problem: problem) { dictation.dismissProblem() }
+            }
             if !attachments.isEmpty {
                 attachmentChips
             }
@@ -35,6 +94,7 @@ struct ComposerView: View {
                 modelChip
                 effortChip
                 fastToggle
+                DictationButton(dictation: dictation)
                 sendButton
                     .padding(.leading, theme.z(4))
             }
@@ -54,30 +114,86 @@ struct ComposerView: View {
         .modifier(FileDrop(enabled: !isSnapshot, targeted: $dropTargeted) { urls in
             window.attachments[session.id, default: []].append(contentsOf: urls.filter(\.isFileURL))
         })
-        .overlay(alignment: .top) {
-            // A zero-height anchor on the composer's top edge; the menu grows upwards from it.
-            Color.clear
-                .frame(height: 0)
-                .overlay(alignment: .bottom) {
-                    if !slashMatches.isEmpty {
-                        SlashCommandMenu(commands: slashMatches, selection: min(slashSelection, slashMatches.count - 1),
-                                         onHover: { slashSelection = $0 }, onPick: pick)
-                            .padding(.bottom, theme.z(8))
+    }
+
+    // MARK: Queue
+
+    private var queue: [QueuedMessage] { store.queue(for: session.id) }
+
+    /// Takes a queued message out of the queue and back into the box (after anything already typed).
+    private func edit(_ message: QueuedMessage) {
+        guard let message = store.takeQueued(message.id, in: session.id) else { return }
+        let current = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        draft.wrappedValue = current.isEmpty ? message.text : current + "\n\n" + message.text
+        if !message.files.isEmpty { window.attachments[session.id, default: []].append(contentsOf: message.files) }
+        window.composerFocusToken &+= 1
+    }
+
+    // MARK: Side questions
+
+    private var sideQuestionPanel: SideQuestionPanel? {
+        if let snapshot = snapshotSideQuestion {
+            return SideQuestionPanel(question: snapshot.question, answer: snapshot.answer, streaming: false,
+                                     onAsk: { _ in }, onContinue: {}, onClose: {})
+        }
+        guard let question = store.sideQuestions[session.id] else { return nil }
+        let answer = store.sideQuestionAnswer(question)
+        return SideQuestionPanel(
+                question: question, answer: answer.text, streaming: answer.streaming,
+                onAsk: { text in Task { await store.askSideQuestion(text, about: session.id) } },
+                onContinue: {
+                    Task {
+                        if let kept = await store.continueSideQuestion(for: session.id) { window.open(kept.id, store: store) }
                     }
-                }
+                },
+                onClose: {
+                    Task { await store.closeSideQuestion(for: session.id) }
+                    window.composerFocusToken &+= 1
+                })
+    }
+
+    /// Command-semicolon opens the side question panel, or closes the open one.
+    private var sideQuestionShortcut: some View {
+        Button("Side question") { toggleSideQuestion() }
+            .keyboardShortcut(";", modifiers: .command)
+            .opacity(0)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+            .allowsHitTesting(false)
+    }
+
+    private func toggleSideQuestion() {
+        if store.sideQuestions[session.id] != nil {
+            Task { await store.closeSideQuestion(for: session.id) }
+            window.composerFocusToken &+= 1
+        } else {
+            askSideQuestion("")
         }
-        .task(id: session.info.model?.description) { await store.loadModelOptions(for: session.info.model) }
-        .task(id: session.directory) { await store.loadCommands(directory: session.directory) }
-        .onChange(of: window.requestedMenu) {
-            guard let menu = window.requestedMenu else { return }
-            window.requestedMenu = nil
-            switch menu {
-            case .model: showModelMenu = true
-            case .mode: showModeMenu = true
-            case .effort: showEffortMenu = true
-            }
+    }
+
+    /// `/btw <question>`: asks at once; without a question, opens the panel to type one.
+    private func askSideQuestion(_ question: String) {
+        if let reason = store.sideQuestionUnavailableReason(session.id) {
+            store.addNotice(reason, to: session.id)
+            return
         }
-        .onChange(of: draft.wrappedValue) { slashSelection = 0 }
+        if question.isEmpty {
+            store.openSideQuestion(for: session.id)
+        } else {
+            Task { await store.askSideQuestion(question, about: session.id) }
+        }
+    }
+
+    /// Return or the send button: `/btw` is handled here, everything else by the window (commands, queue, send).
+    private func submit() {
+        liveDictation.cancel()
+        let text = draft.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if attachments.isEmpty, let command = SlashCommands.parse(text), command.name.lowercased() == "btw" {
+            draft.wrappedValue = ""
+            askSideQuestion(command.arguments)
+            return
+        }
+        window.sendDraft(store: store)
     }
 
     // MARK: Slash menu
@@ -87,11 +203,21 @@ struct ComposerView: View {
     private var slashMatches: [SlashCommand] {
         let text = currentText
         guard text != slashDismissedFor, let query = SlashCommands.query(in: text) else { return [] }
-        return SlashCommands.matches(query, in: store.slashCommands(directory: session.directory))
+        let reason = store.sideQuestionUnavailableReason(session.id)
+        return SlashCommands.matches(query, in: store.slashCommands(directory: session.directory)).map { command in
+            guard command.source == .ensemble, command.name == "btw" else { return command }
+            var copy = command
+            copy.disabledReason = reason
+            return copy
+        }
     }
 
     private func handleKey(_ key: ComposerKey) -> Bool {
         let matches = slashMatches
+        if matches.isEmpty, key == .escape, store.sideQuestions[session.id] != nil {
+            Task { await store.closeSideQuestion(for: session.id) }
+            return true
+        }
         guard !matches.isEmpty else { return false }
         switch key {
         case .up: slashSelection = max(0, min(slashSelection, matches.count - 1) - 1)
@@ -105,6 +231,15 @@ struct ComposerView: View {
 
     /// Return on a command: run it now, or complete it when it takes arguments.
     private func pick(_ command: SlashCommand) {
+        if command.source == .ensemble, command.name == "btw" {
+            if let reason = command.disabledReason {
+                draft.wrappedValue = ""
+                store.addNotice(reason, to: session.id)
+            } else {
+                draft.wrappedValue = "/btw "
+            }
+            return
+        }
         if command.source != .ensemble, command.argumentHint != nil {
             draft.wrappedValue = "/\(command.name) "
             return
@@ -121,7 +256,7 @@ struct ComposerView: View {
 
     private var attachments: [URL] { window.attachments[session.id] ?? [] }
 
-    private var placeholder: String { "Send a message" }
+    private var placeholder: String { session.isWorking ? "Queue a message for when the agent finishes" : "Send a message" }
 
     @ViewBuilder private var textArea: some View {
         let text = snapshotDraft ?? draft.wrappedValue
@@ -147,9 +282,10 @@ struct ComposerView: View {
                     fontSize: theme.z(14),
                     textColor: NSColor(theme.textPrimary),
                     accentColor: NSColor(theme.accent),
-                    onSubmit: { window.sendDraft(store: store) },
+                    onSubmit: submit,
                     onCycleMode: { Task { await store.setPermissionMode(session.permissionMode.next, for: session.id) } },
-                    onKey: handleKey
+                    onKey: handleKey,
+                    dictation: liveDictation
                 )
                 .frame(height: min(max(textHeight, theme.z(22)), theme.z(220)))
             }
@@ -225,7 +361,7 @@ struct ComposerView: View {
         }
         .help("Model")
         .popover(isPresented: $showModelMenu, arrowEdge: .bottom) {
-            ModelMenuContent(models: store.models, current: session.info.model) { ref in
+            ModelMenuContent(models: store.models, current: session.info.model, billing: modelBilling) { ref in
                 showModelMenu = false
                 Task { await store.switchModel(ref, for: session.id) }
             }
@@ -293,7 +429,7 @@ struct ComposerView: View {
             .accessibilityLabel("Stop")
         } else {
             Button {
-                window.sendDraft(store: store)
+                submit()
             } label: {
                 Image(systemName: "arrow.up")
                     .font(theme.font(size: 13, weight: .bold))
@@ -303,8 +439,8 @@ struct ComposerView: View {
             }
             .buttonStyle(.plain)
             .disabled(!hasText)
-            .help("Send (Return)")
-            .accessibilityLabel("Send")
+            .help(session.isWorking ? "Queue (Return): sent when the agent finishes" : "Send (Return)")
+            .accessibilityLabel(session.isWorking ? "Queue" : "Send")
         }
     }
 }

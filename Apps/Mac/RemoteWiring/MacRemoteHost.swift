@@ -50,7 +50,7 @@ final class MacRemoteHost: RemoteHost {
     }
 
     func hubSnapshot() async -> RemoteHubSnapshot {
-        let roots = store.sessions.filter { !$0.isSubagent }
+        let roots = store.sessions.filter { !$0.isSubagent && !store.isSideQuestionSession($0.id) }
         return RemoteHubSnapshot(sessions: roots.map(summary), permissions: store.sessions.flatMap(\.pendingPermissions))
     }
 
@@ -66,7 +66,7 @@ final class MacRemoteHost: RemoteHost {
     func usageSummary() async -> RemoteUsageSummary {
         let today = Calendar.current.startOfDay(for: Date())
         let weekAgo = Date().addingTimeInterval(-7 * 24 * 3600)
-        let all = store.sessions.filter { !$0.isSubagent }
+        let all = store.sessions.filter { !$0.isSubagent && !store.isSideQuestionSession($0.id) }
         let todayUsage = all.filter { $0.info.updated >= today }.map(\.usage).reduce(.zero, +)
         let weekUsage = all.filter { $0.info.updated >= weekAgo }.map(\.usage).reduce(.zero, +)
         var byProvider: [String: Usage] = [:]

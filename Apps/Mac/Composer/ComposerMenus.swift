@@ -54,14 +54,24 @@ struct ModeMenuContent: View {
     }
 }
 
-/// Model picker grouped by provider. Models without a key are listed but disabled.
+/// Model picker grouped by who pays ("Your subscriptions", "API keys", "Free", "On this Mac") when the engine knows,
+/// otherwise by provider. Models without a key are listed but disabled.
 struct ModelMenuContent: View {
     let models: [ModelInfo]
     let current: ModelRef?
+    /// From `EngineModelBilling`; nil groups by provider.
+    let billing: [String: ModelBilling]?
     let onSelect: (ModelRef) -> Void
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
     @State private var query = ""
+
+    init(models: [ModelInfo], current: ModelRef?, billing: [String: ModelBilling]? = nil, onSelect: @escaping (ModelRef) -> Void) {
+        self.models = models
+        self.current = current
+        self.billing = billing
+        self.onSelect = onSelect
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -108,6 +118,9 @@ struct ModelMenuContent: View {
         let filtered = q.isEmpty ? models : models.filter {
             $0.name.localizedCaseInsensitiveContains(q) || $0.ref.description.localizedCaseInsensitiveContains(q)
         }
+        if let billing {
+            return ModelGroup.groups(filtered, billing: billing).map { Group(name: $0.title, models: $0.models) }
+        }
         var order: [String] = []
         var byProvider: [String: [ModelInfo]] = [:]
         for model in filtered {
@@ -115,6 +128,14 @@ struct ModelMenuContent: View {
             byProvider[model.providerName, default: []].append(model)
         }
         return order.map { Group(name: $0, models: byProvider[$0] ?? []) }
+    }
+
+    /// Under the name: the provider when the groups are by billing, and the context size.
+    private func detail(_ model: ModelInfo) -> String? {
+        var parts: [String] = []
+        if billing != nil, !model.providerName.isEmpty { parts.append(model.providerName) }
+        if let limit = model.contextLimit { parts.append("\(Format.tokens(limit)) context") }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 
     private func row(_ model: ModelInfo) -> some View {
@@ -127,8 +148,8 @@ struct ModelMenuContent: View {
                     Text(model.name)
                         .font(theme.font(size: 13))
                         .foregroundStyle(model.available ? theme.textPrimary : theme.textTertiary)
-                    if let limit = model.contextLimit {
-                        Text("\(Format.tokens(limit)) context")
+                    if let detail = detail(model) {
+                        Text(detail)
                             .font(theme.font(size: 11))
                             .foregroundStyle(theme.textTertiary)
                     }
@@ -220,6 +241,7 @@ struct SlashCommandMenu: View {
                             .id(command.id)
                             .onHover { if $0 { onHover(index) } }
                             .onTapGesture { onPick(command) }
+                            .help(command.disabledReason ?? "")
                     }
                 }
                 .padding(.bottom, theme.z(6))
@@ -268,8 +290,10 @@ struct SlashCommandMenu: View {
                 .fill(selected ? theme.selection : .clear)
                 .padding(.horizontal, theme.z(4))
         )
+        .opacity(command.disabledReason == nil ? 1 : 0.45)
         .contentShape(Rectangle())
         .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityHint(command.disabledReason ?? "")
     }
 
     private func title(_ source: SlashCommand.Source) -> String {

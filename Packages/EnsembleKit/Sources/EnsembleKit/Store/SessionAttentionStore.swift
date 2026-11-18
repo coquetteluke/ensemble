@@ -21,7 +21,8 @@ extension SessionStore {
             }
             return result
         }
-        return sessions.filter { $0.info.parentID == nil && !$0.info.archived }.map { root in
+        // Side-question copies are hidden throwaway sessions: never in the sidebar, alerts or badges.
+        return sessions.filter { $0.info.parentID == nil && !$0.info.archived && !isSideQuestionSession($0.id) }.map { root in
             let members = family(of: root)
             let prompts = members.flatMap(\.pendingPermissions).sorted { ($0.created, $0.id) < ($1.created, $1.id) }
             return SessionAttentionSnapshot(

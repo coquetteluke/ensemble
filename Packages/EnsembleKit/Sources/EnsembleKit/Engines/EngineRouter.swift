@@ -695,3 +695,27 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
         try await control.runCommand(sessionID, name: name, arguments: arguments)
     }
 }
+
+// MARK: Steering and fork availability (composer queue and side questions)
+
+extension EngineRouter: EngineSteeringControl, EngineForkAvailability {
+    public func steer(_ sessionID: String, text: String, files: [URL]) async throws {
+        let registration = try await owner(of: sessionID)
+        let control = try capability((any EngineSteeringControl).self, of: registration, feature: "take messages during a turn")
+        try await control.steer(sessionID, text: text, files: files)
+    }
+
+    public func canSteer(_ sessionID: String) -> Bool {
+        (knownOwner(sessionID)?.engine as? any EngineSteeringControl)?.canSteer(sessionID) ?? false
+    }
+
+    public func queuedDelivery(for sessionID: String) -> QueuedDelivery {
+        (knownOwner(sessionID)?.engine as? any EngineSteeringControl)?.queuedDelivery(for: sessionID) ?? .inOrder
+    }
+
+    public func canFork(_ sessionID: String) -> Bool {
+        guard let engine = knownOwner(sessionID)?.engine else { return false }
+        if let availability = engine as? any EngineForkAvailability { return availability.canFork(sessionID) }
+        return engine is any EngineHistoryControl
+    }
+}

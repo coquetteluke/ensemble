@@ -35,6 +35,12 @@ public final class SessionStore {
     public internal(set) var modelOptions: [String: ModelOptions] = [:]
     /// The engine's slash commands and skills per project folder, from `EngineCommandsControl`.
     public internal(set) var engineCommands: [String: [EngineCommand]] = [:]
+    /// Messages sent while the agent works, per session, oldest first (`SessionStore+Queue.swift`).
+    public internal(set) var queues: [String: [QueuedMessage]] = [:]
+    /// Open side questions, by the session they ask about (`SideQuestion.swift`).
+    public internal(set) var sideQuestions: [String: SideQuestion] = [:]
+    /// Temporary sessions behind side questions. Left out of the sidebar until kept.
+    public internal(set) var hiddenSessionIDs: Set<String> = []
 
     @ObservationIgnored var byID: [String: SessionModel] = [:]
     @ObservationIgnored private(set) var eventTask: Task<Void, Never>?
@@ -48,6 +54,7 @@ public final class SessionStore {
     @ObservationIgnored var permissionRulesChecked: Set<String> = []
     /// The launch-time check of every session's permission rules (tests await it).
     @ObservationIgnored var permissionSyncTask: Task<Void, Never>?
+    @ObservationIgnored var queueRuntime: [String: QueueRuntime] = [:]
 
     private enum EditableField: Hashable { case title, archived, model }
 
@@ -161,7 +168,7 @@ public final class SessionStore {
 
     /// Top-level, non-archived sessions grouped by folder, most recent project first.
     public var projects: [ProjectGroup] {
-        let visible = sessions.filter { $0.info.parentID == nil && !$0.info.archived }
+        let visible = sessions.filter { $0.info.parentID == nil && !$0.info.archived && !hiddenSessionIDs.contains($0.id) }
         let grouped = Dictionary(grouping: visible, by: \.info.directory)
         return grouped.map { directory, list in
             ProjectGroup(id: directory, directory: directory, name: Format.folderName(directory),
@@ -272,6 +279,7 @@ public final class SessionStore {
 
     /// Applies one live engine event.
     public func apply(_ event: EngineEvent) {
+        defer { afterApply(event) }
         switch event {
         case .sessionCreated(let info), .sessionUpdated(let info):
             guard !deletedSessionIDs.contains(info.id) else { return }
@@ -378,7 +386,14 @@ public final class SessionStore {
         await send(text, files: files, to: session.id)
     }
 
+    /// While the agent works the message is held in the session's queue and goes out when the turn ends.
     public func send(_ text: String, files: [URL] = [], to sessionID: String) async {
+        if enqueueIfBusy(text, files: files, to: sessionID) { return }
+        await deliver(text, files: files, to: sessionID)
+    }
+
+    /// Shows the message in the transcript and hands it to the engine now.
+    func deliver(_ text: String, files: [URL] = [], to sessionID: String) async {
         guard let session = byID[sessionID] else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !files.isEmpty else { return }
@@ -391,6 +406,7 @@ public final class SessionStore {
         session.setActivity(.working)
         session.info.updated = Date()
         session.touch()
+        queueRuntime[sessionID]?.held = false
         do {
             try await engine.prompt(sessionID, text: trimmed, files: files)
         } catch {
@@ -403,6 +419,7 @@ public final class SessionStore {
     /// Interrupts the selected session.
     public func stop() async {
         guard let session = selected else { return }
+        holdQueue(session.id)
         do { try await engine.interrupt(session.id) } catch { lastError = "Could not stop: \(error.localizedDescription)" }
     }
 
