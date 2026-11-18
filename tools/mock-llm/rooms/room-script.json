@@ -1,0 +1,32 @@
+{
+  "default": {"text": "OK.", "title": "Mock room agent"},
+  "rules": [
+    {"match": ["You are the judge"],
+     "text": "VERDICT: Keep one plain JSON file per room.\nReasons: both sides agree it needs no server and atomic writes keep it safe.\nStrongest dissent: a server would make shared rooms easier later."},
+    {"match": ["Please restate your decision in the room format"],
+     "text": "VERDICT: Keep one plain JSON file per room."},
+    {"match": ["The others' latest arguments"],
+     "text": "I read the other argument. We agree that a JSON file per room with atomic writes is enough for now.", "chunks": 5},
+    {"match": ["Debate question from the user"],
+     "text": "My position: a plain JSON file per room is simplest. It needs no server and is easy to back up.", "chunks": 5},
+
+    {"match": ["You are the lead. Do not edit files yet", "Please restate your plan in the room format", "The user wants a different plan"],
+     "text": "PLAN: Two small files, one per agent.\nASSIGN @Ada: create ada.txt with a greeting from Ada\nASSIGN @Byron: create byron.txt with a greeting from Byron"},
+    {"match": ["Please review", "Please give your review in the room format"],
+     "text": "I read the change and it does what the assignment asks.\nAPPROVE"},
+    {"match": ["Your assignment: create ada.txt"],
+     "steps": [
+       {"tool": {"name": "write", "arguments": {"path": ".ensemble/worktrees/ensemble-mock-team-ada/ada.txt", "content": "Hello from Ada\n"}}},
+       {"text": "Wrote ada.txt in my worktree.\nDONE"}
+     ]},
+    {"match": ["Your assignment: create byron.txt"],
+     "steps": [
+       {"tool": {"name": "write", "arguments": {"path": ".ensemble/worktrees/ensemble-mock-team-byron/byron.txt", "content": "Hello from Byron\n"}}},
+       {"text": "Wrote byron.txt in my worktree.\nDONE"}
+     ]},
+    {"match": ["Post a short summary"],
+     "text": "Summary: Ada wrote ada.txt and Byron wrote byron.txt. Both pieces were reviewed and merged."},
+    {"match": ["Reply DONE on its own line", "The room resumed"],
+     "text": "DONE"}
+  ]
+}

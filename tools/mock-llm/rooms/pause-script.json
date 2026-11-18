@@ -1,0 +1,12 @@
+{
+  "default": {"text": "OK.", "title": "Mock room agent"},
+  "rules": [
+    {"match": ["You are the judge"],
+     "text": "VERDICT: Keep one plain JSON file per room.\nReasons: it survived a pause and still made sense.\nStrongest dissent: none."},
+    {"match": ["The room resumed"],
+     "text": "After the pause: a JSON file per room is still the simplest choice."},
+    {"match": ["Debate question from the user"],
+     "text": "This opening argument streams slowly on purpose so the room can be paused while it is still being written, word by word.",
+     "chunks": 40, "delay": 0.25}
+  ]
+}
