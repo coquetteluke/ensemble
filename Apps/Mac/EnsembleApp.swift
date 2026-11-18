@@ -13,6 +13,8 @@ final class AppEngine {
 
     let manager = EngineManager(defaultDirectory: NSHomeDirectory())
     private(set) var store: SessionStore?
+    /// The iPhone remote, available once the store exists.
+    private(set) var remote: RemoteControlController?
     @ObservationIgnored private var watchTask: Task<Void, Never>?
 
     var status: EngineStatus {
@@ -41,7 +43,12 @@ final class AppEngine {
         newStore.defaultModel = defaults.string(forKey: "defaultModel").flatMap(ModelRef.init(string:))
         newStore.defaultPermissionMode = defaults.string(forKey: "defaultPermissionMode").flatMap(PermissionMode.init(rawValue:)) ?? .auto
         store = newStore
-        Task { await newStore.start() }
+        let remoteControl = RemoteControlController(host: MacRemoteHost(store: newStore))
+        remote = remoteControl
+        Task {
+            await newStore.start()
+            await remoteControl.restore()
+        }
     }
 
     func retry() {
@@ -84,6 +91,20 @@ struct EnsembleApp: App {
         .defaultSize(width: 1440, height: 900)
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands { EnsembleCommands(app: app, window: window) }
+
+        Window("Pair iPhone", id: "pair-iphone") {
+            Group {
+                if let remote = app.remote {
+                    RemoteControlSettingsView(controller: remote)
+                } else {
+                    EngineStatusView(status: app.status, retry: app.retry)
+                }
+            }
+            .frame(minWidth: 480, minHeight: 520)
+            .ensembleTheme()
+            .preferredColorScheme(colorScheme)
+        }
+        .defaultSize(width: 520, height: 600)
 
         Settings {
             Group {
@@ -161,6 +182,10 @@ struct EnsembleCommands: Commands {
                 .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
                 .disabled(number > order.count)
             }
+        }
+
+        CommandGroup(after: .windowArrangement) {
+            PairIPhoneButton()
         }
 
         CommandGroup(after: .sidebar) {
