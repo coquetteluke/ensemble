@@ -78,6 +78,7 @@ final class FakeScheduleRunner: ScheduleRunner {
     var refusal: String?
     var startError: (any Error)?
     var ended: [ScheduleRun] = []
+    var restores: [(mode: PermissionMode, sessionID: String, checkApplied: Bool)] = []
 
     func scheduleRefusal(for task: ScheduledTask) -> String? { refusal }
 
@@ -91,7 +92,11 @@ final class FakeScheduleRunner: ScheduleRunner {
 
     func scheduledRunState(sessionID: String) -> ScheduleRunState { states[sessionID] ?? .missing }
 
-    func scheduledRunDidEnd(_ run: ScheduleRun, task: ScheduledTask?) { ended.append(run) }
+    func restoreScheduledMode(_ mode: PermissionMode, applied: PermissionMode, sessionID: String,
+                              checkApplied: Bool) async -> ScheduleModeRestoreResult {
+        restores.append((mode, sessionID, checkApplied))
+        return .restored
+    }
 }
 
 struct FakeStartError: Error, LocalizedError {
@@ -109,7 +114,9 @@ struct TaskSchedulerTests {
         let scheduler = TaskScheduler(storage: storage, now: { clock.now }, calendar: utc)
         scheduler.timerEnabled = false
         scheduler.settleTime = 3
-        return (scheduler, clock, FakeScheduleRunner())
+        let runner = FakeScheduleRunner()
+        scheduler.onRunEnded = { _, run in runner.ended.append(run) }
+        return (scheduler, clock, runner)
     }
 
     func task(_ trigger: ScheduleTrigger = .daily(hour: 9, minute: 0), at date: Date, name: String = "Morning triage") -> ScheduledTask {

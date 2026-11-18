@@ -1,7 +1,8 @@
 import Foundation
 
 /// The one list of background work across every session, rooms included: running subagents (child sessions), the
-/// background shells and tasks engines report (`EngineBackgroundTasks`), and the next run of each active schedule.
+/// background shells and tasks engines report (`EngineBackgroundTasks`), and the next run of each active schedule:
+/// Ensemble's scheduled tasks (`TaskScheduler`) and the engine's own schedules.
 extension SessionStore {
     public var backgroundControl: (any EngineBackgroundTasks)? { engine as? any EngineBackgroundTasks }
 
@@ -20,6 +21,18 @@ extension SessionStore {
                                             title: Self.rowTitle(task.title, fallback: task.kind == .shell ? "Shell command" : "Task"),
                                             openSessionID: byID[task.sessionID] == nil ? nil : task.sessionID,
                                             rootSessionID: rootSessionID(of: task.sessionID), started: task.started, task: task))
+        }
+        if let scheduler = background.scheduler {
+            for task in scheduler.tasks where !task.paused {
+                guard let next = scheduler.nextRun(for: task) else { continue }
+                let running = scheduler.runs.first { $0.taskID == task.id && $0.status.isActive }
+                let folder = Format.folderName(task.continueSessionID.flatMap { byID[$0]?.directory } ?? task.directory)
+                items.append(BackgroundWorkItem(id: "scheduled-task:\(task.id.uuidString)", kind: .schedule,
+                                                title: Self.rowTitle(task.name, fallback: task.prompt),
+                                                detail: running?.status.label ?? folder,
+                                                openSessionID: running?.sessionID.flatMap { byID[$0] == nil ? nil : $0 },
+                                                nextRun: next, scheduledTaskID: task.id))
+            }
         }
         for schedule in schedules where !schedule.paused && !background.pausedScheduleIDs.contains(schedule.id) {
             guard let next = schedule.nextRun else { continue }
@@ -105,6 +118,10 @@ extension SessionStore {
                 try await control.stopBackgroundTask(task)
                 background.tasks.removeAll { $0.id == task.id && $0.sessionID == task.sessionID }
             case .schedule:
+                if let taskID = item.scheduledTaskID {
+                    background.scheduler?.setPaused(true, taskID: taskID)
+                    return
+                }
                 guard let scheduleID = item.scheduleID else { return }
                 try await engine.setSchedulePaused(scheduleID, paused: true)
                 background.pausedScheduleIDs.insert(scheduleID)
@@ -113,6 +130,21 @@ extension SessionStore {
             lastError = "Could not stop \(item.title): \(error.localizedDescription)"
         }
         scheduleBackgroundRefresh()
+    }
+
+    /// Runs one of Ensemble's scheduled tasks now (the row's Run now).
+    public func runScheduledTaskNow(_ item: BackgroundWorkItem) async {
+        guard let taskID = item.scheduledTaskID, let scheduler = background.scheduler,
+              !background.stopping.contains(item.id) else { return }
+        background.stopping.insert(item.id)
+        defer { background.stopping.remove(item.id) }
+        await scheduler.runNow(taskID)
+    }
+
+    /// True while the task behind a row has a run starting, working or waiting on you (Run now is off).
+    public func scheduledTaskIsRunning(_ item: BackgroundWorkItem) -> Bool {
+        guard let taskID = item.scheduledTaskID, let scheduler = background.scheduler else { return false }
+        return scheduler.hasActiveRun(taskID)
     }
 
     /// Fills the background tasks without an engine (previews and snapshots).

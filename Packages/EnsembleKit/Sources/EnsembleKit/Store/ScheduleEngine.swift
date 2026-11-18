@@ -11,8 +11,12 @@ public protocol ScheduleRunner: AnyObject {
     func startScheduledRun(_ task: ScheduledTask, title: String) async throws -> ScheduleRunStart
     /// What the run's session is doing now.
     func scheduledRunState(sessionID: String) -> ScheduleRunState
-    /// A run ended (any outcome). `task` is nil when the task was deleted meanwhile.
-    func scheduledRunDidEnd(_ run: ScheduleRun, task: ScheduledTask?)
+    /// Puts a continued session's own mode back after a run switched it to `applied`. Leaves it alone when its mode is
+    /// no longer `applied` (someone changed it), unless `checkApplied` is false: after a relaunch the store may not
+    /// know the engine's mode yet, and nobody can have changed it while Ensemble was closed. While the session works,
+    /// only a restore that tightens the mode is made; one that would loosen it waits until the session is idle.
+    func restoreScheduledMode(_ mode: PermissionMode, applied: PermissionMode, sessionID: String,
+                              checkApplied: Bool) async -> ScheduleModeRestoreResult
 }
 
 /// The session a run started in.
@@ -36,6 +40,11 @@ public struct ScheduleRunStart: Equatable, Sendable {
 /// - A task whose previous run is still going skips its next time (recorded as skipped).
 /// - Runs are followed through the runner until they finish, fail or wait on you. A run counts as finished after its
 ///   session has been idle for `settleTime`, so a parent waiting for its subagents is not finished too early.
+/// - A run that continues a session in another permission mode switches the session to the task's mode (engines keep
+///   one mode per session, so there is no mode for a single turn) and puts the session's own mode back afterwards:
+///   at once when that tightens the mode, else as soon as the session is idle, unless its mode was changed meanwhile.
+///   The pending restore is saved with the run and finished at the next launch if Ensemble quits first. A run that
+///   continues the same session before the restore keeps the original mode to put back.
 @MainActor @Observable
 public final class TaskScheduler {
     public private(set) var tasks: [ScheduledTask] = []
@@ -65,6 +74,14 @@ public final class TaskScheduler {
     @ObservationIgnored var starting: Set<UUID> = []
     /// Runs started by this launch. Active runs left from an earlier launch are resolved once at start.
     @ObservationIgnored var followed: Set<UUID> = []
+    /// Restores being made right now, by run id.
+    @ObservationIgnored var restoring: Set<UUID> = []
+    /// When a failed restore is tried again, by run id.
+    @ObservationIgnored var restoreRetryAt: [UUID: Date] = [:]
+    /// Pending restores saved by an earlier launch (made without the "still in the applied mode" check).
+    @ObservationIgnored var restoresFromEarlierLaunch: Set<UUID> = []
+    /// How long after a failed restore it is tried again.
+    @ObservationIgnored public var restoreRetryDelay: TimeInterval = 30
 
     public static let historyLimit = 50
 
@@ -93,6 +110,8 @@ public final class TaskScheduler {
         self.runner = runner
         if !isLoaded { load() }
         resolveLeftoverRuns()
+        restoresFromEarlierLaunch = Set(runs.filter { $0.modeRestore == .pending && !followed.contains($0.id) }.map(\.id))
+        await restorePendingModes()
         startWatching()
         await check()
     }
@@ -251,7 +270,12 @@ public final class TaskScheduler {
             persist()
             return run
         }
-        if let refusal = runner.scheduleRefusal(for: task) {
+        var refusal = runner.scheduleRefusal(for: task)
+        if refusal == nil, let sessionID = task.continueSessionID,
+           runs.contains(where: { $0.sessionID == sessionID && restoring.contains($0.id) }) {
+            refusal = "The session it continues was busy."
+        }
+        if let refusal {
             run.status = .skipped
             run.finished = started
             run.message = refusal
@@ -259,6 +283,10 @@ public final class TaskScheduler {
             persist()
             return run
         }
+        // An earlier run's restore on the same session that has not happened yet: this run takes it over, so the
+        // session's own mode is what goes back in the end. Marked first, so it is not made while this run starts.
+        let earlier = task.continueSessionID.flatMap { id in runs.first { $0.sessionID == id && $0.modeRestore == .pending } }
+        if let earlier { updateRun(earlier.id) { $0.modeRestore = .passedOn } }
         starting.insert(task.id)
         insert(run)
         followed.insert(run.id)
@@ -267,11 +295,22 @@ public final class TaskScheduler {
         do {
             let start = try await runner.startScheduledRun(task, title: title)
             starting.remove(task.id)
+            var restoreMode = start.restoreMode
+            if let earlier, let original = earlier.restoreMode {
+                // The session was still in the earlier run's mode: its own mode is the earlier one's to put back.
+                // Otherwise it was changed meanwhile and the earlier restore is dropped.
+                if (start.restoreMode ?? task.permissionMode) == earlier.appliedMode {
+                    restoreMode = original == task.permissionMode ? nil : original
+                } else {
+                    updateRun(earlier.id) { $0.modeRestore = .leftAlone }
+                }
+            }
             updateRun(run.id) { stored in
                 stored.sessionID = start.sessionID
                 stored.sessionTitle = task.continueSessionID == nil ? title : nil
-                stored.restoreMode = start.restoreMode
-                stored.appliedMode = start.restoreMode == nil ? nil : task.permissionMode
+                stored.restoreMode = restoreMode
+                stored.appliedMode = restoreMode == nil ? nil : task.permissionMode
+                stored.modeRestore = restoreMode == nil ? nil : .pending
             }
             if let stored = runs.first(where: { $0.id == run.id }) {
                 run = stored
@@ -280,6 +319,7 @@ public final class TaskScheduler {
             startWatching()
         } catch {
             starting.remove(task.id)
+            if let earlier { updateRun(earlier.id) { $0.modeRestore = .pending } }
             updateRun(run.id) { stored in
                 stored.status = .failed
                 stored.finished = self.now()
@@ -294,16 +334,53 @@ public final class TaskScheduler {
     // MARK: Following runs
 
     func startWatching() {
-        guard timerEnabled, watcher == nil, runs.contains(where: { $0.status.isActive }) else { return }
+        guard timerEnabled, watcher == nil, runs.contains(where: { $0.status.isActive }) || hasPendingRestores else { return }
         watcher = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                guard self.pollActiveRuns() else {
+                let active = self.pollActiveRuns()
+                await self.restorePendingModes()
+                guard active || self.hasPendingRestores else {
                     self.watcher = nil
                     return
                 }
                 try? await Task.sleep(for: self.watchInterval)
             }
+        }
+    }
+
+    /// True while a finished run still has to put a session's mode back.
+    public var hasPendingRestores: Bool {
+        runs.contains { $0.modeRestore == .pending && !$0.status.isActive }
+    }
+
+    /// Tries every pending mode restore of a finished run once (skipping ones in flight or waiting to retry).
+    public func restorePendingModes() async {
+        guard let runner else { return }
+        for run in runs where run.modeRestore == .pending && !run.status.isActive && !restoring.contains(run.id) {
+            if let retry = restoreRetryAt[run.id], retry > now() { continue }
+            guard let sessionID = run.sessionID, let mode = run.restoreMode, let applied = run.appliedMode else {
+                updateRun(run.id) { $0.modeRestore = nil }
+                continue
+            }
+            restoring.insert(run.id)
+            let result = await runner.restoreScheduledMode(mode, applied: applied, sessionID: sessionID,
+                                                           checkApplied: !restoresFromEarlierLaunch.contains(run.id))
+            restoring.remove(run.id)
+            // Another run may have taken the restore over while this one was in flight.
+            guard runs.first(where: { $0.id == run.id })?.modeRestore == .pending else { continue }
+            switch result {
+            case .restored: updateRun(run.id) { $0.modeRestore = .restored }
+            case .leftAlone: updateRun(run.id) { $0.modeRestore = .leftAlone }
+            case .sessionGone: updateRun(run.id) { $0.modeRestore = .sessionGone }
+            case .busy: continue
+            case .failed:
+                restoreRetryAt[run.id] = now().addingTimeInterval(restoreRetryDelay)
+                continue
+            }
+            restoreRetryAt[run.id] = nil
+            restoresFromEarlierLaunch.remove(run.id)
+            persist()
         }
     }
 
@@ -354,9 +431,9 @@ public final class TaskScheduler {
         runs[index].message = message
         idleSince[runs[index].id] = nil
         let run = runs[index]
-        let task = task(run.taskID)
-        runner?.scheduledRunDidEnd(run, task: task)
-        onRunEnded?(task, run)
+        onRunEnded?(task(run.taskID), run)
+        // Its mode restore (if any) is made by the watcher, or by `restorePendingModes()`.
+        if run.modeRestore == .pending { startWatching() }
     }
 
     /// Active runs saved by an earlier launch: still working ones are followed; the rest are marked unknown, because
@@ -378,7 +455,6 @@ public final class TaskScheduler {
             runs[index].message = run.sessionID == nil
                 ? "Ensemble was closed before the run started."
                 : "Ensemble was closed while this run was going. Open the session to see how it ended."
-            runner.scheduledRunDidEnd(runs[index], task: task(run.taskID))
             changed = true
         }
         if changed { persist() }

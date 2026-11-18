@@ -29,6 +29,8 @@ final class ScheduleCenter {
         scheduler.onRunStarted = { [weak self] task, run in self?.runStarted(task, run) }
         scheduler.onRunEnded = { [weak self] _, run in self?.runEnded(run) }
         self.scheduler = scheduler
+        // The Background popover lists the tasks' next runs with Run now and Pause.
+        store.background.scheduler = scheduler
         observe(scheduler)
         Task {
             await scheduler.start(runner: store)

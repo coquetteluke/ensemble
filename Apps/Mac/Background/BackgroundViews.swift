@@ -220,9 +220,17 @@ struct BackgroundRow: View {
             Spacer(minLength: theme.z(6))
             timeText
             if let sessionID = item.openSessionID, sessionID != shownSessionID {
-                RowIconButton(symbol: "arrow.up.forward.app", help: item.kind == .subagent ? "Open this subagent" : "Open the session that started it") {
+                RowIconButton(symbol: "arrow.up.forward.app", help: openHelp) {
                     onOpen(sessionID)
                 }
+            }
+            if item.scheduledTaskID != nil, !store.isStopping(item) {
+                let running = store.scheduledTaskIsRunning(item)
+                RowIconButton(symbol: "play.circle", help: running ? "A run of this task is still going" : "Run this task now") {
+                    Task { await store.runScheduledTaskNow(item) }
+                }
+                .disabled(running)
+                .opacity(running ? 0.4 : 1)
             }
             if store.isStopping(item) {
                 Spinner(size: 10)
@@ -240,6 +248,14 @@ struct BackgroundRow: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture(count: 2) { if let id = item.openSessionID { onOpen(id) } }
+    }
+
+    private var openHelp: String {
+        switch item.kind {
+        case .subagent: "Open this subagent"
+        case .schedule: "Open the session it is running in"
+        case .shell, .task: "Open the session that started it"
+        }
     }
 
     private var detailText: String? {

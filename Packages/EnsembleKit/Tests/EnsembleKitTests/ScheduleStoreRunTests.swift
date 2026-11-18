@@ -66,16 +66,147 @@ struct ScheduleStoreRunTests {
         #expect(store.scheduleRefusal(for: task) == "The session it continues was busy.")
         store.apply(.executionEnded(sessionID: "daily", outcome: "succeeded", error: nil))
 
-        var run = ScheduleRun(taskID: task.id, reason: .manual, started: Date(), status: .succeeded, sessionID: "daily")
-        run.restoreMode = .auto
-        run.appliedMode = .ask
-        store.scheduledRunDidEnd(run, task: task)
-        for _ in 0..<50 where store.session("daily")?.permissionMode != .auto { await Task.yield() }
+        #expect(await store.restoreScheduledMode(.auto, applied: .ask, sessionID: "daily", checkApplied: true) == .restored)
         #expect(store.session("daily")?.permissionMode == .auto)
+        #expect(await store.restoreScheduledMode(.auto, applied: .ask, sessionID: "gone", checkApplied: true) == .sessionGone)
 
         task.continueSessionID = "deleted"
         #expect(store.scheduleRefusal(for: task) == "The session it continues was deleted.")
         await #expect(throws: ScheduleRunError.sessionGone) { try await store.startScheduledRun(task, title: "x") }
+    }
+
+    // MARK: Putting the session's own mode back
+
+    /// A scheduler on the store with a hand-moved clock and no timers; runs count as finished at the first idle look.
+    func makeScheduler(_ store: SessionStore, storage: InMemoryScheduleStorage = InMemoryScheduleStorage())
+        async -> TaskScheduler {
+        let scheduler = TaskScheduler(storage: storage, now: { Date() })
+        scheduler.timerEnabled = false
+        scheduler.settleTime = 0
+        await scheduler.start(runner: store)
+        return scheduler
+    }
+
+    func continuing(_ mode: PermissionMode, name: String = "Notes") -> ScheduledTask {
+        var task = ScheduledTask(name: name, prompt: "Add today's notes", directory: Self.directory, permissionMode: mode,
+                                 trigger: .daily(hour: 3, minute: 0))
+        task.continueSessionID = "daily"
+        return task
+    }
+
+    /// Ends the session's turn and lets the scheduler see it.
+    func endTurn(_ store: SessionStore, _ scheduler: TaskScheduler) {
+        store.apply(.executionEnded(sessionID: "daily", outcome: "succeeded", error: nil))
+        scheduler.pollActiveRuns()
+    }
+
+    @Test func aLooserModeComesBackOnlyOnceTheSessionIsIdle() async throws {
+        let (store, _) = makeStore()
+        let scheduler = await makeScheduler(store)
+        let task = continuing(.ask)
+        scheduler.add(task)
+        let run = try #require(await scheduler.runNow(task.id))
+        #expect(run.restoreMode == .auto)
+        #expect(run.appliedMode == .ask)
+        #expect(run.modeRestore == .pending)
+        endTurn(store, scheduler)
+        #expect(scheduler.runs[0].status == .succeeded)
+        #expect(scheduler.hasPendingRestores)
+
+        // You send something before the restore: Auto (looser than Ask) waits until that turn ends.
+        await store.send("One more thing", to: "daily")
+        await scheduler.restorePendingModes()
+        #expect(scheduler.runs[0].modeRestore == .pending)
+        #expect(store.session("daily")?.permissionMode == .ask)
+
+        store.apply(.executionEnded(sessionID: "daily", outcome: "succeeded", error: nil))
+        await scheduler.restorePendingModes()
+        #expect(scheduler.runs[0].modeRestore == .restored)
+        #expect(store.session("daily")?.permissionMode == .auto)
+        #expect(!scheduler.hasPendingRestores)
+    }
+
+    @Test func aTighterModeComesBackAtOnceEvenWhileBusy() async throws {
+        let (store, engine) = makeStore()
+        store.session("daily")?.permissionMode = .ask
+        let scheduler = await makeScheduler(store)
+        let task = continuing(.bypass, name: "Cleanup")
+        scheduler.add(task)
+        _ = await scheduler.runNow(task.id)
+        #expect(store.session("daily")?.permissionMode == .bypass)
+        endTurn(store, scheduler)
+        await store.send("Now tidy the README", to: "daily")
+        #expect(store.isRunning("daily"))
+
+        // Bypass must not carry over into your turn: Ask comes back while it runs.
+        await scheduler.restorePendingModes()
+        #expect(scheduler.runs[0].modeRestore == .restored)
+        #expect(store.session("daily")?.permissionMode == .ask)
+        #expect(engine.calls.filter { $0 == "mode:daily" }.count == 2)
+    }
+
+    @Test func aModeYouChangedMeanwhileIsLeftAlone() async throws {
+        let (store, _) = makeStore()
+        let scheduler = await makeScheduler(store)
+        let task = continuing(.ask)
+        scheduler.add(task)
+        _ = await scheduler.runNow(task.id)
+        endTurn(store, scheduler)
+        await store.send("Keep going", to: "daily")
+        await scheduler.restorePendingModes()
+        #expect(scheduler.runs[0].modeRestore == .pending)
+
+        await store.setPermissionMode(.acceptEdits, for: "daily")
+        store.apply(.executionEnded(sessionID: "daily", outcome: "succeeded", error: nil))
+        await scheduler.restorePendingModes()
+        #expect(scheduler.runs[0].modeRestore == .leftAlone)
+        #expect(store.session("daily")?.permissionMode == .acceptEdits)
+    }
+
+    @Test func aPendingRestoreIsMadeAtTheNextLaunch() async throws {
+        let storage = InMemoryScheduleStorage()
+        let (store, _) = makeStore()
+        let scheduler = await makeScheduler(store, storage: storage)
+        let task = continuing(.ask)
+        scheduler.add(task)
+        _ = await scheduler.runNow(task.id)
+        endTurn(store, scheduler)
+        await store.send("Keep going", to: "daily")
+        await scheduler.restorePendingModes()
+        #expect(storage.saved?.runs.first?.modeRestore == .pending)
+        scheduler.stop()
+
+        // Next launch: the session's mode in the store is only a guess, and differs from the run's mode.
+        let engine = RouterFakeEngine(name: "fake")
+        let relaunched = SessionStore(engine: engine)
+        relaunched.defaultPermissionMode = .acceptEdits
+        relaunched.seed(StoreSeed(sessions: [EngineSession(id: "daily", title: "Daily notes", directory: Self.directory)]))
+        relaunched.background.timerEnabled = false
+        let reopened = await makeScheduler(relaunched, storage: storage)
+        #expect(reopened.runs.first?.modeRestore == .restored)
+        #expect(relaunched.session("daily")?.permissionMode == .auto)
+        #expect(engine.calls.contains("mode:daily"))
+        #expect(storage.saved?.runs.first?.modeRestore == .restored)
+    }
+
+    @Test func aSecondRunBeforeTheRestoreKeepsTheOriginalMode() async throws {
+        let (store, _) = makeStore()
+        let scheduler = await makeScheduler(store)
+        let task = continuing(.ask)
+        scheduler.add(task)
+        _ = await scheduler.runNow(task.id)
+        endTurn(store, scheduler)
+        let firstID = scheduler.runs[0].id
+
+        // The next run starts before the watcher put Auto back: it takes the restore over.
+        let second = try #require(await scheduler.runNow(task.id))
+        #expect(scheduler.runs.first { $0.id == firstID }?.modeRestore == .passedOn)
+        #expect(second.restoreMode == .auto)
+        #expect(second.modeRestore == .pending)
+        endTurn(store, scheduler)
+        await scheduler.restorePendingModes()
+        #expect(store.session("daily")?.permissionMode == .auto)
+        #expect(scheduler.runs.first { $0.id == second.id }?.modeRestore == .restored)
     }
 
     @Test func theSchedulerStartsARealStoreRun() async {

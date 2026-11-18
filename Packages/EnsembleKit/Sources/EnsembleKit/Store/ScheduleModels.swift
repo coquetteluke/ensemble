@@ -155,10 +155,12 @@ public struct ScheduleRun: Codable, Hashable, Sendable, Identifiable {
     public var sessionTitle: String?
     /// Why it failed, was skipped or missed.
     public var message: String?
-    /// A continued session's own mode, put back when the run ends if the session is still in `appliedMode`.
+    /// A continued session's own mode, put back after the run if the session is still in `appliedMode`.
     public var restoreMode: PermissionMode?
     /// The task's mode the run switched the continued session to.
     public var appliedMode: PermissionMode?
+    /// Where putting `restoreMode` back stands; nil when the run did not switch a mode.
+    public var modeRestore: ScheduleModeRestore?
 
     public init(id: UUID = UUID(), taskID: UUID, reason: ScheduleRunReason, scheduledFor: Date? = nil, started: Date,
                 finished: Date? = nil, status: ScheduleRunStatus = .running, sessionID: String? = nil, sessionTitle: String? = nil,
@@ -177,6 +179,45 @@ public struct ScheduleRun: Codable, Hashable, Sendable, Identifiable {
 
     /// How long it ran, once finished.
     public var duration: TimeInterval? { finished.map { $0.timeIntervalSince(started) } }
+}
+
+/// Putting a continued session's own permission mode back after a run switched it to the task's mode. Saved with the
+/// run, so a restore still waiting when Ensemble quits happens at the next launch.
+public enum ScheduleModeRestore: String, Codable, Hashable, Sendable {
+    /// Still to do: the run is going, the session was busy (and the restore would loosen its mode), or the engine
+    /// refused and it is retried.
+    case pending
+    case restored
+    /// The session's mode was changed by you (or another run) meanwhile, so it was left as it is.
+    case leftAlone
+    /// A later run of a task on the same session took the restore over (its own restore puts this mode back).
+    case passedOn
+    /// The session was deleted.
+    case sessionGone
+}
+
+/// What one attempt to put a mode back did (`ScheduleRunner.restoreScheduledMode`).
+public enum ScheduleModeRestoreResult: Equatable, Sendable {
+    case restored
+    case leftAlone
+    case sessionGone
+    /// The session works and the restore would loosen its mode; tried again once it is idle.
+    case busy
+    /// The engine did not take the change; tried again later.
+    case failed
+}
+
+extension PermissionMode {
+    /// How much a mode allows without asking, for comparing modes: Plan, Ask, Accept edits, Auto, Bypass.
+    public var looseness: Int {
+        switch self {
+        case .plan: 0
+        case .ask: 1
+        case .acceptEdits: 2
+        case .auto: 3
+        case .bypass: 4
+        }
+    }
 }
 
 /// What a run's session is doing (`ScheduleRunner.scheduledRunState`).

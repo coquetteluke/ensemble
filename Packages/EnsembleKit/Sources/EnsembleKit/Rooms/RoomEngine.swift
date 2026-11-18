@@ -78,6 +78,11 @@ public final class RoomEngine {
     /// How long after an agent's last subagent finishes the room waits for the engine to wake the agent with the
     /// result (OpenCode does at once) before it checks on the agent itself.
     @ObservationIgnored var subagentSettleDelay: Duration = .seconds(3)
+    /// Refuses a new turn for an agent whose model's provider reached its daily spending cap (API keys only, see
+    /// `UsageCaps.swift`). Uses the app's usage tracker; tests set their own.
+    @ObservationIgnored public var spendingCapCheck: @MainActor (ModelRef) -> SpendingCapRefusal? = { model in
+        UsageTracker.appWide?.refusal(for: model)
+    }
 
     public init(state: RoomState, api: any OpenCodeAPI, store: any RoomStore, git: (any GitOps)? = nil) {
         self.state = state
@@ -646,6 +651,22 @@ public final class RoomEngine {
     }
 
     private func transmit(_ id: UUID, _ sid: String, _ message: OutgoingMessage) async {
+        if let model = agent(id)?.model, let refusal = spendingCapCheck(model) {
+            // The provider's daily cap is reached: nothing is sent, the message waits in the outbox, and the room
+            // pauses with the reason. Resume sends it once the cap is raised or the day is over.
+            busy.remove(id)
+            turnDuty[id] = nil
+            activity[id] = .idle
+            update {
+                if let duty = message.duty, let i = $0.duties[id]?.lastIndex(where: { $0.purpose == duty }) {
+                    $0.duties[id]?.remove(at: i)
+                }
+                if $0.duties[id]?.isEmpty == true { $0.duties[id] = nil }
+                $0.outbox[id, default: []].insert(message, at: 0)
+            }
+            await pauseRoom(reason: "Paused. \(refusal.message)", interrupt: false)
+            return
+        }
         if message.duty == .work || message.nudge == .work { await allowWorktreeEdits(id) }
         do {
             switch message.channel {

@@ -58,15 +58,20 @@ public final class UsageTracker {
         weak var store: SessionStore?
     }
 
+    /// The app's own tracker (`attach(to:appWide:)`), for cap checks outside the store (room turns).
+    public private(set) static weak var appWide: UsageTracker?
+
     /// The tracker attached to a store, if any (the store's cap checks use it).
     public static func attached(to store: SessionStore) -> UsageTracker? {
         guard let entry = registry[ObjectIdentifier(store)], entry.store === store else { return nil }
         return entry.tracker
     }
 
-    /// Follows the store's sessions. `sampling: false` reads them only when asked (tests, snapshots).
-    public func attach(to store: SessionStore, sampling: Bool = true) {
+    /// Follows the store's sessions. `sampling: false` reads them only when asked (tests, snapshots). `appWide` makes it
+    /// the tracker rooms check their caps with (the app's one tracker).
+    public func attach(to store: SessionStore, sampling: Bool = true, appWide: Bool = false) {
         self.store = store
+        if appWide { Self.appWide = self }
         Self.registry = Self.registry.filter { $0.value.tracker != nil && $0.value.store != nil }
         Self.registry[ObjectIdentifier(store)] = WeakTracker(tracker: self, store: store)
         sample()
@@ -89,6 +94,7 @@ public final class UsageTracker {
         loopTask?.cancel()
         loopTask = nil
         if let store { Self.registry[ObjectIdentifier(store)] = nil }
+        if Self.appWide === self { Self.appWide = nil }
         saveNow()
     }
 

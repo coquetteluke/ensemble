@@ -5,8 +5,8 @@ import UniformTypeIdentifiers
 import EnsembleKit
 
 /// Snapshots for scheduled tasks and usage: the Scheduled screen in the window (one task's history open), a task card
-/// with its full history, the editor with each trigger kind (and Bypass's warning, and a cron error), and the Usage
-/// view in the window. Each in dark and light at the requested zoom. Called from `SnapshotRenderer.run`.
+/// with its full history, the editor with each trigger kind (and Bypass's warning, and a cron error), the Background
+/// popover's scheduled runs, and the Usage view in the window. Each in dark and light at the requested zoom. Called from `SnapshotRenderer.run`.
 @MainActor
 enum ScheduleSnapshots {
     static func render(to directory: URL, zoom: CGFloat) -> [String] {
@@ -18,6 +18,7 @@ enum ScheduleSnapshots {
         let samples = ScheduleSamples.contents(now: now)
         let scheduler = TaskScheduler(storage: InMemoryScheduleStorage(samples), now: { now })
         scheduler.seed(tasks: samples.tasks, runs: samples.runs)
+        store.background.scheduler = scheduler
         let trust: [UUID: NewSessionTrustLine] = [
             ScheduleSamples.depsID: NewSessionTrustLine(text: "Not trusted. Gemini only starts in folders you trust.", tone: .blocked,
                                                         offersTrust: true),
@@ -61,6 +62,11 @@ enum ScheduleSnapshots {
                 WindowFrame(store: store, window: window, title: "Usage") {
                     UsageScreen(store: store, tracker: tracker, planLimits: UsageSamples.planLimits(now: now))
                 }
+            }
+            written += save("background-scheduled-\(tone)", to: directory, width: 440, zoom: zoom, scheme: scheme) {
+                BackgroundListView(store: store, now: now) { _ in }
+                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .padding(24)
             }
             written += save("usage-full-\(tone)", to: directory, width: 900, zoom: zoom, scheme: scheme) {
                 UsageScreen(store: store, tracker: tracker, planLimits: UsageSamples.planLimits(now: now), initialRange: .month,

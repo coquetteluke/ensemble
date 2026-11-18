@@ -54,7 +54,7 @@ public struct BackgroundWorkItem: Identifiable, Hashable, Sendable {
         case schedule
     }
 
-    /// `subagent:<session id>`, `task:<task id>` or `schedule:<schedule id>`.
+    /// `subagent:<session id>`, `task:<task id>`, `schedule:<schedule id>` or `scheduled-task:<task id>`.
     public var id: String
     public var kind: Kind
     public var title: String
@@ -70,11 +70,14 @@ public struct BackgroundWorkItem: Identifiable, Hashable, Sendable {
     public var nextRun: Date?
     /// The engine task behind a shell or task row.
     public var task: BackgroundTask?
+    /// An engine schedule (OpenCode's own).
     public var scheduleID: String?
+    /// One of Ensemble's scheduled tasks (`TaskScheduler`): Pause pauses it, and it has Run now.
+    public var scheduledTaskID: UUID?
 
     public init(id: String, kind: Kind, title: String, detail: String? = nil, openSessionID: String? = nil,
                 rootSessionID: String? = nil, started: Date? = nil, nextRun: Date? = nil, task: BackgroundTask? = nil,
-                scheduleID: String? = nil) {
+                scheduleID: String? = nil, scheduledTaskID: UUID? = nil) {
         self.id = id
         self.kind = kind
         self.title = title
@@ -85,6 +88,7 @@ public struct BackgroundWorkItem: Identifiable, Hashable, Sendable {
         self.nextRun = nextRun
         self.task = task
         self.scheduleID = scheduleID
+        self.scheduledTaskID = scheduledTaskID
     }
 
     /// Subagents, shells and tasks run now; a schedule only waits for its next run.
@@ -175,6 +179,8 @@ public final class SessionBackgroundState {
     public internal(set) var stopping: Set<String> = []
     /// Schedules paused from the list, hidden until the store reloads its schedules.
     public internal(set) var pausedScheduleIDs: Set<String> = []
+    /// Ensemble's scheduled tasks, listed with their next runs (set by the app when the scheduler starts).
+    @ObservationIgnored public weak var scheduler: TaskScheduler?
     /// Plan limit stops, by the id of the transcript error row they replace (`AutoContinue.swift`).
     public internal(set) var limitStops: [String: UsageLimitStop] = [:]
     /// Bumped after every turn and every plan limit report, so the plan limit meter refreshes.

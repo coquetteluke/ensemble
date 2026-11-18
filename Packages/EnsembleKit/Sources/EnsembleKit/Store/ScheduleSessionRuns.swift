@@ -17,9 +17,13 @@ extension SessionStore: ScheduleRunner {
     public func startScheduledRun(_ task: ScheduledTask, title: String) async throws -> ScheduleRunStart {
         if let sessionID = task.continueSessionID {
             guard let session = byID[sessionID] else { throw ScheduleRunError.sessionGone }
-            var restore: PermissionMode?
-            if session.permissionMode != task.permissionMode {
-                restore = session.permissionMode
+            let restore: PermissionMode? = session.permissionMode == task.permissionMode ? nil : session.permissionMode
+            // Set on the engine even when the store already shows the task's mode: after a relaunch the store's mode
+            // can be a guess, and the run must not inherit a looser mode the engine still holds.
+            if restore == nil {
+                do { try await engine.setPermissionMode(sessionID, mode: task.permissionMode) } catch { throw ScheduleRunError.modeNotSet }
+                permissionRulesChecked.insert(sessionID)
+            } else {
                 await setPermissionMode(task.permissionMode, for: sessionID)
                 guard session.permissionMode == task.permissionMode else { throw ScheduleRunError.modeNotSet }
             }
@@ -45,10 +49,28 @@ extension SessionStore: ScheduleRunner {
         return .idle
     }
 
-    public func scheduledRunDidEnd(_ run: ScheduleRun, task: ScheduledTask?) {
-        guard let sessionID = run.sessionID, let restore = run.restoreMode, let applied = run.appliedMode,
-              let session = byID[sessionID], session.permissionMode == applied, !isRunning(sessionID) else { return }
-        Task { [weak self] in await self?.setPermissionMode(restore, for: sessionID) }
+    public func restoreScheduledMode(_ mode: PermissionMode, applied: PermissionMode, sessionID: String,
+                                     checkApplied: Bool) async -> ScheduleModeRestoreResult {
+        guard let session = byID[sessionID] else { return .sessionGone }
+        if checkApplied, session.permissionMode != applied { return .leftAlone }
+        // After a relaunch the store's mode may be a guess, so the engine is set even when it already shows `mode`.
+        // Tightening is safe mid-turn (the next tool call asks); loosening waits until nothing runs.
+        if isRunning(sessionID), mode.looseness >= applied.looseness { return .busy }
+        if mode == .plan {
+            await setPermissionMode(mode, for: sessionID)
+            return session.permissionMode == mode ? .restored : .failed
+        }
+        let previous = session.permissionMode
+        session.permissionMode = mode
+        permissionRulesChecked.insert(sessionID)
+        do {
+            try await engine.setPermissionMode(sessionID, mode: mode)
+            return .restored
+        } catch {
+            // No alert: the scheduler tries again later.
+            if session.permissionMode == mode { session.permissionMode = previous }
+            return .failed
+        }
     }
 
     /// Creates a session for a scheduled run without selecting it (whatever you are looking at stays on screen).

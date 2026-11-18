@@ -15,7 +15,7 @@ final class UsageCenter {
     func start(store: SessionStore, preview: Bool) {
         guard tracker == nil else { return }
         let tracker = UsageTracker(storage: preview ? InMemoryUsageStorage() : UsageFileStorage.standard)
-        tracker.attach(to: store)
+        tracker.attach(to: store, appWide: true)
         self.tracker = tracker
         quitObserver = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil,
                                                               queue: .main) { _ in
