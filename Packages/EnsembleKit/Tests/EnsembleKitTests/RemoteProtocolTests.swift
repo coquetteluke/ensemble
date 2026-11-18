@@ -14,7 +14,7 @@ import Testing
     @Test func clientMessagesRoundTrip() throws {
         let room = RemoteDemoData.IDs.roomID
         let messages: [RemoteClientMessage] = [
-            .hello(RemoteHello(deviceName: "Test iPhone", deviceID: "dev-1", clientNonce: "bm9uY2U", proof: "cHJvb2Y",
+            .hello(RemoteHello(deviceName: "Test iPhone", deviceID: "dev-1", clientNonce: "bm9uY2U", ephemeralKey: "a2V5", proof: "cHJvb2Y",
                                dialedHost: "mac.example.ts.net", dialedPort: 47823)),
             .hubSnapshot,
             .openSession(sessionID: "s1"),
@@ -54,7 +54,8 @@ import Testing
             .usageSummary(summary: data.usage),
         ]
         var messages: [RemoteServerMessage] = [
-            .challenge(RemoteChallenge(serverNonce: RemoteHandshake.encode(RemoteHandshake.makeNonce()))),
+            .challenge(RemoteChallenge(serverNonce: RemoteHandshake.encode(RemoteHandshake.makeNonce()),
+                                       ephemeralKey: RemoteHandshake.encode(RemoteHandshake.makeNonce()))),
             .welcome(RemoteWelcome(macName: "Test Mac", deviceID: "dev-1", appVersion: "0.1.0", serverProof: "cHJvb2Y")),
             .hub(RemoteHubSnapshot(sessions: data.sessions, permissions: data.permissions)),
             .transcript(transcript),
@@ -88,34 +89,57 @@ import Testing
         let token = RemoteToken.generate()
         let server = RemoteHandshake.makeNonce()
         let client = RemoteHandshake.makeNonce()
+        let mac = RemoteHandshake.makeNonce()
+        let phone = RemoteHandshake.makeNonce()
         #expect(server.count == 32 && server != client)
 
-        let clientProof = RemoteHandshake.clientProof(token: token, serverNonce: server, clientNonce: client)
-        let serverProof = RemoteHandshake.serverProof(token: token, serverNonce: server, clientNonce: client)
+        let clientProof = RemoteHandshake.clientProof(token: token, serverNonce: server, clientNonce: client, macKey: mac, phoneKey: phone)
+        let serverProof = RemoteHandshake.serverProof(token: token, serverNonce: server, clientNonce: client, macKey: mac, phoneKey: phone)
         #expect(clientProof.count == 32)
-        #expect(RemoteHandshake.isValidClientProof(clientProof, token: token, serverNonce: server, clientNonce: client))
-        #expect(RemoteHandshake.isValidServerProof(serverProof, token: token, serverNonce: server, clientNonce: client))
+        #expect(RemoteHandshake.isValidClientProof(clientProof, token: token, serverNonce: server, clientNonce: client, macKey: mac, phoneKey: phone))
+        #expect(RemoteHandshake.isValidServerProof(serverProof, token: token, serverNonce: server, clientNonce: client, macKey: mac, phoneKey: phone))
 
         // Wrong token, swapped or fresh nonces, and one proof used as the other all fail.
-        #expect(!RemoteHandshake.isValidClientProof(clientProof, token: RemoteToken.generate(), serverNonce: server, clientNonce: client))
-        #expect(!RemoteHandshake.isValidClientProof(clientProof, token: token, serverNonce: client, clientNonce: server))
-        #expect(!RemoteHandshake.isValidClientProof(clientProof, token: token, serverNonce: RemoteHandshake.makeNonce(), clientNonce: client))
-        #expect(!RemoteHandshake.isValidServerProof(clientProof, token: token, serverNonce: server, clientNonce: client))
-        #expect(!RemoteHandshake.isValidClientProof(serverProof, token: token, serverNonce: server, clientNonce: client))
+        #expect(!RemoteHandshake.isValidClientProof(clientProof, token: RemoteToken.generate(), serverNonce: server, clientNonce: client, macKey: mac, phoneKey: phone))
+        #expect(!RemoteHandshake.isValidClientProof(clientProof, token: token, serverNonce: client, clientNonce: server, macKey: mac, phoneKey: phone))
+        #expect(!RemoteHandshake.isValidClientProof(clientProof, token: token, serverNonce: RemoteHandshake.makeNonce(), clientNonce: client, macKey: mac, phoneKey: phone))
+        #expect(!RemoteHandshake.isValidServerProof(clientProof, token: token, serverNonce: server, clientNonce: client, macKey: mac, phoneKey: phone))
+        #expect(!RemoteHandshake.isValidClientProof(serverProof, token: token, serverNonce: server, clientNonce: client, macKey: mac, phoneKey: phone))
         #expect(clientProof != serverProof)
     }
 
+    @Test func proofsCoverBothEphemeralKeys() {
+        let token = RemoteToken.generate()
+        let server = RemoteHandshake.makeNonce()
+        let client = RemoteHandshake.makeNonce()
+        let mac = RemoteHandshake.makeNonce()
+        let phone = RemoteHandshake.makeNonce()
+        let other = RemoteHandshake.makeNonce()
+        let clientProof = RemoteHandshake.clientProof(token: token, serverNonce: server, clientNonce: client, macKey: mac, phoneKey: phone)
+        let serverProof = RemoteHandshake.serverProof(token: token, serverNonce: server, clientNonce: client, macKey: mac, phoneKey: phone)
+
+        // A relay that swaps either key (or both, or the two with each other) breaks both proofs.
+        let changed: [(mac: Data, phone: Data)] = [(other, phone), (mac, other), (other, other), (phone, mac)]
+        for keys in changed {
+            #expect(!RemoteHandshake.isValidClientProof(clientProof, token: token, serverNonce: server, clientNonce: client,
+                                                        macKey: keys.mac, phoneKey: keys.phone))
+            #expect(!RemoteHandshake.isValidServerProof(serverProof, token: token, serverNonce: server, clientNonce: client,
+                                                        macKey: keys.mac, phoneKey: keys.phone))
+        }
+    }
+
     @Test func proofMatchesTheSpecifiedHMAC() {
-        // HMAC-SHA256(token, serverNonce || clientNonce || "ensemble-client"), computed independently.
+        // clientNonce/serverNonce order and key order per the protocol 4 spec, computed independently.
         let token = "test-token"
         let server = Data(repeating: 1, count: 32)
         let client = Data(repeating: 2, count: 32)
-        let expected = Data(HMAC<SHA256>.authenticationCode(for: server + client + Data("ensemble-client".utf8),
-                                                            using: SymmetricKey(data: Data(token.utf8))))
-        #expect(RemoteHandshake.clientProof(token: token, serverNonce: server, clientNonce: client) == expected)
-        let expectedServer = Data(HMAC<SHA256>.authenticationCode(for: client + server + Data("ensemble-server".utf8),
-                                                                  using: SymmetricKey(data: Data(token.utf8))))
-        #expect(RemoteHandshake.serverProof(token: token, serverNonce: server, clientNonce: client) == expectedServer)
+        let mac = Data(repeating: 3, count: 32)
+        let phone = Data(repeating: 4, count: 32)
+        let key = SymmetricKey(data: Data(token.utf8))
+        let expected = Data(HMAC<SHA256>.authenticationCode(for: server + client + mac + phone + Data("ensemble-client".utf8), using: key))
+        #expect(RemoteHandshake.clientProof(token: token, serverNonce: server, clientNonce: client, macKey: mac, phoneKey: phone) == expected)
+        let expectedServer = Data(HMAC<SHA256>.authenticationCode(for: client + server + phone + mac + Data("ensemble-server".utf8), using: key))
+        #expect(RemoteHandshake.serverProof(token: token, serverNonce: server, clientNonce: client, macKey: mac, phoneKey: phone) == expectedServer)
     }
 
     @Test func nonceEncodingRoundTripsAndChecksLength() {
@@ -132,13 +156,15 @@ import Testing
         let token = RemoteToken.generate()
         let server = RemoteHandshake.makeNonce()
         let client = RemoteHandshake.makeNonce()
-        let proof = RemoteHandshake.clientProof(token: token, serverNonce: server, clientNonce: client)
+        let proof = RemoteHandshake.clientProof(token: token, serverNonce: server, clientNonce: client,
+                                                macKey: RemoteHandshake.makeNonce(), phoneKey: RemoteHandshake.makeNonce())
         let hello = RemoteClientFrame(.hello(RemoteHello(deviceName: "p", deviceID: "d", clientNonce: RemoteHandshake.encode(client),
+                                                         ephemeralKey: RemoteHandshake.encode(RemoteHandshake.makeNonce()),
                                                          proof: RemoteHandshake.encode(proof), dialedHost: "h", dialedPort: 1)), id: "1")
         let text = String(decoding: try RemoteCoding.encode(hello), as: UTF8.self)
         #expect(!text.contains(token))
         #expect(!text.contains("\"token\""))
-        #expect(remoteProtocolVersion == 3 && remoteMinimumProtocolVersion == 3)
+        #expect(remoteProtocolVersion == 4 && remoteMinimumProtocolVersion == 4)
     }
 
     // MARK: Channel encryption
@@ -148,13 +174,13 @@ import Testing
         var mac: RemoteChannel
     }
 
-    func channels(token: String = "pairing-token", macToken: String? = nil, host: String = "mac.example.ts.net",
-                  macHost: String? = nil, port: Int = 47823) -> ChannelPair {
+    func channels(token: String = "pairing-token", macToken: String? = nil, secret: Data = Data(repeating: 5, count: 32),
+                  macSecret: Data? = nil, host: String = "mac.example.ts.net", macHost: String? = nil, port: Int = 47823) -> ChannelPair {
         let server = Data(repeating: 7, count: 32)
         let client = Data(repeating: 9, count: 32)
         return ChannelPair(
-            phone: RemoteChannel(token: token, serverNonce: server, clientNonce: client, dialedHost: host, dialedPort: port, role: .client),
-            mac: RemoteChannel(token: macToken ?? token, serverNonce: server, clientNonce: client, dialedHost: macHost ?? host,
+            phone: RemoteChannel(token: token, sharedSecret: secret, serverNonce: server, clientNonce: client, dialedHost: host, dialedPort: port, role: .client),
+            mac: RemoteChannel(token: macToken ?? token, sharedSecret: macSecret ?? secret, serverNonce: server, clientNonce: client, dialedHost: macHost ?? host,
                                dialedPort: port, role: .server))
     }
 
@@ -212,6 +238,15 @@ import Testing
         _ = second
     }
 
+    @Test func recordedFramesNeedTheSharedSecret() throws {
+        // Same token, different ephemeral secret: a leaked token alone does not open recorded traffic.
+        var c = channels(token: "pairing-token", secret: Data(repeating: 5, count: 32), macSecret: Data(repeating: 6, count: 32))
+        #expect(throws: RemoteChannel.Failure.rejected) { try c.mac.open(try c.phone.seal(Data("x".utf8))) }
+        #expect(throws: RemoteChannel.Failure.rejected) { try c.phone.open(try c.mac.seal(Data("y".utf8))) }
+        var same = channels(token: "pairing-token", secret: Data(repeating: 5, count: 32))
+        #expect(try same.mac.open(try same.phone.seal(Data("x".utf8))) == Data("x".utf8))
+    }
+
     @Test func wrongTokenOrHostCannotDecrypt() throws {
         var wrongToken = channels(token: "pairing-token", macToken: "other-token")
         #expect(throws: RemoteChannel.Failure.rejected) { try wrongToken.mac.open(try wrongToken.phone.seal(Data("x".utf8))) }
@@ -231,24 +266,25 @@ import Testing
         // A frame the phone sealed cannot be reflected back to the phone as if the Mac sent it.
         let up = try c.phone.seal(Data("x".utf8))
         #expect(throws: RemoteChannel.Failure.rejected) { try c.phone.open(up) }
-        #expect(RemoteChannel.info(version: 3, host: "h", port: 1, direction: "client-to-server")
-                != RemoteChannel.info(version: 3, host: "h", port: 1, direction: "server-to-client"))
-        #expect(String(decoding: RemoteChannel.info(version: 3, host: "H.", port: 2, direction: "d"), as: UTF8.self)
-                == "ensemble-remote/3|d|h|2")
+        #expect(RemoteChannel.info(version: 4, host: "h", port: 1, direction: "client-to-server")
+                != RemoteChannel.info(version: 4, host: "h", port: 1, direction: "server-to-client"))
+        #expect(String(decoding: RemoteChannel.info(version: 4, host: "H.", port: 2, direction: "d"), as: UTF8.self)
+                == "ensemble-remote/4|d|h|2")
     }
 
     @Test func noncesPortAndVersionAreBoundIntoTheKeys() throws {
         let token = "pairing-token"
+        let secret = Data(repeating: 5, count: 32)
         let s = Data(repeating: 7, count: 32)
         let c = Data(repeating: 9, count: 32)
-        func pair(macServer: Data = s, macClient: Data = c, macPort: Int = 47823, macVersion: Int = 3) -> (RemoteChannel, RemoteChannel) {
-            (RemoteChannel(token: token, serverNonce: s, clientNonce: c, dialedHost: "h", dialedPort: 47823, role: .client, protocolVersion: 3),
-             RemoteChannel(token: token, serverNonce: macServer, clientNonce: macClient, dialedHost: "h", dialedPort: macPort,
+        func pair(macServer: Data = s, macClient: Data = c, macPort: Int = 47823, macSecret: Data? = nil, macVersion: Int = 4) -> (RemoteChannel, RemoteChannel) {
+            (RemoteChannel(token: token, sharedSecret: secret, serverNonce: s, clientNonce: c, dialedHost: "h", dialedPort: 47823, role: .client, protocolVersion: 4),
+             RemoteChannel(token: token, sharedSecret: macSecret ?? secret, serverNonce: macServer, clientNonce: macClient, dialedHost: "h", dialedPort: macPort,
                            role: .server, protocolVersion: macVersion))
         }
         // Each changed input on one side: the other side's frames do not open. Swapped nonces count as changed.
         for (var phone, var mac) in [pair(macServer: Data(repeating: 8, count: 32)), pair(macClient: Data(repeating: 8, count: 32)),
-                                     pair(macServer: c, macClient: s), pair(macPort: 47824), pair(macVersion: 4)] {
+                                     pair(macServer: c, macClient: s), pair(macPort: 47824), pair(macVersion: 5), pair(macSecret: Data(repeating: 6, count: 32))] {
             #expect(throws: RemoteChannel.Failure.rejected) { try mac.open(try phone.seal(Data("x".utf8))) }
             #expect(throws: RemoteChannel.Failure.rejected) { try phone.open(try mac.seal(Data("y".utf8))) }
         }
@@ -260,17 +296,18 @@ import Testing
     /// hand with HMAC, then ChaChaPoly with a 4-zero-byte plus big-endian counter nonce and the version as AAD.
     @Test func channelMatchesTheSpecifiedKeySchedule() throws {
         let token = "pairing-token"
+        let secret = Data((0..<32).map { UInt8(100 + $0) })
         let s = Data((0..<32).map { UInt8($0) })
         let c = Data((0..<32).map { UInt8(255 - $0) })
-        var phone = RemoteChannel(token: token, serverNonce: s, clientNonce: c, dialedHost: "[FD7A::1]", dialedPort: 47823, role: .client)
+        var phone = RemoteChannel(token: token, sharedSecret: secret, serverNonce: s, clientNonce: c, dialedHost: "[FD7A::1]", dialedPort: 47823, role: .client)
 
         func hmac(_ key: Data, _ message: Data) -> Data {
             Data(HMAC<SHA256>.authenticationCode(for: message, using: SymmetricKey(data: key)))
         }
-        let prk = hmac(s + c, Data(token.utf8))                                    // extract
-        let info = Data("ensemble-remote/3|client-to-server|fd7a::1|47823".utf8)
+        let prk = hmac(s + c, Data(token.utf8) + secret)                                    // extract
+        let info = Data("ensemble-remote/4|client-to-server|fd7a::1|47823".utf8)
         let key = SymmetricKey(data: hmac(prk, info + Data([1])))                  // expand, one block
-        let aad = Data("ensemble-remote/3".utf8)
+        let aad = Data("ensemble-remote/4".utf8)
 
         for counter in 0..<3 {
             let message = Data("frame \(counter)".utf8)

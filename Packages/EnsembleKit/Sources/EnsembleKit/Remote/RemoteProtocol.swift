@@ -3,9 +3,12 @@ import Foundation
 /// Version of the Mac/iPhone protocol. Bump when messages change incompatibly.
 /// 2: challenge-response pairing check; the token is never sent.
 /// 3: every frame after the handshake is encrypted (`RemoteChannel`); the welcome is the first sealed frame.
-public let remoteProtocolVersion = 3
-/// Oldest protocol version either side accepts. Older versions sent the token (1) or plaintext frames (2).
-public let remoteMinimumProtocolVersion = 3
+/// 4: a fresh X25519 key exchange on every connection. Both sides send an ephemeral public key, both proofs cover
+///    both keys, and the shared secret goes into the channel keys, so a leaked token alone cannot open recorded traffic.
+public let remoteProtocolVersion = 4
+/// Oldest protocol version either side accepts. Older versions sent the token (1), plaintext frames (2), or
+/// derived keys from the token alone (3).
+public let remoteMinimumProtocolVersion = 4
 /// Port the Mac listens on unless the user picks another.
 public let remoteDefaultPort = 47823
 

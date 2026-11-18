@@ -1,4 +1,5 @@
 #if os(macOS)
+import CryptoKit
 import Foundation
 import Network
 import Synchronization
@@ -235,6 +236,49 @@ import Testing
         #expect(await h.server.status.devices.isEmpty)
     }
 
+    @Test func versionThreeIsRefused() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        // A hello that is otherwise complete but says it speaks protocol 3 (frames inside it are version 4).
+        let phone = try await rawPhone(h, helloVersion: 3)
+        defer { phone.task.cancel() }
+        guard case .string = phone.reply else {
+            Issue.record("The refusal of an old phone must be plaintext")
+            return
+        }
+        let reply = try RemoteCoding.decode(RemoteServerFrame.self, from: Self.data(phone.reply))
+        guard case .error(let error) = reply.message else {
+            Issue.record("Expected an error, got \(reply.message.typeName)")
+            return
+        }
+        #expect(error.code == .unsupportedVersion)
+        #expect(await Self.connectionEnds(phone.task, within: TestWait.ceiling))
+        #expect(await h.server.status.devices.isEmpty)
+    }
+
+    @Test func missingOrMalformedEphemeralKeyIsBadRequest() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let edits: [(inout [String: Any]) -> Void] = [
+            { $0["ephemeralKey"] = nil },
+            { $0["ephemeralKey"] = "not base64 !!" },
+            { $0["ephemeralKey"] = RemoteHandshake.encode(Data(repeating: 1, count: 31)) },
+            { $0["ephemeralKey"] = RemoteHandshake.encode(Data(count: 32)) },   // all zero: no usable shared secret
+        ]
+        for edit in edits {
+            let phone = try await rawPhone(h, helloEdit: edit)
+            defer { phone.task.cancel() }
+            let reply = try RemoteCoding.decode(RemoteServerFrame.self, from: Self.data(phone.reply))
+            guard case .error(let error) = reply.message else {
+                Issue.record("Expected an error, got \(reply.message.typeName)")
+                continue
+            }
+            #expect(error.code == .badRequest)
+            #expect(await Self.connectionEnds(phone.task, within: TestWait.ceiling))
+        }
+        #expect(await h.server.status.devices.isEmpty)
+    }
+
     @Test func phoneTellsTheUserToUpdateAnOlderMac() async throws {
         let fake = try await FakeMac.start(host: "127.0.0.1", port: 0, protocolVersion: 2)
         defer { fake.stop() }
@@ -271,7 +315,8 @@ import Testing
         }
         #expect(w.macName == "Loopback Mac")
         let proof = try #require(RemoteHandshake.decode(w.serverProof, expectedCount: 32))
-        #expect(RemoteHandshake.isValidServerProof(proof, token: h.token, serverNonce: phone.serverNonce, clientNonce: phone.clientNonce))
+        #expect(RemoteHandshake.isValidServerProof(proof, token: h.token, serverNonce: phone.serverNonce, clientNonce: phone.clientNonce,
+                                                   macKey: phone.macKey, phoneKey: phone.phoneKey))
 
         // A sealed request gets a sealed reply.
         try await phone.task.send(.data(try phone.seal(.hubSnapshot, id: "2")))
@@ -513,6 +558,8 @@ import Testing
         let task: URLSessionWebSocketTask
         let serverNonce: Data
         let clientNonce: Data
+        let macKey: Data
+        let phoneKey: Data
         var channel: RemoteChannel
         /// The Mac's answer to the hello, as it came off the socket.
         let reply: URLSessionWebSocketTask.Message
@@ -529,24 +576,39 @@ import Testing
     }
 
     /// Connects, answers the challenge with a valid proof and returns the Mac's reply without reading it.
-    func rawPhone(_ h: Harness, dialedHost: String = "127.0.0.1", dialedPort: Int? = nil) async throws -> RawPhone {
+    /// - Parameter helloEdit: changes the hello's JSON before it is sent, for tests that need a broken one.
+    func rawPhone(_ h: Harness, dialedHost: String = "127.0.0.1", dialedPort: Int? = nil, helloVersion: Int = remoteProtocolVersion,
+                  helloEdit: (inout [String: Any]) -> Void = { _ in }) async throws -> RawPhone {
         let url = try #require(RemotePairing.webSocketURL(host: "127.0.0.1", port: h.port))
         let task = URLSession.shared.webSocketTask(with: url)
         task.resume()
         let first = try RemoteCoding.decode(RemoteServerFrame.self, from: Self.data(try await task.receive()))
         guard case .challenge(let challenge) = first.message else { throw RemoteError(.badRequest, "no challenge") }
         let serverNonce = try #require(RemoteHandshake.decode(challenge.serverNonce, expectedCount: 32))
+        let macKey = try #require(RemoteHandshake.decode(challenge.ephemeralKey, expectedCount: 32))
         let clientNonce = RemoteHandshake.makeNonce()
-        let proof = RemoteHandshake.clientProof(token: h.token, serverNonce: serverNonce, clientNonce: clientNonce)
+        let phoneKeyPair = Curve25519.KeyAgreement.PrivateKey()
+        let phoneKey = phoneKeyPair.publicKey.rawRepresentation
+        let secret = try phoneKeyPair.sharedSecretFromKeyAgreement(with: try Curve25519.KeyAgreement.PublicKey(rawRepresentation: macKey))
+            .withUnsafeBytes { Data($0) }
+        let proof = RemoteHandshake.clientProof(token: h.token, serverNonce: serverNonce, clientNonce: clientNonce,
+                                                macKey: macKey, phoneKey: phoneKey)
         let port = dialedPort ?? h.port
-        let hello = RemoteHello(deviceName: "Raw Phone", deviceID: "raw", clientNonce: RemoteHandshake.encode(clientNonce),
+        let hello = RemoteHello(protocolVersion: helloVersion, deviceName: "Raw Phone", deviceID: "raw",
+                                clientNonce: RemoteHandshake.encode(clientNonce), ephemeralKey: RemoteHandshake.encode(phoneKey),
                                 proof: RemoteHandshake.encode(proof), dialedHost: dialedHost, dialedPort: port)
-        let text = String(decoding: try RemoteCoding.encode(RemoteClientFrame(.hello(hello), id: "1")), as: UTF8.self)
+        var json = try #require(try JSONSerialization.jsonObject(
+            with: try RemoteCoding.encode(RemoteClientFrame(.hello(hello), id: "1"))) as? [String: Any])
+        var body = try #require(json["data"] as? [String: Any])
+        helloEdit(&body)
+        json["data"] = body
+        let text = String(decoding: try JSONSerialization.data(withJSONObject: json), as: UTF8.self)
         try await task.send(.string(text))
         let reply = try await task.receive()
-        let channel = RemoteChannel(token: h.token, serverNonce: serverNonce, clientNonce: clientNonce,
+        let channel = RemoteChannel(token: h.token, sharedSecret: secret, serverNonce: serverNonce, clientNonce: clientNonce,
                                     dialedHost: dialedHost, dialedPort: port, role: .client)
-        return RawPhone(task: task, serverNonce: serverNonce, clientNonce: clientNonce, channel: channel, reply: reply)
+        return RawPhone(task: task, serverNonce: serverNonce, clientNonce: clientNonce, macKey: macKey, phoneKey: phoneKey,
+                        channel: channel, reply: reply)
     }
 
     /// A hello as a version 2 phone sent it: a valid proof, and no dialed host or port.
@@ -556,7 +618,8 @@ import Testing
             throw RemoteError(.badRequest, "no challenge")
         }
         let clientNonce = RemoteHandshake.makeNonce()
-        let proof = RemoteHandshake.clientProof(token: token, serverNonce: serverNonce, clientNonce: clientNonce)
+        let proof = RemoteHandshake.clientProof(token: token, serverNonce: serverNonce, clientNonce: clientNonce,
+                                                macKey: Data(repeating: 0, count: 32), phoneKey: Data(repeating: 0, count: 32))
         return #"{"v":2,"id":"1","type":"hello","data":{"protocolVersion":2,"deviceName":"Old","deviceID":"old","clientNonce":""#
             + RemoteHandshake.encode(clientNonce) + #"","proof":""# + RemoteHandshake.encode(proof) + #""}}"#
     }
@@ -712,7 +775,8 @@ final class FakeMac: Sendable {
             connection.stateUpdateHandler = { state in
                 if case .ready = state {
                     let challenge = RemoteChallenge(protocolVersion: protocolVersion,
-                                                    serverNonce: RemoteHandshake.encode(RemoteHandshake.makeNonce()))
+                                                    serverNonce: RemoteHandshake.encode(RemoteHandshake.makeNonce()),
+                                                    ephemeralKey: RemoteHandshake.encode(Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation))
                     send(.challenge(challenge), version: protocolVersion, on: connection)
                     receive(on: connection, log: log)
                 }

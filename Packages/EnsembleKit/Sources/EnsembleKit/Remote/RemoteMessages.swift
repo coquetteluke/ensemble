@@ -25,19 +25,22 @@ public struct RemoteHello: Codable, Hashable, Sendable {
     public var deviceID: String
     /// 32 random bytes, base64url.
     public var clientNonce: String
-    /// `HMAC-SHA256(token, serverNonce || clientNonce || "ensemble-client")`, base64url.
+    /// The phone's ephemeral X25519 public key for this connection: raw 32 bytes, base64url. Never reused.
+    public var ephemeralKey: String
+    /// `HMAC-SHA256(token, serverNonce || clientNonce || macKey || phoneKey || "ensemble-client")`, base64url.
     public var proof: String
     /// The host the phone dialed, exactly as in the pairing code. Bound into the channel keys.
     public var dialedHost: String
     /// The port the phone dialed. Bound into the channel keys.
     public var dialedPort: Int
 
-    public init(protocolVersion: Int = remoteProtocolVersion, deviceName: String, deviceID: String, clientNonce: String, proof: String,
-                dialedHost: String, dialedPort: Int) {
+    public init(protocolVersion: Int = remoteProtocolVersion, deviceName: String, deviceID: String, clientNonce: String, ephemeralKey: String,
+                proof: String, dialedHost: String, dialedPort: Int) {
         self.protocolVersion = protocolVersion
         self.deviceName = deviceName
         self.deviceID = deviceID
         self.clientNonce = clientNonce
+        self.ephemeralKey = ephemeralKey
         self.proof = proof
         self.dialedHost = dialedHost
         self.dialedPort = dialedPort
@@ -195,10 +198,13 @@ public struct RemoteChallenge: Codable, Hashable, Sendable {
     public var protocolVersion: Int
     /// 32 random bytes, base64url, new for every connection.
     public var serverNonce: String
+    /// The Mac's ephemeral X25519 public key for this connection: raw 32 bytes, base64url. New for every connection.
+    public var ephemeralKey: String
 
-    public init(protocolVersion: Int = remoteProtocolVersion, serverNonce: String) {
+    public init(protocolVersion: Int = remoteProtocolVersion, serverNonce: String, ephemeralKey: String) {
         self.protocolVersion = protocolVersion
         self.serverNonce = serverNonce
+        self.ephemeralKey = ephemeralKey
     }
 }
 
@@ -210,7 +216,7 @@ public struct RemoteWelcome: Codable, Hashable, Sendable {
     public var deviceID: String
     /// Ensemble version on the Mac.
     public var appVersion: String
-    /// `HMAC-SHA256(token, clientNonce || serverNonce || "ensemble-server")`, base64url.
+    /// `HMAC-SHA256(token, clientNonce || serverNonce || phoneKey || macKey || "ensemble-server")`, base64url.
     public var serverProof: String
 
     public init(protocolVersion: Int = remoteProtocolVersion, macName: String, deviceID: String, appVersion: String, serverProof: String) {

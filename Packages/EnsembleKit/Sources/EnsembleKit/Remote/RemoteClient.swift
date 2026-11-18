@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Observation
 
@@ -238,18 +239,29 @@ public final class RemoteClient {
                 throw RemoteError(.macNotVerified, "The host sent an invalid pairing challenge.")
             }
 
-            // 2. Prove the token without sending it.
+            guard let macKey = RemoteHandshake.decode(challenge.ephemeralKey, expectedCount: RemoteHandshake.keyByteCount) else {
+                throw RemoteError(.macNotVerified, "The host sent an invalid pairing challenge.")
+            }
+
+            // 2. Prove the token without sending it. The phone's key pair lives for this handshake only: it is a
+            //    local that goes out of scope with the shared secret taken from it.
             let clientNonce = RemoteHandshake.makeNonce()
-            let proof = RemoteHandshake.clientProof(token: pairing.token, serverNonce: serverNonce, clientNonce: clientNonce)
+            let phoneKeyPair = RemoteHandshake.makeKeyPair()
+            let phoneKey = phoneKeyPair.publicKey.rawRepresentation
+            guard let sharedSecret = RemoteHandshake.sharedSecret(privateKey: phoneKeyPair, peerKey: macKey) else {
+                throw RemoteError(.macNotVerified, "The host sent an invalid pairing challenge.")
+            }
+            let proof = RemoteHandshake.clientProof(token: pairing.token, serverNonce: serverNonce, clientNonce: clientNonce,
+                                                    macKey: macKey, phoneKey: phoneKey)
             let hello = RemoteHello(deviceName: deviceName, deviceID: deviceID,
-                                    clientNonce: RemoteHandshake.encode(clientNonce), proof: RemoteHandshake.encode(proof),
-                                    dialedHost: host, dialedPort: pairing.port)
+                                    clientNonce: RemoteHandshake.encode(clientNonce), ephemeralKey: RemoteHandshake.encode(phoneKey),
+                                    proof: RemoteHandshake.encode(proof), dialedHost: host, dialedPort: pairing.port)
             try await task.send(.string(try Self.encode(RemoteClientFrame(.hello(hello), id: nextRequestID()))))
 
             // 3. The Mac must prove it knows the token too. Its welcome is the first sealed frame; a host without
             //    the token (or a relay that changed the hello) cannot seal it, and a plaintext welcome is refused.
-            var sealedChannel = RemoteChannel(token: pairing.token, serverNonce: serverNonce, clientNonce: clientNonce,
-                                              dialedHost: host, dialedPort: pairing.port, role: .client,
+            var sealedChannel = RemoteChannel(token: pairing.token, sharedSecret: sharedSecret, serverNonce: serverNonce,
+                                              clientNonce: clientNonce, dialedHost: host, dialedPort: pairing.port, role: .client,
                                               protocolVersion: min(remoteProtocolVersion, challenge.protocolVersion))
             let reply: RemoteServerFrame
             switch try await task.receive() {
@@ -270,7 +282,7 @@ public final class RemoteClient {
             case .welcome(let welcome):
                 guard let serverProof = RemoteHandshake.decode(welcome.serverProof, expectedCount: 32),
                       RemoteHandshake.isValidServerProof(serverProof, token: pairing.token, serverNonce: serverNonce,
-                                                         clientNonce: clientNonce) else {
+                                                         clientNonce: clientNonce, macKey: macKey, phoneKey: phoneKey) else {
                     throw RemoteError(.macNotVerified, "This host could not prove it is your Mac, so the iPhone did not connect.")
                 }
                 // The sealed welcome echoes the device ID the Mac read from the plaintext hello; a mismatch means

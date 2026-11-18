@@ -3,7 +3,8 @@ import Foundation
 
 /// Encrypts every frame after the handshake, so a relay on the network can neither read nor change them.
 ///
-/// Keys: HKDF-SHA256 with the pairing token's UTF-8 bytes as input key material, salt `serverNonce || clientNonce`,
+/// Keys: HKDF-SHA256 with the pairing token's UTF-8 bytes followed by the 32-byte X25519 shared secret of the two
+/// ephemeral keys as input key material (so a leaked token alone cannot open recorded traffic), salt `serverNonce || clientNonce`,
 /// and info `ensemble-remote/<version>|<direction>|<host>|<port>`, where version is the protocol version both
 /// sides agreed on (the lower of the two), direction is `client-to-server` or `server-to-client`, and host and
 /// port are what the phone dialed (host normalised by `normalizedHost`). Each direction has its own 32-byte key.
@@ -41,11 +42,11 @@ public struct RemoteChannel: Sendable {
 
     /// - Parameter protocolVersion: the version both sides agreed on: the lower of the Mac's (challenge) and the
     ///   phone's (hello). A relay that changes either one makes the keys differ.
-    public init(token: String, serverNonce: Data, clientNonce: Data, dialedHost: String, dialedPort: Int, role: Role,
-                protocolVersion: Int = remoteProtocolVersion) {
-        let up = Self.deriveKey(token: token, serverNonce: serverNonce, clientNonce: clientNonce, version: protocolVersion,
+    public init(token: String, sharedSecret: Data, serverNonce: Data, clientNonce: Data, dialedHost: String, dialedPort: Int,
+                role: Role, protocolVersion: Int = remoteProtocolVersion) {
+        let up = Self.deriveKey(token: token, sharedSecret: sharedSecret, serverNonce: serverNonce, clientNonce: clientNonce, version: protocolVersion,
                                 host: dialedHost, port: dialedPort, direction: Self.clientToServer)
-        let down = Self.deriveKey(token: token, serverNonce: serverNonce, clientNonce: clientNonce, version: protocolVersion,
+        let down = Self.deriveKey(token: token, sharedSecret: sharedSecret, serverNonce: serverNonce, clientNonce: clientNonce, version: protocolVersion,
                                   host: dialedHost, port: dialedPort, direction: Self.serverToClient)
         switch role {
         case .client:
@@ -104,9 +105,9 @@ public struct RemoteChannel: Sendable {
         Data("ensemble-remote/\(version)".utf8)
     }
 
-    private static func deriveKey(token: String, serverNonce: Data, clientNonce: Data, version: Int, host: String, port: Int,
+    private static func deriveKey(token: String, sharedSecret: Data, serverNonce: Data, clientNonce: Data, version: Int, host: String, port: Int,
                                   direction: String) -> SymmetricKey {
-        HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: Data(token.utf8)),
+        HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: Data(token.utf8) + sharedSecret),
                                salt: serverNonce + clientNonce,
                                info: info(version: version, host: host, port: port, direction: direction),
                                outputByteCount: 32)

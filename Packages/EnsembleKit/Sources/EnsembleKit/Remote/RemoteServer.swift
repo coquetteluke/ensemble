@@ -1,4 +1,5 @@
 #if os(macOS)
+import CryptoKit
 import Foundation
 import Network
 import Synchronization
@@ -101,6 +102,9 @@ public actor RemoteServer {
         var authenticated = false
         /// Sent in the challenge; `nil` until the connection is ready.
         var serverNonce: Data?
+        /// This connection's ephemeral X25519 key; `nil` until the challenge is sent and again once the hello was
+        /// handled, so the private half never outlives the handshake.
+        var ephemeralKey: Curve25519.KeyAgreement.PrivateKey?
         /// Seals and opens every frame once the phone has proved the token.
         var channel: RemoteChannel?
         var deviceID = ""
@@ -388,7 +392,11 @@ public actor RemoteServer {
         peers[id]?.ready = true
         peers[id]?.lastSeen = Date()
         peers[id]?.serverNonce = nonce
-        send(.challenge(RemoteChallenge(serverNonce: RemoteHandshake.encode(nonce))), replyTo: nil, to: id)
+        let keyPair = RemoteHandshake.makeKeyPair()
+        peers[id]?.ephemeralKey = keyPair
+        send(.challenge(RemoteChallenge(serverNonce: RemoteHandshake.encode(nonce),
+                                        ephemeralKey: RemoteHandshake.encode(keyPair.publicKey.rawRepresentation))),
+             replyTo: nil, to: id)
         receiveNext(id)
     }
 
@@ -496,15 +504,25 @@ public actor RemoteServer {
     static let updateAppMessage = "Update Ensemble on your iPhone to connect to this Mac."
 
     private func handleHello(_ id: Int, hello: RemoteHello, replyTo: String?) {
-        guard let peer = peers[id], let serverNonce = peer.serverNonce else { return }
+        guard let peer = peers[id], let serverNonce = peer.serverNonce, let macKeyPair = peer.ephemeralKey else { return }
+        // One hello per connection: the private key is gone whatever the outcome (a failure closes the connection).
+        peers[id]?.ephemeralKey = nil
         guard hello.protocolVersion >= remoteMinimumProtocolVersion else {
             send(.error(RemoteError(.unsupportedVersion, Self.updateAppMessage)), replyTo: replyTo, to: id, thenClose: true)
+            return
+        }
+        let macKey = macKeyPair.publicKey.rawRepresentation
+        guard let phoneKey = RemoteHandshake.decode(hello.ephemeralKey, expectedCount: RemoteHandshake.keyByteCount),
+              let sharedSecret = RemoteHandshake.sharedSecret(privateKey: macKeyPair, peerKey: phoneKey) else {
+            send(.error(RemoteError(.badRequest, "This phone sent an invalid key. Update Ensemble on your iPhone.")),
+                 replyTo: replyTo, to: id, thenClose: true)
             return
         }
         guard let clientNonce = RemoteHandshake.decode(hello.clientNonce, expectedCount: RemoteHandshake.nonceByteCount),
               let proof = RemoteHandshake.decode(hello.proof, expectedCount: 32),
               clientNonce != serverNonce,
-              RemoteHandshake.isValidClientProof(proof, token: token, serverNonce: serverNonce, clientNonce: clientNonce) else {
+              RemoteHandshake.isValidClientProof(proof, token: token, serverNonce: serverNonce, clientNonce: clientNonce,
+                                                       macKey: macKey, phoneKey: phoneKey) else {
             limiter.recordFailure(peer.address)
             send(.error(RemoteError(.unauthorized, "This phone is not paired with this Mac. Scan the pairing code again.")),
                  replyTo: replyTo, to: id, thenClose: true)
@@ -524,10 +542,11 @@ public actor RemoteServer {
         peers[id]?.deviceID = String(hello.deviceID.prefix(128))
         peers[id]?.deviceName = String(hello.deviceName.prefix(128))
         // From here on every frame is sealed, starting with the welcome, so a relay cannot splice in its own.
-        peers[id]?.channel = RemoteChannel(token: token, serverNonce: serverNonce, clientNonce: clientNonce,
-                                           dialedHost: hello.dialedHost, dialedPort: hello.dialedPort, role: .server,
+        peers[id]?.channel = RemoteChannel(token: token, sharedSecret: sharedSecret, serverNonce: serverNonce,
+                                           clientNonce: clientNonce, dialedHost: hello.dialedHost, dialedPort: hello.dialedPort, role: .server,
                                            protocolVersion: min(remoteProtocolVersion, hello.protocolVersion))
-        let serverProof = RemoteHandshake.serverProof(token: token, serverNonce: serverNonce, clientNonce: clientNonce)
+        let serverProof = RemoteHandshake.serverProof(token: token, serverNonce: serverNonce, clientNonce: clientNonce,
+                                                       macKey: macKey, phoneKey: phoneKey)
         send(.welcome(RemoteWelcome(macName: config.macName, deviceID: hello.deviceID, appVersion: config.appVersion,
                                     serverProof: RemoteHandshake.encode(serverProof))),
              replyTo: replyTo, to: id)
