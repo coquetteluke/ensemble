@@ -46,7 +46,8 @@ import Testing
         store.seed(StoreSeed(sessions: [info], transcripts: [info.id: [.user(id: "u1", text: "Run the tests", date: Date())]],
                              modes: [info.id: .auto]))
         let result = await store.changeModel(haiku, for: info.id)
-        #expect(result == .needsNewSession(EngineChange(sessionEngine: "OpenCode", modelEngine: "Claude")))
+        #expect(result == .stagedForNextMessage(haiku))
+        #expect(store.stagedModel(for: info.id) == haiku)
         #expect(store.lastError == nil)
         #expect(store.session(info.id)?.info.model == gpt)
         #expect(!openCode.calls.contains { $0.hasPrefix("switch:") || $0.hasPrefix("delete:") })

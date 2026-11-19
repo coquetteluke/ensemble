@@ -29,6 +29,13 @@ extension EngineRouter: EngineModelChangeCheck {
         return EngineChange(sessionEngine: current.name, modelEngine: target.name)
     }
 
+    /// Checks whether a live session already exists on the engine serving `model` (false when no engine owns `sessionID`).
+    public func session(_ sessionID: String, runsModel model: ModelRef) async -> Bool {
+        guard let current = await registration(forSession: sessionID) else { return false }
+        let target = registration(forProvider: model.providerID)
+        return Self.sameEngine(current: current, target: target, untrustedID: untrustedFolderRegistration?.id)
+    }
+
     static func sameEngine(current: Registration, target: Registration, untrustedID: String?) -> Bool {
         current.id == target.id || (target.isFallback && current.id == untrustedID)
     }
