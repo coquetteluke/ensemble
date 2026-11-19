@@ -13,7 +13,7 @@ Owner: Luke (GitHub `coquetteluke`). Started 2026-11-17. Public, MIT licensed.
 5. Each agent can start its own subagents.
 6. Folders and projects, scheduled tasks, usage and spending per agent and provider, permission modes (Ask, Accept edits, Auto, Bypass).
 7. Session Hub: one screen that shows every session sorted into Needs you, Running, Finished, Old, and lets you answer a waiting session without opening it.
-8. iPhone remote control from anywhere (over Tailscale), set up by scanning one QR code.
+8. iPhone remote control from anywhere (through an end-to-end encrypted cloud relay by default, or direct over Tailscale and local Wi-Fi), set up by scanning one QR code.
 
 ## Non-goals
 
@@ -125,11 +125,41 @@ Create, pause, resume and delete schedules through OpenCode's schedule API: a pr
 
 ### iPhone remote
 
-- Ensemble Mac runs a RemoteServer (WebSocket for events, REST for actions) on localhost and on its Tailscale address. Off by default; the Remote Control toggle in the context panel turns it on.
-- Pairing: the Mac shows a QR code with the Tailscale host name, port and a random token. The iPhone app scans it once and remembers it. Works on any network as long as Tailscale is on.
-- The iPhone app shows the Session Hub, rooms and chats live, lets you send messages, approve or reject permission prompts, switch permission mode, pause a room, and see usage.
-- The Mac never exposes the OpenCode service itself; only the RemoteServer, with token auth.
+- Ensemble Mac runs a `RemoteServer` (WebSocket) on localhost, its Tailscale addresses, and optionally the local network, plus a `RelayHost` connection to the cloud relay (on by default when Remote Control is on).
+- Pairing: the Mac shows a QR code containing its direct hosts (if any), port, optional relay `{ url, mailbox }`, Mac name, protocol version, and a random 32-byte pairing token. With the cloud relay on, the QR code works even with no Tailscale or local network listener. The iPhone scans it once and saves it in the Keychain.
+- The iPhone app shows the Session Hub, rooms and chats live, lets you send messages, approve or reject permission prompts, answer questions and plans, switch permission mode, control rooms, and see usage.
+- The Mac never exposes the OpenCode service itself; only `RemoteServer`, authenticated with the pairing token.
+- **Protocol version 4 (end-to-end encrypted with forward secrecy):**
+  - Minimum accepted version is **4** on both Mac and phone; older versions (1 to 3) are refused before reading further frames.
+  - On connect, the Mac sends a plaintext `challenge` containing a fresh 32-byte `serverNonce` and a fresh ephemeral X25519 public key (`macKey`).
+  - The phone answers with a plaintext `hello` carrying a fresh 32-byte `clientNonce`, its own ephemeral X25519 public key (`phoneKey`), `dialedHost`, `dialedPort`, and `clientProof = HMAC-SHA256(token, serverNonce || clientNonce || macKey || phoneKey || "ensemble-client")`. The token itself never travels on the wire.
+  - Both sides compute the 32-byte X25519 `sharedSecret` and immediately discard both ephemeral private keys after the handshake, so recorded traffic stays unreadable even if the pairing token leaks later.
+  - Channel keys are derived with `HKDF-SHA256(ikm: token UTF-8 || sharedSecret, salt: serverNonce || clientNonce, info: "ensemble-remote/<version>|<direction>|<normalizedHost>|<port>", 32 bytes)` with separate keys for `client-to-server` and `server-to-client`. Direct connections bind the dialed host and port; relayed connections bind `relay:<relay host>/<mailboxID>` on port `443`, so keys for one mailbox or path cannot open frames on another.
+  - Every frame after `hello` is sealed with ChaChaPoly (`ciphertext || 16-byte tag`, AAD `ensemble-remote/<version>`, 12-byte nonce of 4 zero bytes + big-endian 64-bit per-direction counter) and sent as binary WebSocket frames. Any plaintext, modified, replayed, or out-of-order frame closes the connection.
+  - The first sealed frame is the Mac's `welcome`, carrying `serverProof = HMAC-SHA256(token, clientNonce || serverNonce || phoneKey || macKey || "ensemble-server")` and echoing the phone's `deviceID`. When a relay is active, the Mac immediately follows `welcome` with a sealed `relayDetails` frame.
 - Free Apple developer accounts sign apps for 7 days. A small launchd job rebuilds and reinstalls the iPhone app weekly when the phone is connected (same approach as CoquettePanel).
+
+### Cloud relay
+
+- **Architecture:** A TypeScript Cloudflare Worker (`relay/src/index.ts`) accepts WebSocket upgrades on `/v1/mailbox/<id>/host`, `/v1/mailbox/<id>/phone`, and `/v1/mailbox/<id>/data/<conn>` (rejecting other paths with `404` and non-upgrades with `426`) and routes them to a SQLite-backed `Mailbox` Durable Object (`relay/src/mailbox.ts`) per paired Mac, plus a `ClaimLimiter` Durable Object (`relay/src/claim-limiter.ts`) for per-address claim throttling. It runs on the Workers free plan using the WebSocket Hibernation API (`ctx.acceptWebSocket`, tags, `serializeAttachment`, and a `"ping"` to `"pong"` text auto-response) so idle Macs cost no duration while connected.
+- **Identity and proofs:**
+  - **Mailbox ID:** 32 random bytes, base64url (43 chars), stored in the Mac Keychain alongside the pairing token. It is a routing address in the URL path, not a secret.
+  - **Host key:** Per-mailbox Ed25519 key pair in the Mac Keychain. On first connection the Mac claims the mailbox (`claim` frame with `hostKey`, `accessKey`, and Ed25519 signature); later connections prove ownership (`auth`) by signing `ensemble-relay-host|<id>|<nonce>`. If a mailbox was cleaned up after 90 days idle or lost in a redeploy, the Mac silently reclaims the same ID with the same key; if held by a different key (`4009` / `4001`), the Mac marks it taken and rotates to a new identity.
+  - **Access key and phone proof:** `accessKey = HKDF-SHA256(ikm: token UTF-8, salt: "ensemble-relay", info: "ensemble-relay-access", 32 bytes)`. One-way, so the relay never learns the token. Phones must prove knowledge via `HMAC-SHA256(accessKey, "ensemble-relay-phone|<id>|<nonce>")` before the relay notifies the Mac, turning strangers away at the edge.
+- **Forwarding and connection racing:**
+  - The Mac keeps one hibernated control socket (`/host`). When an authorized phone connects to `/phone`, the relay assigns a 16-byte base64url `<conn>` ID, replies `waiting`, and sends `phone` (`conn` + single-use 32-byte `token`) to the Mac.
+  - The Mac opens `/data/<conn>`, sends `data` with that token, and hands the socket to `RemoteServer.adopt` (isolated under address `relay:<conn>` with a separate pending handshake budget per relay identity). The relay sends `paired` to the phone and forwards all subsequent frames (binary or text) unchanged between the two sockets; closing either side closes the other. Any phone frame before `paired` closes the phone with `4002`.
+  - The phone races its direct hosts and the relay together. A direct connection wins if it completes before or within 300 ms of the relay; otherwise the relay wins and losing attempts are cancelled cleanly.
+- **Size caps and per-mailbox limits:**
+  - Frame caps: 1 MiB phone to Mac, 16 MiB Mac to phone (both under Cloudflare's 32 MiB received-message cap; oversized frames close both sides with `4013`). Control frames are JSON text up to 2 KiB on a strict fixed schema.
+  - Concurrency and timeouts: up to 8 phones per mailbox, 3 waiting for a data socket, and 3 unproven phone sockets per source address; 10 s challenge timeout and 15 s pairing/data-token timeout (close `4008`).
+  - Daily budget: 40,000 incoming messages and 200 MiB per mailbox per UTC day (counts sit in socket attachments across hibernation and flush to storage at most once a minute and on close). Overspending closes paired sockets with `4029` and sends a `limit` frame to waiting phones and the Mac's control socket.
+  - Abuse protection: 10 mailbox claims per normalized IP per hour (`ClaimLimiter`). When a relayed phone fails the inner protocol 4 handshake, the Mac reports `badHandshake` with `<conn>`, and the Durable Object blocks that phone's hashed normalized IP (full IPv4, `/64` for IPv6) for 15 minutes after 5 failures without ever exposing phone IPs to the Mac. Unused mailboxes are deleted by alarm after 90 days idle.
+- **Zero-rescan relay migration:**
+  - The Mac sends its current relay URL and mailbox ID inside the encrypted channel (`relayDetails`) after `welcome` and whenever the active relay changes.
+  - The phone saves the new `relay` and keeps its last working relay in `previousRelay` as a fallback until it connects once through the new one (and clears an unproven target if the Mac rolls back).
+  - When the Mac switches relay addresses (for example moving off the default `wss://relay.coquettemc.com` to a self-hosted relay or a new domain), it keeps the previous relay host active for 30 days so returning phones learn the new relay details without rescanning the QR code.
+- **Privacy and self-hosting:** Logging and Worker observability are off. See `docs/reference/relay-privacy.md` for what Cloudflare can and cannot see, `docs/reference/relay-notes.md` for platform limits, and `relay/README.md` to deploy your own relay on the Workers free plan.
 
 ## Project layout
 
@@ -141,11 +171,12 @@ Packages/EnsembleKit/        shared Swift package (macOS + iOS)
     OpenCode/                OpenCodeClient (REST), EventStream (SSE), DTOs
     Engine/                  EngineManager (service start, health, version)
     Rooms/                   RoomEngine, modes, relay
-    Remote/                  RemoteProtocol (shared by server and iPhone client)
+    Remote/                  RemoteProtocol, RemoteAuth, RemoteChannel, RemoteServer, RemoteClient, RelayHost, RelayDialer
     UI/                      shared SwiftUI views (transcript, tool cards, theme)
   Tests/EnsembleKitTests/
-Apps/Mac/                    Ensemble.app (window, sidebar, panels, settings, RemoteServer)
+Apps/Mac/                    Ensemble.app (window, sidebar, panels, settings, RemoteControlController)
 Apps/iOS/                    Ensemble Remote
+relay/                       Cloudflare Worker + Mailbox / ClaimLimiter Durable Objects (TypeScript)
 tools/mock-llm/              OpenAI-compatible mock model server for tests (scripted replies and tool calls)
 scripts/                     build, test, install helpers
 docs/                        DESIGN.md, PLAN.md, PROGRESS.md, reference/
@@ -163,6 +194,6 @@ docs/                        DESIGN.md, PLAN.md, PROGRESS.md, reference/
 - Native SwiftUI for Mac and iPhone, sharing EnsembleKit.
 - OpenCode 2.3.x as the engine, installed with Homebrew, not bundled.
 - Team-with-a-lead as the default multi-agent mode; Debate and Round table also included.
-- Remote over Tailscale (already on his Mac and iPhone) instead of a cloud relay.
+- Started with remote over Tailscale (already on his Mac and iPhone); on 2026-11-18 Luke approved adding the end-to-end encrypted Cloudflare Workers cloud relay on by default alongside direct/Tailscale.
 - XcodeGen project file so parallel workers do not fight over the Xcode project.
 - Commits use GitHub's no-reply email so his real address stays off a public repo.
