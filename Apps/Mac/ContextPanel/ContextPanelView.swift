@@ -65,12 +65,15 @@ struct ContextPanelView: View {
         VStack(alignment: .leading, spacing: 0) {
             sectionHeader("Environment")
             PanelRow(glyph: .laptop) {
-                Text("This computer").foregroundStyle(theme.textPrimary)
+                Text("This computer")
+                    .foregroundStyle(theme.textPrimary)
+                    .lineLimit(1)
             } trailing: {
                 Button("Save") {}
                     .buttonStyle(.plain)
                     .underline()
                     .foregroundStyle(theme.textPrimary)
+                    .fixedSize()
                     .help("Save this environment")
             }
             .help("Local session, \(Self.hostName)")
@@ -92,10 +95,13 @@ struct ContextPanelView: View {
             }
 
             PanelRow(glyph: .monitor) {
-                Text("Remote Control").foregroundStyle(theme.textPrimary)
+                Text("Remote Control")
+                    .foregroundStyle(theme.textPrimary)
+                    .lineLimit(1)
             } trailing: {
                 Toggle(isOn: $remoteControl) { EmptyView() }
                     .toggleStyle(CompactSwitchStyle())
+                    .fixedSize()
                     .accessibilityLabel("Remote Control")
             }
             .help("Let the Ensemble iPhone app control this Mac over Tailscale")
@@ -116,12 +122,15 @@ struct ContextPanelView: View {
         let reserve = breakdown.categories.filter { $0.key == "buffer" || $0.key == "free" }
         return VStack(alignment: .leading, spacing: 0) {
             sectionHeader("Context")
-            HStack {
+            HStack(spacing: theme.z(8)) {
                 Text("\(Format.wholePercent(breakdown.fractionUsed)) used")
                     .foregroundStyle(theme.textPrimary)
-                Spacer()
+                    .lineLimit(1)
+                Spacer(minLength: theme.z(8))
                 Text("\(Format.tokens(breakdown.usedTokens)) / \(Format.tokens(breakdown.limitTokens))")
                     .foregroundStyle(theme.textSecondary)
+                    .lineLimit(1)
+                    .fixedSize()
             }
             .font(theme.font(size: 13))
             .monospacedDigit()
@@ -161,7 +170,7 @@ struct ContextPanelView: View {
                 .overlay {
                     if category.key == "free" {
                         RoundedRectangle(cornerRadius: theme.z(2.5), style: .continuous)
-                            .strokeBorder(theme.isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.06), lineWidth: 1)
+                            .strokeBorder(theme.isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.1), lineWidth: 1)
                     }
                 }
             Color.clear.frame(width: theme.z(13), height: 1)
@@ -171,7 +180,7 @@ struct ContextPanelView: View {
                 .overlay(alignment: .bottom) {
                     if Self.dottedKeys.contains(category.key) {
                         DottedLine()
-                            .stroke(theme.textSecondary.opacity(0.75), style: StrokeStyle(lineWidth: 1, dash: [1, 1.5]))
+                            .stroke(theme.textSecondary.opacity(0.75), style: StrokeStyle(lineWidth: theme.z(1), dash: [theme.z(1), theme.z(1.5)]))
                             .frame(height: 1)
                             .offset(y: theme.z(0.5))
                     }
@@ -179,10 +188,13 @@ struct ContextPanelView: View {
             Spacer(minLength: theme.z(8))
             Text(Format.tokens(category.tokens))
                 .foregroundStyle(theme.textSecondary)
+                .lineLimit(1)
                 .fixedSize()
             Text(Format.percent(category.tokens, of: limit))
                 .foregroundStyle(theme.textPrimary)
-                .frame(width: theme.z(54), alignment: .trailing)
+                .lineLimit(1)
+                .fixedSize()
+                .frame(minWidth: theme.z(54), alignment: .trailing)
         }
         .font(theme.font(size: 13))
         .monospacedDigit()
@@ -193,9 +205,16 @@ struct ContextPanelView: View {
     static let dottedKeys: Set<String> = ["mcp", "mcpTools", "skills", "mcpInstructions", "memory", "agents"]
 
     private struct DisclosureGroupInfo {
+        struct Item: Identifiable {
+            let id: String
+            let name: String
+            let value: String
+            let sessionID: String?
+        }
+
         let title: String
         let count: Int
-        let items: [(name: String, value: String, sessionID: String?)]
+        let items: [Item]
     }
 
     private var disclosureGroups: [DisclosureGroupInfo] {
@@ -203,19 +222,19 @@ struct ContextPanelView: View {
         let connected = store.connectors.filter { $0.state == .connected && $0.toolCount > 0 }
         if !connected.isEmpty {
             groups.append(DisclosureGroupInfo(title: "MCP tools", count: connected.reduce(0) { $0 + $1.toolCount },
-                                              items: connected.map { ($0.name, "\($0.toolCount)", nil) }))
+                                              items: connected.map { .init(id: "mcp:\($0.id)", name: $0.name, value: "\($0.toolCount)", sessionID: nil) }))
         }
         if let session {
             let children = store.children(of: session.id)
             if !children.isEmpty {
                 groups.append(DisclosureGroupInfo(title: "Subagents", count: children.count,
-                                                  items: children.map { ($0.title, Format.tokens($0.usage.inputTokens + $0.usage.outputTokens), $0.id) }))
+                                                  items: children.map { .init(id: "sub:\($0.id)", name: $0.title, value: Format.tokens($0.usage.inputTokens + $0.usage.outputTokens), sessionID: $0.id) }))
             }
             let agentIDs = store.sessionAgentIDs[session.id] ?? []
             if agentIDs.count > 1 {
                 let agents = agentIDs.compactMap { store.agents[$0] }
                 groups.append(DisclosureGroupInfo(title: "Agents", count: agents.count,
-                                                  items: agents.map { ($0.name, $0.model.id, nil) }))
+                                                  items: agents.map { .init(id: "agent:\($0.id.uuidString)", name: $0.name, value: $0.model.id, sessionID: nil) }))
             }
         }
         return groups
@@ -232,9 +251,14 @@ struct ContextPanelView: View {
                         .rotationEffect(.degrees(open ? 90 : 0))
                         .frame(width: theme.z(10))
                     Color.clear.frame(width: theme.z(13), height: 1)
-                    Text(group.title).foregroundStyle(theme.textSecondary)
+                    Text(group.title)
+                        .foregroundStyle(theme.textSecondary)
+                        .lineLimit(1)
                     Spacer(minLength: theme.z(8))
-                    Text("\(group.count)").foregroundStyle(theme.textTertiary)
+                    Text("\(group.count)")
+                        .foregroundStyle(theme.textTertiary)
+                        .lineLimit(1)
+                        .fixedSize()
                 }
                 .font(theme.font(size: 13))
                 .monospacedDigit()
@@ -244,23 +268,10 @@ struct ContextPanelView: View {
             .buttonStyle(.plain)
 
             if open {
-                ForEach(Array(group.items.enumerated()), id: \.offset) { _, item in
-                    Button {
+                ForEach(group.items) { item in
+                    DisclosureItemRow(name: item.name, value: item.value, clickable: item.sessionID != nil) {
                         if let id = item.sessionID { store.select(id) }
-                    } label: {
-                        HStack {
-                            Text(item.name).foregroundStyle(theme.textSecondary).lineLimit(1)
-                            Spacer(minLength: theme.z(8))
-                            Text(item.value).foregroundStyle(theme.textTertiary)
-                        }
-                        .font(theme.font(size: 12.5))
-                        .monospacedDigit()
-                        .padding(.leading, theme.z(23))
-                        .frame(height: theme.z(22))
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
-                    .disabled(item.sessionID == nil)
                 }
             }
         }
@@ -272,7 +283,22 @@ struct ContextPanelView: View {
         let files = session?.changedFiles ?? []
         let shown = showAllOutputs ? files : Array(files.prefix(5))
         return VStack(alignment: .leading, spacing: 0) {
-            sectionHeader("Outputs")
+            HStack(spacing: theme.z(8)) {
+                Text("Outputs")
+                    .foregroundStyle(theme.textPrimary)
+                    .lineLimit(1)
+                Spacer(minLength: theme.z(8))
+                if !files.isEmpty {
+                    Text("\(files.count) \(files.count == 1 ? "file" : "files")")
+                        .foregroundStyle(theme.textSecondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+            }
+            .font(theme.font(size: 13))
+            .frame(height: theme.z(30))
+
             if files.isEmpty {
                 Text("No files changed yet")
                     .font(theme.font(size: 13))
@@ -280,31 +306,20 @@ struct ContextPanelView: View {
                     .frame(height: theme.z(31))
             }
             ForEach(shown) { file in
-                Button {
+                OutputFileRow(file: file, baseDirectory: session?.directory ?? "") {
                     diffFile = file
-                } label: {
-                    PanelRow(glyph: Glyph.kind(forPath: file.path)) {
-                        Text((file.path as NSString).lastPathComponent)
-                            .foregroundStyle(file.kind == .deleted ? theme.textTertiary : theme.textPrimary)
-                            .strikethrough(file.kind == .deleted)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .help("\(Format.relativePath(file.path, base: session?.directory ?? "")), +\(file.additions) -\(file.deletions)")
                 .popover(item: diffBinding(for: file), arrowEdge: .leading) { file in
                     FileDiffPopover(file: file, baseDirectory: session?.directory ?? "")
                         .ensembleTheme()
                 }
             }
             if files.count > 5 {
-                Button(showAllOutputs ? "Show less" : "Show more") { showAllOutputs.toggle() }
+                Button(showAllOutputs ? "Show fewer" : "Show all \(files.count)") { showAllOutputs.toggle() }
                     .buttonStyle(.plain)
-                    .font(theme.font(size: 13))
+                    .font(theme.font(size: 12))
                     .foregroundStyle(theme.textSecondary)
-                    .frame(height: theme.z(31))
+                    .frame(height: theme.z(28))
             }
         }
         .padding(.top, theme.z(8))
@@ -328,14 +343,24 @@ struct ContextPanelView: View {
                 withAnimation(.easeOut(duration: 0.15)) { connectorsExpanded = !isConnectorsExpanded }
             } label: {
                 HStack(spacing: theme.z(6)) {
-                    Text("Connectors").foregroundStyle(theme.textPrimary)
+                    Text("Connectors")
+                        .foregroundStyle(theme.textPrimary)
+                        .lineLimit(1)
                     Glyph(isConnectorsExpanded ? .chevronDown : .chevronRight, size: 13)
                     Spacer(minLength: theme.z(8))
                     if !isConnectorsExpanded {
                         if toReconnect > 0 {
-                            Text("\(toReconnect) to reconnect").foregroundStyle(theme.textSecondary)
+                            Text("\(toReconnect) to reconnect")
+                                .foregroundStyle(theme.textSecondary)
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .fixedSize()
                         } else if !connectors.isEmpty {
-                            Text("\(connectors.count) connected").foregroundStyle(theme.textSecondary)
+                            Text("\(connectors.count) connected")
+                                .foregroundStyle(theme.textSecondary)
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .fixedSize()
                         }
                     }
                 }
@@ -356,11 +381,11 @@ struct ContextPanelView: View {
                     connectorRow(connector)
                 }
                 if connectors.count > 3 {
-                    Button(showAllConnectors ? "Show less" : "Show more") { showAllConnectors.toggle() }
+                    Button(showAllConnectors ? "Show fewer" : "Show all \(connectors.count)") { showAllConnectors.toggle() }
                         .buttonStyle(.plain)
-                        .font(theme.font(size: 13))
+                        .font(theme.font(size: 12))
                         .foregroundStyle(theme.textSecondary)
-                        .frame(height: theme.z(32))
+                        .frame(height: theme.z(28))
                 }
             }
         }
@@ -381,27 +406,35 @@ struct ContextPanelView: View {
             case .needsAuth:
                 Button("Authenticate") {}
                     .buttonStyle(.plain)
-                    .font(theme.font(size: 13))
+                    .font(theme.font(size: 12.5, weight: .medium))
                     .foregroundStyle(theme.warning)
+                    .underline()
+                    .lineLimit(1)
+                    .fixedSize()
                     .help("Sign in to \(connector.name)")
             case .failed:
                 HStack(spacing: theme.z(6)) {
-                    Text("Failed").foregroundStyle(theme.textSecondary)
+                    Text("Failed").foregroundStyle(theme.textSecondary).lineLimit(1)
                     StatusDot(theme.danger)
                 }
-                .font(theme.font(size: 13))
+                .font(theme.font(size: 12.5))
+                .fixedSize()
             case .connected:
                 HStack(spacing: theme.z(6)) {
-                    Text("\(connector.toolCount) tools").foregroundStyle(theme.textTertiary)
+                    Text("\(connector.toolCount) tools").foregroundStyle(theme.textTertiary).lineLimit(1)
                     StatusDot(theme.success)
                 }
                 .font(theme.font(size: 12.5))
+                .monospacedDigit()
+                .fixedSize()
             case .connecting:
                 Spinner(size: 10)
             case .disabled:
                 Text("Off")
-                    .font(theme.font(size: 13))
+                    .font(theme.font(size: 12.5))
                     .foregroundStyle(theme.textTertiary)
+                    .lineLimit(1)
+                    .fixedSize()
             }
         }
         .frame(height: theme.z(32))
@@ -413,7 +446,90 @@ struct ContextPanelView: View {
         Text(title)
             .font(theme.font(size: 13))
             .foregroundStyle(theme.textPrimary)
+            .lineLimit(1)
             .frame(height: theme.z(30))
+    }
+}
+
+private struct DisclosureItemRow: View {
+    let name: String
+    let value: String
+    let clickable: Bool
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: theme.z(8)) {
+                Text(name)
+                    .foregroundStyle(theme.textSecondary)
+                    .lineLimit(1)
+                Spacer(minLength: theme.z(8))
+                Text(value)
+                    .foregroundStyle(theme.textTertiary)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            .font(theme.font(size: 12.5))
+            .monospacedDigit()
+            .padding(.leading, theme.z(23))
+            .padding(.trailing, theme.z(6))
+            .frame(height: theme.z(22))
+            .background(
+                RoundedRectangle(cornerRadius: theme.z(5), style: .continuous)
+                    .fill(clickable && hovering ? theme.hover : .clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!clickable)
+        .padding(.trailing, theme.z(-6))
+        .onHover { hovering = $0 }
+    }
+}
+
+private struct OutputFileRow: View {
+    let file: FileChange
+    let baseDirectory: String
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            PanelRow(glyph: Glyph.kind(forPath: file.path)) {
+                Text((file.path as NSString).lastPathComponent)
+                    .foregroundStyle(file.kind == .deleted ? theme.textTertiary : theme.textPrimary)
+                    .strikethrough(file.kind == .deleted)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            } trailing: {
+                if file.additions > 0 || file.deletions > 0 {
+                    HStack(spacing: theme.z(4)) {
+                        if file.additions > 0 {
+                            Text("+\(file.additions)").foregroundStyle(theme.diffAddText)
+                        }
+                        if file.deletions > 0 {
+                            Text("-\(file.deletions)").foregroundStyle(theme.diffRemoveText)
+                        }
+                    }
+                    .font(theme.font(size: 11.5).monospacedDigit())
+                    .lineLimit(1)
+                    .fixedSize()
+                }
+            }
+            .padding(.horizontal, theme.z(6))
+            .background(
+                RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                    .fill(hovering ? theme.hover : .clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, theme.z(-6))
+        .onHover { hovering = $0 }
+        .help("\(Format.relativePath(file.path, base: baseDirectory)), +\(file.additions) -\(file.deletions)")
     }
 }
 
@@ -488,16 +604,19 @@ struct ContextBar: View {
         GeometryReader { proxy in
             let width = proxy.size.width
             let limit = max(1, breakdown.limitTokens)
-            HStack(spacing: theme.z(1)) {
+            let gap = theme.z(1)
+            let minSegment = theme.z(3)
+            HStack(spacing: gap) {
                 ForEach(segments) { segment in
                     RoundedRectangle(cornerRadius: theme.z(2), style: .continuous)
                         .fill(theme.contextColor(for: segment.key == "other" ? "skills" : segment.key))
-                        .frame(width: max(3, CGFloat(segment.tokens) / CGFloat(limit) * width - 1))
+                        .frame(width: max(minSegment, CGFloat(segment.tokens) / CGFloat(limit) * width - gap))
                 }
                 Spacer(minLength: 0)
             }
-            .frame(width: width, alignment: .leading)
+            .frame(width: width, height: theme.z(4), alignment: .leading)
             .background(Capsule().fill(theme.track))
+            .clipShape(Capsule())
         }
         .frame(height: theme.z(4))
         .accessibilityElement()
@@ -538,8 +657,8 @@ struct FileDiffPopover: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: theme.z(8))
-                Text("+\(file.additions)").foregroundStyle(theme.diffAddText)
-                Text("-\(file.deletions)").foregroundStyle(theme.diffRemoveText)
+                Text("+\(file.additions)").foregroundStyle(theme.diffAddText).fixedSize()
+                Text("-\(file.deletions)").foregroundStyle(theme.diffRemoveText).fixedSize()
             }
             .font(theme.font(size: 12, weight: .medium).monospacedDigit())
             .padding(theme.z(12))

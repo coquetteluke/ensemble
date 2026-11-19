@@ -61,8 +61,7 @@ struct RoomView: View {
                     RoomComposer(engine: engine, models: models, draft: $draft, recipients: $recipients, snapshotDraft: snapshotDraft)
                     RoomStatusLine(engine: engine)
                 }
-                .frame(maxWidth: theme.z(Self.columnWidth + 24))
-                .padding(.horizontal, theme.z(20))
+                .modifier(AdaptiveInsetModifier(wide: 20, narrow: 10, maxContentWidth: Self.columnWidth + 24))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(theme.background)
@@ -147,8 +146,8 @@ struct RoomView: View {
                     // Pinned above the thread so it stays in view however far the board scrolls.
                     ReplayBanner(step: step, count: engine.state.board.count) { replayBinding.wrappedValue = nil }
                         .frame(maxWidth: theme.z(RoomView.columnWidth))
-                        .padding(.horizontal, theme.z(32))
                         .padding(.top, theme.z(6))
+                        .modifier(AdaptiveInsetModifier(wide: 32, narrow: 16))
                 }
                 RoomScroll(scrollKey: scrollKey, roomID: engine.state.id) {
                     RoomBoardContent(controller: controller, engine: engine, models: models, replayStep: step)
@@ -373,10 +372,9 @@ struct RoomScroll<Content: View>: View {
     private var padded: some View {
         content
             .frame(maxWidth: theme.z(RoomView.columnWidth), alignment: .leading)
-            .padding(.horizontal, theme.z(32))
             .padding(.top, theme.z(14))
             .padding(.bottom, theme.z(22))
-            .frame(maxWidth: .infinity)
+            .modifier(AdaptiveInsetModifier(wide: 32, narrow: 16))
     }
 }
 
@@ -396,9 +394,10 @@ struct RoomHeader: View {
                 if leadingInset > 0 { Color.clear.frame(width: leadingInset, height: 1) }
                 // Narrow windows (or a large zoom) first drop the cost and shorten the title, then show icon-only controls.
                 ViewThatFits(in: .horizontal) {
-                    row(compact: false, showsCost: true, titleLimit: nil)
-                    row(compact: false, showsCost: false, titleLimit: theme.z(180))
-                    row(compact: true, showsCost: false, titleLimit: nil)
+                    row(compact: false, showsCost: true, showsMode: true, compactPhase: false, titleLimit: nil, minTitleWidth: nil)
+                    row(compact: false, showsCost: false, showsMode: true, compactPhase: false, titleLimit: theme.z(180), minTitleWidth: nil)
+                    row(compact: true, showsCost: false, showsMode: true, compactPhase: false, titleLimit: nil, minTitleWidth: theme.z(100))
+                    row(compact: true, showsCost: false, showsMode: false, compactPhase: true, titleLimit: nil, minTitleWidth: nil)
                 }
             }
             .padding(.leading, theme.z(20))
@@ -415,23 +414,26 @@ struct RoomHeader: View {
         .background(theme.background)
     }
 
-    private func row(compact: Bool, showsCost: Bool, titleLimit: CGFloat?) -> some View {
+    private func row(compact: Bool, showsCost: Bool, showsMode: Bool, compactPhase: Bool,
+                     titleLimit: CGFloat?, minTitleWidth: CGFloat?) -> some View {
         let state = engine.state
-        return HStack(spacing: theme.z(10)) {
-            title(state.spec.title, limit: titleLimit, flexible: compact)
-            HStack(spacing: theme.z(4)) {
-                Image(systemName: state.runMode.symbolName).font(theme.font(size: 10.5))
-                if !compact { Text(state.runMode.label) }
+        return HStack(spacing: theme.z(compactPhase ? 6 : 10)) {
+            title(state.spec.title, limit: titleLimit, minWidth: minTitleWidth, flexible: compact)
+            if showsMode {
+                HStack(spacing: theme.z(4)) {
+                    Image(systemName: state.runMode.symbolName).font(theme.font(size: 10.5))
+                    if !compact { Text(state.runMode.label).lineLimit(1) }
+                }
+                .font(theme.font(size: 11.5, weight: .medium))
+                .foregroundStyle(theme.textSecondary)
+                .padding(.horizontal, theme.z(7))
+                .frame(height: theme.z(20))
+                .background(RoundedRectangle(cornerRadius: theme.z(5), style: .continuous).fill(theme.elevated))
+                .overlay(RoundedRectangle(cornerRadius: theme.z(5), style: .continuous).strokeBorder(theme.border))
+                .help(state.runMode.label)
+                .fixedSize()
             }
-            .font(theme.font(size: 11.5, weight: .medium))
-            .foregroundStyle(theme.textSecondary)
-            .padding(.horizontal, theme.z(7))
-            .frame(height: theme.z(20))
-            .background(RoundedRectangle(cornerRadius: theme.z(5), style: .continuous).fill(theme.elevated))
-            .overlay(RoundedRectangle(cornerRadius: theme.z(5), style: .continuous).strokeBorder(theme.border))
-            .help(state.runMode.label)
-            .fixedSize()
-            phase.fixedSize()
+            phase(compact: compactPhase).fixedSize()
             if showsCost {
                 Text(Format.usd(state.totalUsage.costUSD))
                     .font(theme.font(size: 12).monospacedDigit())
@@ -439,18 +441,20 @@ struct RoomHeader: View {
                     .help("\(Format.tokens(state.totalUsage.inputTokens + state.totalUsage.outputTokens)) tokens across the room")
                     .fixedSize()
             }
-            Spacer(minLength: theme.z(12))
+            Spacer(minLength: theme.z(compactPhase ? 6 : 12))
             controls(compact: compact).fixedSize()
         }
     }
 
-    @ViewBuilder private func title(_ text: String, limit: CGFloat?, flexible: Bool) -> some View {
+    @ViewBuilder private func title(_ text: String, limit: CGFloat?, minWidth: CGFloat?, flexible: Bool) -> some View {
         let label = Text(text)
             .font(theme.font(size: 13, weight: .semibold))
             .foregroundStyle(theme.textPrimary)
             .lineLimit(1)
             .help(text)
-        if flexible {
+        if let minWidth {
+            label.truncationMode(.tail).frame(minWidth: minWidth, alignment: .leading)
+        } else if flexible {
             label.truncationMode(.tail)
         } else if let limit {
             label.truncationMode(.tail).frame(maxWidth: limit, alignment: .leading)
@@ -459,23 +463,63 @@ struct RoomHeader: View {
         }
     }
 
-    @ViewBuilder private var phase: some View {
+    private func phase(compact: Bool) -> some View {
         let state = engine.state
-        HStack(spacing: theme.z(6)) {
+        let info = phaseInfo(state, compact: compact)
+        return HStack(spacing: theme.z(6)) {
             if state.isPaused {
-                Image(systemName: "pause.circle.fill").font(theme.font(size: 11)).foregroundStyle(theme.warning)
-                Text("Paused").foregroundStyle(theme.warning)
+                Image(systemName: "pause.circle.fill")
+                    .font(theme.font(size: 11))
+                    .foregroundStyle(theme.warning)
             } else if state.pendingDecision != nil || state.phase == .verdict {
-                Circle().fill(theme.accent).frame(width: theme.z(6), height: theme.z(6))
-                Text(state.pendingDecision != nil ? "Needs you" : state.phase.label).foregroundStyle(theme.accent)
+                Circle()
+                    .fill(theme.accent)
+                    .frame(width: theme.z(6), height: theme.z(6))
             } else if state.phase.isRunning {
                 Spinner(size: 10, color: theme.accent)
-                Text(state.phase.label).foregroundStyle(theme.textSecondary)
-            } else {
-                Text(state.phase.label).foregroundStyle(theme.textTertiary)
+            }
+            Text(info.text)
+                .foregroundStyle(info.color)
+                .lineLimit(1)
+        }
+        .font(theme.font(size: 12, weight: info.pill ? .medium : .regular).monospacedDigit())
+        .padding(.horizontal, info.pill ? theme.z(8) : 0)
+        .frame(height: info.pill ? theme.z(20) : nil)
+        .background {
+            if info.pill {
+                Capsule().fill(info.pillFill)
             }
         }
-        .font(theme.font(size: 12))
+        .help(state.phase.label)
+    }
+
+    private func phaseInfo(_ state: RoomState, compact: Bool) -> (text: String, color: Color, pill: Bool, pillFill: Color) {
+        if state.isPaused {
+            return ("Paused", theme.warning, true, theme.warning.opacity(theme.isDark ? 0.14 : 0.12))
+        }
+        if state.pendingDecision != nil {
+            return ("Needs you", theme.accent, true, theme.accent.opacity(theme.isDark ? 0.15 : 0.11))
+        }
+        if state.phase == .verdict {
+            return (state.phase.label, theme.accent, true, theme.accent.opacity(theme.isDark ? 0.15 : 0.11))
+        }
+        if state.phase == .debating, let debate = state.debate {
+            let label = compact ? "R\(min(debate.round, debate.totalRounds))/\(debate.totalRounds)" : "Round \(min(debate.round, debate.totalRounds))/\(debate.totalRounds)"
+            return (label, theme.textSecondary, true, theme.hover)
+        }
+        if state.phase == .discussing, let rt = state.roundTable {
+            let label = compact ? "R\(min(rt.round, rt.maxRounds))/\(rt.maxRounds)" : "Round \(min(rt.round, rt.maxRounds))/\(rt.maxRounds)"
+            return (label, theme.textSecondary, true, theme.hover)
+        }
+        if state.phase == .working, !state.assignments.isEmpty {
+            let done = state.assignments.filter { [.approved, .merged].contains($0.status) }.count
+            let label = compact ? "\(done)/\(state.assignments.count)" : "Working \(done)/\(state.assignments.count)"
+            return (label, theme.textSecondary, true, theme.hover)
+        }
+        if state.phase.isRunning {
+            return (state.phase.label, theme.textSecondary, false, .clear)
+        }
+        return (state.phase.label, theme.textTertiary, false, .clear)
     }
 
     @ViewBuilder private func controls(compact: Bool) -> some View {
@@ -542,9 +586,11 @@ struct AgentChipRow: View {
             .scrollIndicators(.never)
             if let follow {
                 FollowToggle(isOn: follow)
+                    .fixedSize()
             }
             if showsTabs {
                 RoomTabs(tab: $tab)
+                    .fixedSize()
             }
         }
         .padding(.horizontal, theme.z(20))
@@ -564,32 +610,35 @@ struct AgentChip: View {
     @State private var hovering = false
 
     var body: some View {
+        let agentColor = Color(hexString: agent.colorHex)
         Button(action: action) {
             HStack(spacing: theme.z(6)) {
                 AgentDot(hex: agent.colorHex, size: 8)
                 Text(agent.name)
                     .font(theme.font(size: 12.5, weight: .semibold))
                     .foregroundStyle(theme.textPrimary)
+                    .lineLimit(1)
                 Text(model)
                     .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textTertiary)
                     .lineLimit(1)
                 if isLead { RoomTag(text: leadLabel, color: theme.accent) }
-                ActivityBadge(activity: activity, color: Color(hexString: agent.colorHex))
+                ActivityBadge(activity: activity, color: agentColor)
             }
             .padding(.horizontal, theme.z(10))
             .frame(height: theme.z(28))
             .background(
                 RoundedRectangle(cornerRadius: theme.z(8), style: .continuous)
-                    .fill(selected ? theme.selection : (hovering ? theme.elevatedHover : theme.elevated))
+                    .fill(selected ? agentColor.opacity(theme.isDark ? 0.14 : 0.10) : (hovering ? theme.elevatedHover : theme.elevated))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: theme.z(8), style: .continuous)
-                    .strokeBorder(selected ? Color(hexString: agent.colorHex).opacity(0.8) : theme.border, lineWidth: 1)
+                    .strokeBorder(selected ? agentColor.opacity(0.85) : theme.border, lineWidth: selected ? theme.z(1.5) : 1)
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .fixedSize()
         .onHover { hovering = $0 }
         .help("\(agent.name): \(activity.label). Click to see its session.")
         .accessibilityLabel("\(agent.name), \(model), \(activity.label)")
@@ -616,6 +665,7 @@ private struct RoomTabs: View {
             Text(title)
                 .font(theme.font(size: 12, weight: .medium))
                 .foregroundStyle(tab == value ? theme.textPrimary : theme.textSecondary)
+                .lineLimit(1)
                 .padding(.horizontal, theme.z(10))
                 .frame(height: theme.z(22))
                 .background(RoundedRectangle(cornerRadius: theme.z(6), style: .continuous).fill(tab == value ? theme.selection : .clear))
@@ -805,13 +855,16 @@ struct RoomStatusLine: View {
                 Image(systemName: "chart.bar").font(theme.font(size: 10.5))
                 Text("\(Format.usd(usage.costUSD))  \(Format.tokens(usage.inputTokens + usage.outputTokens)) tokens")
                     .monospacedDigit()
+                    .lineLimit(1)
             }
             .help("Spend across the room's agents")
-            Spacer(minLength: 8)
+            Spacer(minLength: theme.z(8))
             HStack(spacing: theme.z(5)) {
                 Image(systemName: state.spec.permissionMode.symbolName).font(theme.font(size: 10.5))
                 Text(state.spec.permissionMode.label)
+                    .lineLimit(1)
             }
+            .fixedSize()
             .foregroundStyle(state.spec.permissionMode.isDangerous ? theme.danger : theme.textTertiary)
         }
         .font(theme.font(size: 11.5))

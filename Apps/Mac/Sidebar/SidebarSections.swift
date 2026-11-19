@@ -43,6 +43,7 @@ struct SidebarSectionHeader<Accessory: View>: View {
         Text(title)
             .font(theme.font(size: 11.5, weight: .medium))
             .foregroundStyle(theme.textTertiary)
+            .lineLimit(1)
     }
 }
 
@@ -62,6 +63,7 @@ struct SidebarGroupHeader: View {
     var onNew: (() -> Void)?
     @Environment(\.theme) private var theme
     @State private var hovering = false
+    @State private var newHovering = false
 
     var body: some View {
         HStack(spacing: theme.z(6)) {
@@ -73,6 +75,7 @@ struct SidebarGroupHeader: View {
                         .font(theme.font(size: 12, weight: .semibold))
                         .foregroundStyle(theme.textSecondary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
@@ -85,15 +88,21 @@ struct SidebarGroupHeader: View {
                 Button(action: onNew) {
                     Image(systemName: "plus")
                         .font(theme.font(size: 11, weight: .semibold))
-                        .foregroundStyle(theme.textSecondary)
+                        .foregroundStyle(newHovering ? theme.textPrimary : theme.textSecondary)
                         .frame(width: theme.z(20), height: theme.z(20))
+                        .background(
+                            RoundedRectangle(cornerRadius: theme.z(5), style: .continuous)
+                                .fill(newHovering ? theme.hover : .clear)
+                        )
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .onHover { newHovering = $0 }
                 .help("New session in \(title)")
             }
         }
-        .padding(.horizontal, theme.z(10))
+        .padding(.leading, theme.z(10))
+        .padding(.trailing, theme.z(6))
         .frame(height: theme.z(26))
         .onHover { hovering = $0 }
     }
@@ -122,6 +131,7 @@ struct GroupAndSortMenu: View {
     @Binding var grouping: String
     @Binding var sort: String
     @Environment(\.theme) private var theme
+    @State private var hovering = false
 
     var body: some View {
         Menu {
@@ -146,14 +156,19 @@ struct GroupAndSortMenu: View {
         } label: {
             Image(systemName: "line.3.horizontal.decrease")
                 .font(theme.font(size: 11, weight: .medium))
-                .foregroundStyle(theme.textTertiary)
+                .foregroundStyle(hovering ? theme.textSecondary : theme.textTertiary)
                 .frame(width: theme.z(20), height: theme.z(20))
+                .background(
+                    RoundedRectangle(cornerRadius: theme.z(5), style: .continuous)
+                        .fill(hovering ? theme.hover : .clear)
+                )
                 .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
+        .onHover { hovering = $0 }
         .help("Group and sort")
         .accessibilityLabel("Group and sort")
     }

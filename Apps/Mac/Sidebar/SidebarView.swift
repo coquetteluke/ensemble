@@ -56,7 +56,24 @@ struct SidebarView: View {
             }
             .padding(.horizontal, theme.z(8))
 
-            InputField("Search sessions", text: $window.searchText, icon: "magnifyingglass", height: theme.z(28))
+            InputField("Search sessions", text: $window.searchText, icon: "magnifyingglass", height: 28)
+                .overlay(alignment: .trailing) {
+                    if !window.searchText.isEmpty && !isSnapshot {
+                        Button {
+                            window.searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(theme.font(size: 12))
+                                .foregroundStyle(theme.textTertiary)
+                                .padding(theme.z(4))
+                                .background(Circle().fill(theme.sidebar))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, theme.z(5))
+                        .help("Clear search")
+                        .accessibilityLabel("Clear search")
+                    }
+                }
                 .padding(.horizontal, theme.z(10))
                 .padding(.top, theme.z(12))
                 .padding(.bottom, theme.z(4))
@@ -270,11 +287,12 @@ struct SidebarView: View {
                     Text("Settings")
                         .font(theme.font(size: 13))
                         .foregroundStyle(theme.textSidebar)
+                        .lineLimit(1)
                 }
                 .padding(.horizontal, theme.z(8))
                 .frame(height: theme.z(30))
             }
-            .buttonStyle(RowButtonStyle())
+            .buttonStyle(RowButtonStyle(cornerRadius: theme.z(7)))
             .help("Settings (Command-,)")
 
             Spacer(minLength: theme.z(4))
@@ -286,6 +304,7 @@ struct SidebarView: View {
                     .foregroundStyle(theme.textTertiary)
                     .lineLimit(1)
             }
+            .fixedSize()
             .help(store.isPreview ? "Using built-in sample data. No engine is connected." : "OpenCode engine")
             .padding(.trailing, theme.z(6))
         }
@@ -344,23 +363,27 @@ struct SidebarNavRow: View {
                 Text(title)
                     .font(theme.font(size: 13, weight: accentIcon ? .medium : .regular))
                     .foregroundStyle(selected ? theme.textPrimary : theme.textSidebar)
+                    .lineLimit(1)
                 Spacer(minLength: theme.z(4))
                 if badge > 0 {
                     CountBadge(badge)
+                        .fixedSize()
                 } else if let shortcut, hovering {
                     Text(shortcut)
                         .font(theme.font(size: 11.5))
                         .foregroundStyle(theme.textTertiary)
+                        .fixedSize()
                 } else if let trailing {
                     Text(trailing)
                         .font(theme.font(size: 11.5).monospacedDigit())
                         .foregroundStyle(theme.textTertiary)
+                        .fixedSize()
                 }
             }
             .padding(.horizontal, theme.z(8))
             .frame(height: theme.z(30))
         }
-        .buttonStyle(RowButtonStyle(selected: selected))
+        .buttonStyle(RowButtonStyle(selected: selected, cornerRadius: theme.z(7)))
         .onHover { hovering = $0 }
     }
 }
@@ -377,8 +400,10 @@ struct SessionRow: View {
     let agentColors: [Color]
     let action: () -> Void
     @Environment(\.theme) private var theme
+    @State private var hovering = false
 
     var body: some View {
+        let dotRing = selected ? theme.selection : (hovering ? theme.hover : theme.sidebar)
         Button(action: action) {
             HStack(spacing: theme.z(8)) {
                 if !agentColors.isEmpty {
@@ -387,9 +412,10 @@ struct SessionRow: View {
                             Circle()
                                 .fill(color)
                                 .frame(width: theme.z(7), height: theme.z(7))
-                                .overlay(Circle().stroke(selected ? theme.selection : theme.sidebar, lineWidth: 1.5))
+                                .overlay(Circle().stroke(dotRing, lineWidth: theme.z(1.5)))
                         }
                     }
+                    .fixedSize()
                 }
                 // The folder shows only when it fits whole next to the whole title; otherwise the title alone.
                 ViewThatFits(in: .horizontal) {
@@ -407,12 +433,14 @@ struct SessionRow: View {
                 }
                 Spacer(minLength: theme.z(6))
                 trailing
+                    .fixedSize()
             }
             .padding(.leading, theme.z(30))
             .padding(.trailing, theme.z(10))
             .frame(height: theme.z(30))
         }
-        .buttonStyle(RowButtonStyle(selected: selected))
+        .buttonStyle(RowButtonStyle(selected: selected, cornerRadius: theme.z(7)))
+        .onHover { hovering = $0 }
         .help(Format.abbreviatedPath(session.directory))
         .accessibilityLabel(accessibilityText)
     }
@@ -449,6 +477,7 @@ struct SessionRow: View {
             Text(Format.relative(session.info.updated))
                 .font(theme.font(size: 11.5).monospacedDigit())
                 .foregroundStyle(theme.textTertiary)
+                .lineLimit(1)
         }
     }
 
