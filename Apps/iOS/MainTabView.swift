@@ -155,10 +155,18 @@ private struct SplitSidebarView: View {
     let onOpenRoute: (ChatRoute, RemoteTab) -> Void
     let onSelectUtilityTab: (RemoteTab) -> Void
     @Environment(RemoteAppModel.self) private var model
+    @State private var showNewSession = false
+    @State private var showNewRoom = false
 
     var body: some View {
         VStack(spacing: 0) {
-            SplitSidebarHeader(client: client)
+            SplitSidebarHeader(client: client) {
+                if model.listTab == .rooms {
+                    showNewRoom = true
+                } else {
+                    showNewSession = true
+                }
+            }
 
             Group {
                 if model.listTab == .rooms {
@@ -180,11 +188,24 @@ private struct SplitSidebarView: View {
             SplitSidebarFooter(onSelect: onSelectUtilityTab)
         }
         .background(RemoteTheme.sidebar.ignoresSafeArea())
+        .sheet(isPresented: $showNewSession) {
+            RemoteNewSessionSheet(client: client) { created in
+                onOpenRoute(ChatRoute(sessionID: created.id, title: created.title), .hub)
+            }
+            .remoteThemeEnvironment()
+        }
+        .sheet(isPresented: $showNewRoom) {
+            RemoteNewRoomSheet(client: client) { room in
+                onOpenRoute(ChatRoute(sessionID: room.sessionID, title: room.title), .rooms)
+            }
+            .remoteThemeEnvironment()
+        }
     }
 }
 
 private struct SplitSidebarHeader: View {
     let client: RemoteClient
+    let onNew: () -> Void
     @Environment(RemoteAppModel.self) private var model
 
     private var hubBadge: Int { needsYouCount(client) }
@@ -198,6 +219,18 @@ private struct SplitSidebarHeader: View {
                     .foregroundStyle(RemoteTheme.primaryText)
                 Spacer(minLength: 8)
                 StatusPill(client: client)
+                Button(action: onNew) {
+                    Image(systemName: "plus")
+                        .font(RemoteTheme.font(size: 13.5, weight: .semibold, relativeTo: .subheadline))
+                        .foregroundStyle(RemoteTheme.accent)
+                        .frame(width: 30, height: 30)
+                        .background(RemoteTheme.accent.opacity(0.14), in: Circle())
+                        .frame(minWidth: 36, minHeight: 36)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!client.state.isConnected || client.availableModels.isEmpty)
+                .accessibilityLabel(model.listTab == .rooms ? "New room" : "New session")
             }
 
             HStack(spacing: 4) {

@@ -132,6 +132,16 @@ public enum RemoteClientMessage: Hashable, Sendable {
     /// Reply: `.ack`. Answers what a room waits on (`RemoteRoom.decision`). Added after protocol 3 shipped: a Mac without
     /// it answers `unknownMessage`.
     case decideRoom(RemoteRoomDecisionReply)
+    /// Reply: `.ack`. Switches or stages the model in a session.
+    case changeModel(RemoteChangeModel)
+    /// Reply: `.sessionCreated`. Creates a new session on the Mac.
+    case createSession(RemoteCreateSession)
+    /// Reply: `.roomCreated`. Creates a new multi-agent room on the Mac.
+    case createRoom(RemoteCreateRoom)
+    /// Reply: `.sessionDiff`. Fetches the working-tree diff for a session or room.
+    case sessionDiff(sessionID: String)
+    /// Reply: `.ack`. Requests an inline second opinion on an assistant reply.
+    case secondOpinion(RemoteSecondOpinionRequest)
 
     public var typeName: String {
         switch self {
@@ -149,6 +159,11 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .answerQuestion: "answerQuestion"
         case .respondToPlan: "respondToPlan"
         case .decideRoom: "roomDecision"
+        case .changeModel: "changeModel"
+        case .createSession: "createSession"
+        case .createRoom: "createRoom"
+        case .sessionDiff: "sessionDiff"
+        case .secondOpinion: "secondOpinion"
         }
     }
 
@@ -157,7 +172,8 @@ public enum RemoteClientMessage: Hashable, Sendable {
         switch self {
         case .hello(let p): try c.encode(p, forKey: .data)
         case .hubSnapshot, .roomsRequest, .usageRequest: break
-        case .openSession(let id), .closeSession(let id): try c.encode(RemoteSessionRef(sessionID: id), forKey: .data)
+        case .openSession(let id), .closeSession(let id), .sessionDiff(let id):
+            try c.encode(RemoteSessionRef(sessionID: id), forKey: .data)
         case .sendMessage(let p): try c.encode(p, forKey: .data)
         case .replyPermission(let p): try c.encode(p, forKey: .data)
         case .setPermissionMode(let p): try c.encode(p, forKey: .data)
@@ -166,6 +182,10 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .answerQuestion(let p): try c.encode(p, forKey: .data)
         case .respondToPlan(let p): try c.encode(p, forKey: .data)
         case .decideRoom(let p): try c.encode(p, forKey: .data)
+        case .changeModel(let p): try c.encode(p, forKey: .data)
+        case .createSession(let p): try c.encode(p, forKey: .data)
+        case .createRoom(let p): try c.encode(p, forKey: .data)
+        case .secondOpinion(let p): try c.encode(p, forKey: .data)
         }
     }
 
@@ -186,6 +206,11 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case "answerQuestion": return .answerQuestion(try c.decode(RemoteQuestionAnswer.self, forKey: .data))
         case "respondToPlan": return .respondToPlan(try c.decode(RemotePlanResponse.self, forKey: .data))
         case "roomDecision": return .decideRoom(try c.decode(RemoteRoomDecisionReply.self, forKey: .data))
+        case "changeModel": return .changeModel(try c.decode(RemoteChangeModel.self, forKey: .data))
+        case "createSession": return .createSession(try c.decode(RemoteCreateSession.self, forKey: .data))
+        case "createRoom": return .createRoom(try c.decode(RemoteCreateRoom.self, forKey: .data))
+        case "sessionDiff": return .sessionDiff(sessionID: try c.decode(RemoteSessionRef.self, forKey: .data).sessionID)
+        case "secondOpinion": return .secondOpinion(try c.decode(RemoteSecondOpinionRequest.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)
         }
     }
@@ -242,6 +267,9 @@ public enum RemoteServerMessage: Hashable, Sendable {
     case rooms([RemoteRoom])
     case usage(RemoteUsageSummary)
     case update(RemoteUpdate)
+    case sessionCreated(SessionSummary)
+    case roomCreated(RemoteRoom)
+    case sessionDiff(RemoteSessionDiff)
     /// The request in `re` was carried out.
     case ack
     case error(RemoteError)
@@ -256,6 +284,9 @@ public enum RemoteServerMessage: Hashable, Sendable {
         case .rooms: "rooms"
         case .usage: "usage"
         case .update: "update"
+        case .sessionCreated: "sessionCreated"
+        case .roomCreated: "roomCreated"
+        case .sessionDiff: "sessionDiff"
         case .ack: "ack"
         case .error: "error"
         }
@@ -272,6 +303,9 @@ public enum RemoteServerMessage: Hashable, Sendable {
         case .rooms(let p): try c.encode(RemoteRoomsPayload(rooms: p), forKey: .data)
         case .usage(let p): try c.encode(p, forKey: .data)
         case .update(let p): try c.encode(p, forKey: .data)
+        case .sessionCreated(let p): try c.encode(p, forKey: .data)
+        case .roomCreated(let p): try c.encode(p, forKey: .data)
+        case .sessionDiff(let p): try c.encode(p, forKey: .data)
         case .ack: break
         case .error(let p): try c.encode(p, forKey: .data)
         }
@@ -288,6 +322,9 @@ public enum RemoteServerMessage: Hashable, Sendable {
         case "rooms": return .rooms(try c.decode(RemoteRoomsPayload.self, forKey: .data).rooms)
         case "usage": return .usage(try c.decode(RemoteUsageSummary.self, forKey: .data))
         case "update": return .update(try c.decode(RemoteUpdate.self, forKey: .data))
+        case "sessionCreated": return .sessionCreated(try c.decode(SessionSummary.self, forKey: .data))
+        case "roomCreated": return .roomCreated(try c.decode(RemoteRoom.self, forKey: .data))
+        case "sessionDiff": return .sessionDiff(try c.decode(RemoteSessionDiff.self, forKey: .data))
         case "ack": return .ack
         case "error": return .error(try c.decode(RemoteError.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)

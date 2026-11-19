@@ -7,14 +7,34 @@ struct RoomsView: View {
     var selectedSessionID: String?
     var open: (ChatRoute) -> Void
 
+    @State private var showNewRoom = false
+
     var body: some View {
         RoomsListContent(client: client, selectedSessionID: selectedSessionID, open: open)
             .navigationTitle("Rooms")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showNewRoom = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(RemoteTheme.font(size: 15, weight: .semibold, relativeTo: .body))
+                            .foregroundStyle(RemoteTheme.accent)
+                            .frame(minWidth: 36, minHeight: 36)
+                    }
+                    .disabled(!client.state.isConnected || client.availableModels.isEmpty)
+                    .accessibilityLabel("New room")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     StatusPill(client: client, inToolbar: true)
                 }
+            }
+            .sheet(isPresented: $showNewRoom) {
+                RemoteNewRoomSheet(client: client) { room in
+                    open(ChatRoute(sessionID: room.sessionID, title: room.title))
+                }
+                .remoteThemeEnvironment()
             }
     }
 }

@@ -64,6 +64,8 @@ public final class RemoteClient {
     /// Prompts known to be answered, by anyone.
     public private(set) var answeredPermissionIDs: Set<String> = []
     public private(set) var rooms: [RemoteRoom] = []
+    public private(set) var availableModels: [RemoteModelOption] = []
+    public private(set) var recentFolders: [String] = []
     public private(set) var usage: RemoteUsageSummary?
     public private(set) var openSessionID: String?
     public private(set) var openTranscript: RemoteTranscript?
@@ -136,6 +138,8 @@ public final class RemoteClient {
         client.sessions = data.sessions
         client.permissions = data.permissions
         client.rooms = data.rooms
+        client.availableModels = data.availableModels
+        client.recentFolders = data.recentFolders
         client.usage = data.usage
         client.state = .connected(via: .direct(host: "demo"))
         return client
@@ -797,6 +801,8 @@ public final class RemoteClient {
         case .hub(let hub):
             sessions = hub.sessions
             permissions = hub.permissions
+            availableModels = hub.availableModels
+            recentFolders = hub.recentFolders
         case .transcript(let t):
             if t.sessionID == openSessionID { openTranscript = t }
         case .rooms(let r):
@@ -805,6 +811,12 @@ public final class RemoteClient {
             usage = u
         case .update(let u):
             apply(u)
+        case .sessionCreated(let s):
+            if let i = sessions.firstIndex(where: { $0.id == s.id }) { sessions[i] = s } else { sessions.insert(s, at: 0) }
+        case .roomCreated(let r):
+            if let i = rooms.firstIndex(where: { $0.id == r.id }) { rooms[i] = r } else { rooms.insert(r, at: 0) }
+        case .sessionDiff:
+            break
         case .challenge, .welcome, .ack, .error:
             break
         }
@@ -900,6 +912,63 @@ public final class RemoteClient {
         try await request(.decideRoom(RemoteRoomDecisionReply(roomID: roomID, decisionID: decision.id, choice: choice.id,
                                                               text: choice.input == .none ? nil : text)))
         answeredDecisionIDs.insert(decision.id)
+    }
+
+    /// Switches or stages a model in `sessionID` (cross-engine switches take effect on the next sent message).
+    public func changeModel(sessionID: String, providerID: String, modelID: String) async throws {
+        try await request(.changeModel(RemoteChangeModel(sessionID: sessionID, providerID: providerID, modelID: modelID)))
+    }
+
+    /// Starts a new solo session on the Mac and returns its Hub summary.
+    @discardableResult
+    public func createSession(directory: String, providerID: String, modelID: String, title: String? = nil) async throws -> SessionSummary {
+        let reply = try await request(.createSession(RemoteCreateSession(
+            directory: directory, providerID: providerID, modelID: modelID, title: title
+        )))
+        guard case .sessionCreated(let summary) = reply else {
+            throw RemoteError(.failed, "Unexpected response from Mac when creating session")
+        }
+        return summary
+    }
+
+    /// Starts a new multi-agent room on the Mac and returns it.
+    @discardableResult
+    public func createRoom(directory: String, title: String, mode: RoomMode, agents: [RemoteNewRoomAgent]) async throws -> RemoteRoom {
+        let reply = try await request(.createRoom(RemoteCreateRoom(
+            directory: directory, title: title, mode: mode, agents: agents
+        )))
+        guard case .roomCreated(let room) = reply else {
+            throw RemoteError(.failed, "Unexpected response from Mac when creating room")
+        }
+        return room
+    }
+
+    /// Loads the working-tree git diff for `sessionID`.
+    public func sessionDiff(sessionID: String) async throws -> RemoteSessionDiff {
+        let reply = try await request(.sessionDiff(sessionID: sessionID))
+        guard case .sessionDiff(let diff) = reply else {
+            throw RemoteError(.failed, "Unexpected response from Mac when loading changes")
+        }
+        return diff
+    }
+
+    /// Asks another model for an inline second opinion on a completed assistant reply.
+    public func requestSecondOpinion(sessionID: String, itemID: String, replyText: String, providerID: String, modelID: String) async throws {
+        try await request(.secondOpinion(RemoteSecondOpinionRequest(
+            sessionID: sessionID, itemID: itemID, replyText: replyText, providerID: providerID, modelID: modelID
+        )))
+    }
+
+    /// Display name for a `(providerID, modelID)` pair using `availableModels`.
+    public func modelName(providerID: String?, modelID: String?) -> String? {
+        guard let modelID, !modelID.isEmpty else { return nil }
+        if let providerID, let exact = availableModels.first(where: { $0.providerID == providerID && $0.modelID == modelID }) {
+            return exact.name
+        }
+        if let byModel = availableModels.first(where: { $0.modelID == modelID }) {
+            return byModel.name
+        }
+        return modelID
     }
 
     // MARK: - Lookups for the UI
@@ -1005,6 +1074,33 @@ public final class RemoteClient {
             rooms.removeAll { $0.id == id }
         case .usageSummary(let summary):
             usage = summary
+        case .hubUpdated(let hub):
+            sessions = hub.sessions
+            permissions = hub.permissions
+            availableModels = hub.availableModels
+            recentFolders = hub.recentFolders
+        case .transcriptUpdated(let t):
+            if t.sessionID == openSessionID { openTranscript = t }
+        case .sessionReplaced(let oldSessionID, let newSession):
+            sessions.removeAll { $0.id == oldSessionID }
+            if let i = sessions.firstIndex(where: { $0.id == newSession.id }) {
+                sessions[i] = newSession
+            } else {
+                sessions.insert(newSession, at: 0)
+            }
+            if openSessionID == oldSessionID {
+                openSessionID = newSession.id
+                if var t = openTranscript, t.sessionID == oldSessionID {
+                    t.sessionID = newSession.id
+                    t.modelProviderID = newSession.modelProviderID
+                    t.modelID = newSession.modelID
+                    t.pendingModelName = newSession.pendingModelName
+                    openTranscript = t
+                }
+                Task { @MainActor [weak self] in
+                    _ = try? await self?.open(sessionID: newSession.id)
+                }
+            }
         }
     }
 

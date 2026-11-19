@@ -7,14 +7,34 @@ struct HubView: View {
     var selectedSessionID: String?
     var open: (ChatRoute) -> Void
 
+    @State private var showNewSession = false
+
     var body: some View {
         HubBoardContent(client: client, selectedSessionID: selectedSessionID, open: open)
             .navigationTitle("Session Hub")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showNewSession = true
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(RemoteTheme.font(size: 15, weight: .semibold, relativeTo: .body))
+                            .foregroundStyle(RemoteTheme.accent)
+                            .frame(minWidth: 36, minHeight: 36)
+                    }
+                    .disabled(!client.state.isConnected || client.availableModels.isEmpty)
+                    .accessibilityLabel("New session")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     StatusPill(client: client, inToolbar: true)
                 }
+            }
+            .sheet(isPresented: $showNewSession) {
+                RemoteNewSessionSheet(client: client) { created in
+                    open(ChatRoute(sessionID: created.id, title: created.title))
+                }
+                .remoteThemeEnvironment()
             }
     }
 }

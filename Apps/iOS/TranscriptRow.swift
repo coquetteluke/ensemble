@@ -6,17 +6,26 @@ struct TranscriptRow: View {
     let item: TranscriptItem
     let agents: [UUID: RemoteAgent]
     let client: RemoteClient
+    var secondOpinions: [RemoteSecondOpinion] = []
+    var availableModels: [RemoteModelOption] = []
+    var currentModelID: String? = nil
+    var onRequestSecondOpinion: ((String, String, RemoteModelOption) -> Void)? = nil
     var onError: (String) -> Void
 
     var body: some View {
         switch item {
         case .user(_, let text, _):
             UserMessageBubble(text: text)
-        case .agentText(_, let text, let agentID, let streaming):
+        case .agentText(let id, let text, let agentID, let streaming):
             AgentTextRow(
+                itemID: id,
                 text: text,
                 agent: agentID.flatMap { agents[$0] },
-                streaming: streaming
+                streaming: streaming,
+                opinions: secondOpinions.filter { $0.itemID == id },
+                availableModels: availableModels,
+                currentModelID: currentModelID,
+                onRequestSecondOpinion: onRequestSecondOpinion
             )
         case .reasoning(_, let text, let streaming):
             RemoteReasoningRow(text: text, streaming: streaming)
@@ -74,14 +83,26 @@ private struct UserMessageBubble: View {
 }
 
 private struct AgentTextRow: View {
+    let itemID: String
     let text: String
     let agent: RemoteAgent?
     let streaming: Bool
+    let opinions: [RemoteSecondOpinion]
+    let availableModels: [RemoteModelOption]
+    let currentModelID: String?
+    let onRequestSecondOpinion: ((String, String, RemoteModelOption) -> Void)?
 
     @ScaledMetric(relativeTo: .body) private var messageSize: CGFloat = 15
 
+    private var orderedModels: [RemoteModelOption] {
+        guard let currentModelID else { return availableModels }
+        let other = availableModels.filter { $0.modelID != currentModelID }
+        let same = availableModels.filter { $0.modelID == currentModelID }
+        return other + same
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             if let agent {
                 AgentTag(agent: agent, showModel: true)
             }
@@ -89,6 +110,37 @@ private struct AgentTextRow: View {
             if streaming {
                 ConstellationSpinner(size: 13)
                     .padding(.top, 2)
+            } else if let onRequestSecondOpinion,
+                      !availableModels.isEmpty,
+                      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Menu {
+                    Section("Ask another model") {
+                        ForEach(orderedModels) { option in
+                            Button {
+                                onRequestSecondOpinion(itemID, text, option)
+                            } label: {
+                                Text(option.makerName.isEmpty ? option.name : "\(option.name) (\(option.makerName))")
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "text.bubble")
+                            .font(RemoteTheme.font(size: 11, weight: .medium, relativeTo: .caption))
+                        Text("Second opinion")
+                            .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption))
+                    }
+                    .foregroundStyle(RemoteTheme.secondaryText)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(RemoteTheme.cardRaised, in: Capsule())
+                    .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+                }
+                .padding(.top, 2)
+            }
+
+            ForEach(opinions) { opinion in
+                RemoteSecondOpinionCard(opinion: opinion)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

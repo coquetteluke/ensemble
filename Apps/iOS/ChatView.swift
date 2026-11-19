@@ -13,6 +13,8 @@ struct ChatView: View {
     @State private var actionError: String?
     @State private var confirmStop = false
     @State private var showMembers = false
+    @State private var showModelPicker = false
+    @State private var showDiffSheet = false
     /// Where the reader was when this view appeared (nil: the end).
     @State private var startAnchor: String??
     @FocusState private var composerFocused: Bool
@@ -27,6 +29,11 @@ struct ChatView: View {
     private var target: RemoteTarget { roomID.map { .room($0) } ?? .session(sessionID) }
     private var activity: SessionActivity { transcript?.activity ?? summary?.activity ?? .idle }
     private var currentMode: PermissionMode? { transcript?.permissionMode ?? room?.permissionMode }
+    private var activeProviderID: String? { transcript?.modelProviderID ?? summary?.modelProviderID }
+    private var activeModelID: String? { transcript?.modelID ?? summary?.modelID }
+    private var activeModelName: String? { client.modelName(providerID: activeProviderID, modelID: activeModelID) }
+    private var pendingModelName: String? { transcript?.pendingModelName ?? summary?.pendingModelName }
+    private var hasHistory: Bool { !(transcript?.items.isEmpty ?? true) }
     private var agents: [UUID: RemoteAgent] {
         Dictionary((transcript?.agents ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
     }
@@ -74,6 +81,20 @@ struct ChatView: View {
                                 item: item,
                                 agents: agents,
                                 client: client,
+                                secondOpinions: transcript.secondOpinions,
+                                availableModels: room == nil ? client.availableModels : [],
+                                currentModelID: activeModelID,
+                                onRequestSecondOpinion: room == nil ? { itemID, replyText, option in
+                                    act {
+                                        try await client.requestSecondOpinion(
+                                            sessionID: sessionID,
+                                            itemID: itemID,
+                                            replyText: replyText,
+                                            providerID: option.providerID,
+                                            modelID: option.modelID
+                                        )
+                                    }
+                                } : nil,
                                 onError: { actionError = $0 }
                             )
                             .id(item.id)
@@ -164,11 +185,17 @@ struct ChatView: View {
                 focused: $composerFocused,
                 room: room,
                 mode: currentMode,
+                modelName: activeModelName,
+                pendingModelName: pendingModelName,
+                canSwitchModel: room == nil && !client.availableModels.isEmpty,
                 activity: activity,
                 sending: sending,
                 connected: client.state.isConnected,
                 onSelectMode: { mode in
                     act { try await client.setPermissionMode(mode, for: target) }
+                },
+                onTapModel: {
+                    showModelPicker = true
                 },
                 onControlRoom: { action in
                     if action == .stop { confirmStop = true } else { control(action) }
@@ -184,6 +211,28 @@ struct ChatView: View {
                 RoomMembersSheet(room: room)
                     .remoteThemeEnvironment()
             }
+        }
+        .sheet(isPresented: $showModelPicker) {
+            RemoteModelPickerSheet(
+                models: client.availableModels,
+                currentProviderID: activeProviderID,
+                currentModelID: activeModelID,
+                pendingModelName: pendingModelName,
+                hasHistory: hasHistory
+            ) { option in
+                act {
+                    try await client.changeModel(
+                        sessionID: sessionID,
+                        providerID: option.providerID,
+                        modelID: option.modelID
+                    )
+                }
+            }
+            .remoteThemeEnvironment()
+        }
+        .sheet(isPresented: $showDiffSheet) {
+            RemoteDiffSheet(client: client, sessionID: sessionID, title: displayTitle)
+                .remoteThemeEnvironment()
         }
         .navigationTitle(displayTitle)
         .navigationBarTitleDisplayMode(.inline)
@@ -223,6 +272,17 @@ struct ChatView: View {
                 .lineLimit(1)
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
+            Button {
+                showDiffSheet = true
+            } label: {
+                Image(systemName: "plus.forwardslash.minus")
+                    .font(RemoteTheme.font(size: 14, weight: .medium, relativeTo: .body))
+                    .foregroundStyle(RemoteTheme.secondaryText)
+                    .frame(minWidth: 36, minHeight: 36)
+            }
+            .disabled(!client.state.isConnected)
+            .accessibilityLabel("Changes")
+
             if let room, !room.members.isEmpty || !room.agents.isEmpty {
                 Button {
                     showMembers = true
@@ -289,10 +349,14 @@ private struct RemoteComposerCard: View {
     var focused: FocusState<Bool>.Binding
     let room: RemoteRoom?
     let mode: PermissionMode?
+    let modelName: String?
+    let pendingModelName: String?
+    let canSwitchModel: Bool
     let activity: SessionActivity
     let sending: Bool
     let connected: Bool
     let onSelectMode: (PermissionMode) -> Void
+    let onTapModel: () -> Void
     let onControlRoom: (RemoteRoomAction) -> Void
     let onInterrupt: () -> Void
     let onSend: () -> Void
@@ -313,6 +377,22 @@ private struct RemoteComposerCard: View {
             VStack(alignment: .leading, spacing: 10) {
                 if let room, !room.agents.isEmpty {
                     AddresseeChipStrip(agents: room.agents, selected: $addressee)
+                }
+
+                if room == nil, let pendingModelName {
+                    HStack(spacing: 6) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(RemoteTheme.font(size: 10.5, weight: .semibold, relativeTo: .caption2))
+                            .foregroundStyle(RemoteTheme.accent)
+                        Text("Next message: \(pendingModelName)")
+                            .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption))
+                            .foregroundStyle(RemoteTheme.primaryText)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(RemoteTheme.accent.opacity(0.12), in: Capsule())
+                    .overlay(Capsule().strokeBorder(RemoteTheme.accent.opacity(0.32), lineWidth: 0.75))
                 }
 
                 TextField(placeholder, text: $draft, axis: .vertical)
@@ -339,8 +419,13 @@ private struct RemoteComposerCard: View {
                                 onControlRoom(.stop)
                             }
                         }
-                    } else if let mode {
-                        PermissionModeMenuCapsule(current: mode, onSelect: onSelectMode)
+                    } else {
+                        if let mode {
+                            PermissionModeMenuCapsule(current: mode, onSelect: onSelectMode)
+                        }
+                        if canSwitchModel {
+                            modelPickerCapsule
+                        }
                     }
 
                     Spacer(minLength: 4)
@@ -412,6 +497,37 @@ private struct RemoteComposerCard: View {
             .disabled(!canSend)
             .accessibilityLabel("Send")
         }
+    }
+
+    private var modelPickerCapsule: some View {
+        Button(action: onTapModel) {
+            HStack(spacing: 5) {
+                Image(systemName: "cpu")
+                    .font(RemoteTheme.font(size: 11, weight: .medium, relativeTo: .caption))
+                Text(pendingModelName ?? modelName ?? "Model")
+                    .font(RemoteTheme.font(size: 12.5, weight: .medium, relativeTo: .caption))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(RemoteTheme.font(size: 9.5, weight: .semibold, relativeTo: .caption2))
+            }
+            .foregroundStyle(pendingModelName != nil ? RemoteTheme.accent : RemoteTheme.primaryText)
+            .padding(.horizontal, 10)
+            .frame(height: 34)
+            .background(RemoteTheme.cardRaised, in: Capsule())
+            .overlay(
+                Capsule()
+                    .strokeBorder(
+                        pendingModelName != nil ? RemoteTheme.accent.opacity(0.45) : RemoteTheme.border,
+                        lineWidth: 0.75
+                    )
+            )
+            .frame(minHeight: RemoteTheme.minTapTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!connected)
+        .accessibilityLabel("Switch model")
     }
 
     private func modeBadge(_ mode: PermissionMode) -> some View {

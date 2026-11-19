@@ -987,6 +987,131 @@ import Testing
             return false
         }
     }
+
+    @Test func backwardCompatibleDecodingOfOlderHubAndTranscriptPayloads() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let oldHubJSON = """
+        {
+          "sessions": [{
+            "id": "s1",
+            "title": "Legacy session",
+            "directory": "/tmp/proj",
+            "activity": "idle",
+            "lastActivity": "\(now)"
+          }]
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let hub = try decoder.decode(RemoteHubSnapshot.self, from: Data(oldHubJSON.utf8))
+        #expect(hub.sessions.count == 1)
+        #expect(hub.sessions[0].modelProviderID == nil)
+        #expect(hub.sessions[0].modelID == nil)
+        #expect(hub.sessions[0].pendingModelName == nil)
+        #expect(hub.availableModels.isEmpty)
+        #expect(hub.recentFolders.isEmpty)
+
+        let oldTranscriptJSON = """
+        {
+          "sessionID": "s1",
+          "title": "Legacy session",
+          "items": [],
+          "activity": "idle"
+        }
+        """
+        let transcript = try decoder.decode(RemoteTranscript.self, from: Data(oldTranscriptJSON.utf8))
+        #expect(transcript.modelProviderID == nil)
+        #expect(transcript.modelID == nil)
+        #expect(transcript.pendingModelName == nil)
+        #expect(transcript.secondOpinions.isEmpty)
+    }
+
+    @Test func midChatModelSwitchStagesAndAppliesOnNextMessage() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let phone = client(h)
+        phone.start()
+        defer { phone.stop() }
+        try await waitUntil { phone.state.isConnected && !phone.availableModels.isEmpty }
+
+        try await phone.open(sessionID: RemoteDemoData.IDs.fixSession)
+        try await waitUntil { phone.openTranscript?.sessionID == RemoteDemoData.IDs.fixSession }
+
+        try await phone.changeModel(
+            sessionID: RemoteDemoData.IDs.fixSession,
+            providerID: "antigravity",
+            modelID: "gemini-3-pro"
+        )
+        try await waitUntil { phone.openTranscript?.pendingModelName == "Gemini 3 Pro" }
+        #expect(phone.sessions.first(where: { $0.id == RemoteDemoData.IDs.fixSession })?.pendingModelName == "Gemini 3 Pro")
+
+        try await phone.send("Continue with Gemini", to: .session(RemoteDemoData.IDs.fixSession))
+        try await waitUntil {
+            phone.openTranscript?.modelID == "gemini-3-pro" && phone.openTranscript?.pendingModelName == nil
+        }
+        #expect(phone.openTranscript?.modelProviderID == "antigravity")
+    }
+
+    @Test func createSessionAndCreateRoomRoundTripOverLoopback() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let phone = client(h)
+        phone.start()
+        defer { phone.stop() }
+        try await waitUntil { phone.state.isConnected && !phone.recentFolders.isEmpty }
+
+        let createdSession = try await phone.createSession(
+            directory: "/Users/demo/code/webapp",
+            providerID: "claude-code",
+            modelID: "sonnet",
+            title: "Phone started task"
+        )
+        #expect(createdSession.title == "Phone started task")
+        #expect(createdSession.modelID == "sonnet")
+        try await waitUntil { phone.sessions.contains(where: { $0.id == createdSession.id }) }
+
+        let createdRoom = try await phone.createRoom(
+            directory: "/Users/demo/code/notes",
+            title: "Phone review room",
+            mode: .debate,
+            agents: [
+                RemoteNewRoomAgent(name: "Ada", role: "Lead", providerID: "claude-code", modelID: "opus"),
+                RemoteNewRoomAgent(name: "Grace", role: "Critic", providerID: "antigravity", modelID: "gemini-3-pro"),
+            ]
+        )
+        #expect(createdRoom.title == "Phone review room")
+        #expect(createdRoom.mode == .debate)
+        #expect(createdRoom.agents.count == 2)
+        try await waitUntil { phone.rooms.contains(where: { $0.id == createdRoom.id }) }
+    }
+
+    @Test func sessionDiffAndSecondOpinionRoundTripOverLoopback() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let phone = client(h)
+        phone.start()
+        defer { phone.stop() }
+        try await waitUntil { phone.state.isConnected && !phone.availableModels.isEmpty }
+
+        let diff = try await phone.sessionDiff(sessionID: RemoteDemoData.IDs.fixSession)
+        #expect(diff.sessionID == RemoteDemoData.IDs.fixSession)
+        #expect(!diff.files.isEmpty)
+
+        try await phone.open(sessionID: RemoteDemoData.IDs.fixSession)
+        try await waitUntil { phone.openTranscript?.sessionID == RemoteDemoData.IDs.fixSession }
+        let beforeCount = phone.openTranscript?.secondOpinions.count ?? 0
+
+        try await phone.requestSecondOpinion(
+            sessionID: RemoteDemoData.IDs.fixSession,
+            itemID: "fix-reply-1",
+            replyText: "Changed cookie SameSite to Lax.",
+            providerID: "antigravity",
+            modelID: "gemini-3-pro"
+        )
+        try await waitUntil { (phone.openTranscript?.secondOpinions.count ?? 0) == beforeCount + 1 }
+        #expect(phone.openTranscript?.secondOpinions.last?.modelName == "Gemini 3 Pro")
+        #expect(phone.openTranscript?.secondOpinions.last?.status == "ready")
+    }
 }
 /// Counts how many of some TCP connections the server has closed.
 final class ServerClosures: Sendable {

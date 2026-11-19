@@ -7,14 +7,23 @@ public struct RemoteDemoData: Sendable {
     public var transcripts: [String: RemoteTranscript]
     public var rooms: [RemoteRoom]
     public var usage: RemoteUsageSummary
+    public var availableModels: [RemoteModelOption]
+    public var recentFolders: [String]
+    public var diffs: [String: RemoteSessionDiff]
 
     public init(sessions: [SessionSummary], permissions: [PermissionRequest], transcripts: [String: RemoteTranscript],
-                rooms: [RemoteRoom], usage: RemoteUsageSummary) {
+                rooms: [RemoteRoom], usage: RemoteUsageSummary,
+                availableModels: [RemoteModelOption] = [],
+                recentFolders: [String] = [],
+                diffs: [String: RemoteSessionDiff] = [:]) {
         self.sessions = sessions
         self.permissions = permissions
         self.transcripts = transcripts
         self.rooms = rooms
         self.usage = usage
+        self.availableModels = availableModels
+        self.recentFolders = recentFolders
+        self.diffs = diffs
     }
 
     /// Fixed ids so tests can refer to them.
@@ -32,12 +41,37 @@ public struct RemoteDemoData: Sendable {
         public static let roomPermission = "demo-room-perm-lint"
         public static let roomLongPermission = "demo-room-perm-migrate"
         public static let planDecision = "approvePlan-demo"
+        public static let fixOpinion = UUID(uuidString: "9C1A2B3C-4D5E-4F6A-8B7C-1D2E3F4A5B6C")!
     }
 
     public static func sample(now: Date = Date()) -> RemoteDemoData {
         let minute: TimeInterval = 60
         let hour: TimeInterval = 3600
         let day: TimeInterval = 24 * hour
+
+        let availableModels: [RemoteModelOption] = [
+            RemoteModelOption(providerID: "claude-code", modelID: "opus", name: "Claude Opus 5.5",
+                              makerName: "Claude", engineLabel: "Claude (your subscription)"),
+            RemoteModelOption(providerID: "claude-code", modelID: "sonnet", name: "Claude Sonnet 5.5",
+                              makerName: "Claude", engineLabel: "Claude (your subscription)"),
+            RemoteModelOption(providerID: "claude-code", modelID: "haiku", name: "Claude Haiku 5.5",
+                              makerName: "Claude", engineLabel: "Claude (your subscription)"),
+            RemoteModelOption(providerID: "antigravity", modelID: "gemini-3-pro", name: "Gemini 3 Pro",
+                              makerName: "Gemini", engineLabel: "Google AI"),
+            RemoteModelOption(providerID: "antigravity", modelID: "gemini-3-flash", name: "Gemini 3 Flash",
+                              makerName: "Gemini", engineLabel: "Google AI"),
+            RemoteModelOption(providerID: "openai", modelID: "gpt-6", name: "GPT-6",
+                              makerName: "ChatGPT", engineLabel: "OpenAI"),
+            RemoteModelOption(providerID: "xai", modelID: "grok-4.7", name: "Grok 4.7",
+                              makerName: "Grok", engineLabel: "xAI"),
+        ]
+
+        let recentFolders = [
+            "/Users/demo/code/webapp",
+            "/Users/demo/code/notes",
+            "/Users/demo/code/dashboard",
+            "/Users/demo/code/api-server",
+        ]
 
         let agentA = RemoteAgent(id: IDs.agentA, name: "Ada", model: "anthropic/claude-opus-5.5", colorHex: "#D97757",
                                  activity: .working, sessionID: "demo-room-ada")
@@ -53,18 +87,44 @@ public struct RemoteDemoData: Sendable {
             SessionSummary(id: IDs.fixSession, title: "Fix login redirect loop", directory: "/Users/demo/code/webapp",
                            agentNames: ["Ada"], activity: .waitingForPermission, lastActivity: now.addingTimeInterval(-4 * minute),
                            pendingAsk: "Approve: npm test", pendingPermissions: 1,
-                           usage: Usage(inputTokens: 48_200, outputTokens: 6_100, costUSD: 0.42)),
+                           usage: Usage(inputTokens: 48_200, outputTokens: 6_100, costUSD: 0.42),
+                           modelProviderID: "claude-code", modelID: "opus"),
             SessionSummary(id: IDs.roomSession, title: "Design the sync API", directory: "/Users/demo/code/notes",
                            roomID: IDs.roomID, agentNames: ["Ada", "Grace"], activity: .working,
                            lastActivity: now.addingTimeInterval(-1 * minute),
                            usage: Usage(inputTokens: 120_400, outputTokens: 18_900, costUSD: 1.37)),
             SessionSummary(id: IDs.docsSession, title: "Write README install steps", directory: "/Users/demo/code/notes",
                            agentNames: ["Grace"], activity: .idle, lastActivity: now.addingTimeInterval(-3 * hour),
-                           usage: Usage(inputTokens: 9_800, outputTokens: 2_300, costUSD: 0.08)),
+                           usage: Usage(inputTokens: 9_800, outputTokens: 2_300, costUSD: 0.08),
+                           modelProviderID: "openai", modelID: "gpt-6"),
             SessionSummary(id: IDs.oldSession, title: "Try the new chart library", directory: "/Users/demo/code/dashboard",
                            agentNames: ["Ada"], activity: .idle, lastActivity: now.addingTimeInterval(-9 * day),
-                           usage: Usage(inputTokens: 3_000, outputTokens: 800, costUSD: 0.02)),
+                           usage: Usage(inputTokens: 3_000, outputTokens: 800, costUSD: 0.02),
+                           modelProviderID: "claude-code", modelID: "sonnet"),
         ]
+
+        let fixOpinion = RemoteSecondOpinion(
+            id: IDs.fixOpinion,
+            itemID: "a2",
+            modelName: "GPT-6",
+            makerName: "ChatGPT",
+            status: "ready",
+            verdict: "mixed",
+            summary: "Switching SameSite to Lax fixes the OAuth redirect loop, though state validation and cookie expiry still need checks.",
+            concerns: [
+                "Verify the OAuth callback validates the state parameter against a signed nonce before issuing the session cookie.",
+                "Ensure secure: true remains enabled behind TLS termination in production."
+            ],
+            details: """
+            VERDICT: MIXED
+            SUMMARY: Switching SameSite to Lax fixes the OAuth redirect loop, though state validation and cookie expiry still need checks.
+            CONCERNS:
+            - Verify the OAuth callback validates the state parameter against a signed nonce before issuing the session cookie.
+            - Ensure secure: true remains enabled behind TLS termination in production.
+            DETAILS:
+            `SameSite=Strict` blocks top-level cross-site GET redirects from the identity provider, which explains the redirect loop. Setting `SameSite=Lax` allows the session cookie on the return redirect while still protecting state-changing POST requests.
+            """
+        )
 
         let fixTranscript = RemoteTranscript(
             sessionID: IDs.fixSession, title: "Fix login redirect loop",
@@ -82,7 +142,8 @@ public struct RemoteDemoData: Sendable {
                                    diff: "-  sameSite: 'strict',\n+  sameSite: 'lax',")),
                 .permission(permission),
             ],
-            activity: .waitingForPermission, permissionMode: .ask, agents: [agentA])
+            activity: .waitingForPermission, permissionMode: .ask, agents: [agentA],
+            modelProviderID: "claude-code", modelID: "opus", secondOpinions: [fixOpinion])
 
         let roomTranscript = RemoteTranscript(
             sessionID: IDs.roomSession, title: "Design the sync API",
@@ -110,12 +171,14 @@ public struct RemoteDemoData: Sendable {
                 .agentText(id: "da1", text: "Added an Install section with the Homebrew command and first-run steps.",
                            agentID: nil, streaming: false),
             ],
-            activity: .idle, permissionMode: .auto, agents: [agentB])
+            activity: .idle, permissionMode: .auto, agents: [agentB],
+            modelProviderID: "openai", modelID: "gpt-6")
 
         let oldTranscript = RemoteTranscript(
             sessionID: IDs.oldSession, title: "Try the new chart library",
             items: [.user(id: "ou1", text: "Try the new chart library on the dashboard.", date: now.addingTimeInterval(-9 * day))],
-            activity: .idle, permissionMode: .ask, agents: [agentA])
+            activity: .idle, permissionMode: .ask, agents: [agentA],
+            modelProviderID: "claude-code", modelID: "sonnet")
 
         let room = RemoteRoom(id: IDs.roomID, title: "Design the sync API", directory: "/Users/demo/code/notes",
                               mode: .roundTable, agents: [agentA, agentB], leadAgentID: IDs.agentA, state: .running,
@@ -152,11 +215,137 @@ public struct RemoteDemoData: Sendable {
                 ]),
             ])
 
+        let fixDiff = RemoteSessionDiff(
+            sessionID: IDs.fixSession,
+            directory: "/Users/demo/code/webapp",
+            files: [
+                RemoteDiffFile(
+                    path: "src/middleware/auth.ts",
+                    status: "modified",
+                    additions: 4,
+                    deletions: 2,
+                    diffText: """
+                    diff --git a/src/middleware/auth.ts b/src/middleware/auth.ts
+                    --- a/src/middleware/auth.ts
+                    +++ b/src/middleware/auth.ts
+                    @@ -38,9 +38,11 @@ export function issueSessionCookie(res: Response, token: string) {
+                       res.cookie('session', token, {
+                         httpOnly: true,
+                    -    secure: true,
+                    -    sameSite: 'strict',
+                    +    secure: process.env.NODE_ENV === 'production',
+                    +    sameSite: 'lax',
+                         path: '/',
+                    +    maxAge: 7 * 24 * 60 * 60 * 1000,
+                       });
+                     }
+                    """
+                ),
+                RemoteDiffFile(
+                    path: "src/routes/login.ts",
+                    status: "modified",
+                    additions: 5,
+                    deletions: 1,
+                    diffText: """
+                    diff --git a/src/routes/login.ts b/src/routes/login.ts
+                    --- a/src/routes/login.ts
+                    +++ b/src/routes/login.ts
+                    @@ -22,6 +22,10 @@ router.get('/callback', async (req, res) => {
+                       const token = await exchangeCode(String(req.query.code));
+                       issueSessionCookie(res, token);
+                    -  res.redirect('/dashboard');
+                    +  const next = sanitizeRedirect(req.query.state);
+                    +  res.redirect(next ?? '/dashboard');
+                     });
+                    """
+                ),
+                RemoteDiffFile(
+                    path: "tests/auth-redirect.test.ts",
+                    status: "added",
+                    additions: 12,
+                    deletions: 0,
+                    diffText: """
+                    diff --git a/tests/auth-redirect.test.ts b/tests/auth-redirect.test.ts
+                    new file mode 100644
+                    --- /dev/null
+                    +++ b/tests/auth-redirect.test.ts
+                    @@ -0,0 +1,12 @@
+                    +import { expect, test } from 'vitest';
+                    +import { issueSessionCookie } from '../src/middleware/auth';
+                    +
+                    +test('sets SameSite=Lax so OAuth redirects keep the cookie', () => {
+                    +  const cookies: Record<string, any> = {};
+                    +  const res = { cookie: (name: string, val: string, opts: any) => { cookies[name] = { val, opts }; } };
+                    +  issueSessionCookie(res as any, 'tok_123');
+                    +  expect(cookies.session.opts.sameSite).toBe('lax');
+                    +  expect(cookies.session.opts.httpOnly).toBe(true);
+                    +});
+                    """
+                ),
+            ]
+        )
+
+        let roomDiff = RemoteSessionDiff(
+            sessionID: IDs.roomSession,
+            directory: "/Users/demo/code/notes",
+            files: [
+                RemoteDiffFile(
+                    path: "server/routes/sync.ts",
+                    status: "modified",
+                    additions: 8,
+                    deletions: 2,
+                    diffText: """
+                    diff --git a/server/routes/sync.ts b/server/routes/sync.ts
+                    --- a/server/routes/sync.ts
+                    +++ b/server/routes/sync.ts
+                    @@ -12,6 +12,12 @@ export function registerSyncRoutes(app: Express) {
+                       app.post('/api/sync', async (req, res) => {
+                    -    const result = await applyChanges(req.body.changes);
+                    -    res.json(result);
+                    +    const { changes, clientVersion } = req.body;
+                    +    const result = await applyChanges(changes, { expectedVersion: clientVersion });
+                    +    broadcastUpdate(result.noteIds);
+                    +    res.json(result);
+                       });
+                     }
+                    """
+                ),
+            ]
+        )
+
+        let docsDiff = RemoteSessionDiff(
+            sessionID: IDs.docsSession,
+            directory: "/Users/demo/code/notes",
+            files: [
+                RemoteDiffFile(
+                    path: "README.md",
+                    status: "modified",
+                    additions: 6,
+                    deletions: 0,
+                    diffText: """
+                    diff --git a/README.md b/README.md
+                    --- a/README.md
+                    +++ b/README.md
+                    @@ -8,3 +8,9 @@ Notes sync engine.
+                    +## Install
+                    +
+                    +```bash
+                    +brew install notes-sync
+                    +notes-sync init
+                    +```
+                    """
+                ),
+            ]
+        )
+
         return RemoteDemoData(
             sessions: sessions, permissions: [permission],
             transcripts: [IDs.fixSession: fixTranscript, IDs.roomSession: roomTranscript,
                           IDs.docsSession: docsTranscript, IDs.oldSession: oldTranscript],
-            rooms: [room], usage: usage)
+            rooms: [room], usage: usage,
+            availableModels: availableModels,
+            recentFolders: recentFolders,
+            diffs: [IDs.fixSession: fixDiff, IDs.roomSession: roomDiff, IDs.docsSession: docsDiff])
     }
 
     /// `sample` plus what rooms on the phone show: the round table waiting on a short and a long command, and a Team

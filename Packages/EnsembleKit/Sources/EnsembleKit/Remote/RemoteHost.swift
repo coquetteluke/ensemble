@@ -29,6 +29,16 @@ public protocol RemoteHost: AnyObject, Sendable {
     /// Answers what a room waits on (`RemoteRoom.decision`). Must refuse a decision id that is no longer open, a choice
     /// the decision does not offer, and a missing text the choice requires.
     func decideRoom(_ reply: RemoteRoomDecisionReply) async throws
+    /// Switches or stages a model in `request.sessionID`.
+    func changeModel(_ request: RemoteChangeModel) async throws
+    /// Creates a new solo session and returns its Hub summary.
+    func createSession(_ request: RemoteCreateSession) async throws -> SessionSummary
+    /// Creates a new multi-agent room and returns its remote representation.
+    func createRoom(_ request: RemoteCreateRoom) async throws -> RemoteRoom
+    /// Returns the working-tree git diff for `sessionID`.
+    func sessionDiff(sessionID: String) async throws -> RemoteSessionDiff
+    /// Requests a second opinion on a completed assistant reply.
+    func requestSecondOpinion(_ request: RemoteSecondOpinionRequest) async throws
 }
 
 public extension RemoteHost {
@@ -43,6 +53,26 @@ public extension RemoteHost {
     func decideRoom(_ reply: RemoteRoomDecisionReply) async throws {
         throw RemoteError(.unknownMessage, "This Mac cannot answer room decisions from the iPhone.")
     }
+
+    func changeModel(_ request: RemoteChangeModel) async throws {
+        throw RemoteError(.unknownMessage, "This Mac cannot change models from the iPhone.")
+    }
+
+    func createSession(_ request: RemoteCreateSession) async throws -> SessionSummary {
+        throw RemoteError(.unknownMessage, "This Mac cannot create sessions from the iPhone.")
+    }
+
+    func createRoom(_ request: RemoteCreateRoom) async throws -> RemoteRoom {
+        throw RemoteError(.unknownMessage, "This Mac cannot create rooms from the iPhone.")
+    }
+
+    func sessionDiff(sessionID: String) async throws -> RemoteSessionDiff {
+        throw RemoteError(.unknownMessage, "This Mac cannot show diffs on the iPhone.")
+    }
+
+    func requestSecondOpinion(_ request: RemoteSecondOpinionRequest) async throws {
+        throw RemoteError(.unknownMessage, "This Mac cannot request second opinions from the iPhone.")
+    }
 }
 
 /// An action the phone asked for, as `DemoRemoteHost` records it.
@@ -55,6 +85,11 @@ public enum RemoteHostAction: Hashable, Sendable {
     case answerQuestion(sessionID: String, requestID: String, answers: [AgentQuestionAnswer])
     case respondToPlan(sessionID: String, requestID: String, decision: PlanDecision)
     case decideRoom(RemoteRoomDecisionReply)
+    case changeModel(RemoteChangeModel)
+    case createSession(RemoteCreateSession)
+    case createRoom(RemoteCreateRoom)
+    case sessionDiff(sessionID: String)
+    case requestSecondOpinion(RemoteSecondOpinionRequest)
 }
 
 /// In-memory `RemoteHost` with sample data. Records every action and applies it to its own state the way
@@ -65,10 +100,14 @@ public actor DemoRemoteHost: RemoteHost {
     public private(set) var transcripts: [String: RemoteTranscript]
     public private(set) var roomList: [RemoteRoom]
     public private(set) var usage: RemoteUsageSummary
+    public private(set) var availableModels: [RemoteModelOption]
+    public private(set) var recentFolders: [String]
+    public private(set) var diffs: [String: RemoteSessionDiff]
     /// Every action received, oldest first.
     public private(set) var recordedActions: [RemoteHostAction] = []
 
     private var continuations: [UUID: AsyncStream<RemoteUpdate>.Continuation] = [:]
+    private var stagedModels: [String: (providerID: String, modelID: String, name: String)] = [:]
     private var counter = 0
 
     public init(data: RemoteDemoData = .sample()) {
@@ -77,12 +116,16 @@ public actor DemoRemoteHost: RemoteHost {
         transcripts = data.transcripts
         roomList = data.rooms
         usage = data.usage
+        availableModels = data.availableModels
+        recentFolders = data.recentFolders
+        diffs = data.diffs
     }
 
     // MARK: RemoteHost
 
     public func hubSnapshot() async -> RemoteHubSnapshot {
-        RemoteHubSnapshot(sessions: sessions, permissions: permissions)
+        RemoteHubSnapshot(sessions: sessions, permissions: permissions,
+                          availableModels: availableModels, recentFolders: recentFolders)
     }
 
     public func transcript(sessionID: String) async throws -> RemoteTranscript {
@@ -117,11 +160,29 @@ public actor DemoRemoteHost: RemoteHost {
             sessionID = room.sessionID
         }
         guard transcripts[sessionID] != nil else { throw RemoteError(.notFound, "No session \(sessionID)") }
+        if let staged = stagedModels.removeValue(forKey: sessionID) {
+            transcripts[sessionID]?.modelProviderID = staged.providerID
+            transcripts[sessionID]?.modelID = staged.modelID
+            transcripts[sessionID]?.pendingModelName = nil
+            if let i = sessions.firstIndex(where: { $0.id == sessionID }) {
+                sessions[i].modelProviderID = staged.providerID
+                sessions[i].modelID = staged.modelID
+                sessions[i].pendingModelName = nil
+                sessions[i].lastActivity = Date()
+                emit(.sessionUpserted(session: sessions[i]))
+            }
+            let notice = TranscriptItem.notice(id: nextID("notice"), text: "Switched to \(staged.name) for this message")
+            transcripts[sessionID]?.items.append(notice)
+            emit(.transcriptUpsert(sessionID: sessionID, item: notice))
+        }
         let shown = agent.map { "@\($0) \(text)" } ?? text
         let item = TranscriptItem.user(id: nextID("user"), text: shown, date: Date())
         transcripts[sessionID]?.items.append(item)
         emit(.transcriptUpsert(sessionID: sessionID, item: item))
         setActivity(.working, sessionID: sessionID)
+        if let t = transcripts[sessionID] {
+            emit(.transcriptUpdated(transcript: t))
+        }
     }
 
     public func replyPermission(sessionID: String, requestID: String, decision: PermissionDecision) async throws {
@@ -249,6 +310,129 @@ public actor DemoRemoteHost: RemoteHost {
         setActivity(action == .resume ? .working : .idle, sessionID: roomList[i].sessionID)
     }
 
+    public func changeModel(_ request: RemoteChangeModel) async throws {
+        recordedActions.append(.changeModel(request))
+        guard var transcript = transcripts[request.sessionID] else {
+            throw RemoteError(.notFound, "No session \(request.sessionID)")
+        }
+        let option = availableModels.first { $0.providerID == request.providerID && $0.modelID == request.modelID }
+        let displayName = option?.name ?? request.modelID
+        let hasHistory = !transcript.items.isEmpty
+        if hasHistory {
+            stagedModels[request.sessionID] = (request.providerID, request.modelID, displayName)
+            transcript.pendingModelName = displayName
+        } else {
+            stagedModels.removeValue(forKey: request.sessionID)
+            transcript.modelProviderID = request.providerID
+            transcript.modelID = request.modelID
+            transcript.pendingModelName = nil
+        }
+        transcripts[request.sessionID] = transcript
+        if let i = sessions.firstIndex(where: { $0.id == request.sessionID }) {
+            if hasHistory {
+                sessions[i].pendingModelName = displayName
+            } else {
+                sessions[i].modelProviderID = request.providerID
+                sessions[i].modelID = request.modelID
+                sessions[i].pendingModelName = nil
+            }
+            emit(.sessionUpserted(session: sessions[i]))
+        }
+        emit(.transcriptUpdated(transcript: transcript))
+    }
+
+    public func createSession(_ request: RemoteCreateSession) async throws -> SessionSummary {
+        recordedActions.append(.createSession(request))
+        let dir = request.directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !dir.isEmpty else { throw RemoteError(.badRequest, "Pick a project folder first.") }
+        let rawTitle = (request.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = rawTitle.isEmpty ? "New session" : rawTitle
+        let id = nextID("demo-session")
+        let summary = SessionSummary(
+            id: id, title: title, directory: dir, activity: .idle, lastActivity: Date(),
+            modelProviderID: request.providerID, modelID: request.modelID
+        )
+        let transcript = RemoteTranscript(
+            sessionID: id, title: title, items: [], activity: .idle, permissionMode: .ask,
+            modelProviderID: request.providerID, modelID: request.modelID
+        )
+        sessions.insert(summary, at: 0)
+        transcripts[id] = transcript
+        if !recentFolders.contains(dir) { recentFolders.insert(dir, at: 0) }
+        emit(.sessionUpserted(session: summary))
+        emit(.hubUpdated(hub: await hubSnapshot()))
+        return summary
+    }
+
+    public func createRoom(_ request: RemoteCreateRoom) async throws -> RemoteRoom {
+        recordedActions.append(.createRoom(request))
+        let dir = request.directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = request.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !dir.isEmpty else { throw RemoteError(.badRequest, "Pick a project folder first.") }
+        guard !title.isEmpty else { throw RemoteError(.badRequest, "Give the room a title.") }
+        guard !request.agents.isEmpty else { throw RemoteError(.badRequest, "Add at least one agent.") }
+        let palette = ["#D97757", "#6A9BCC", "#788C5D", "#9B7BD4"]
+        let roomID = UUID()
+        let sessionID = RemoteRoomBridge.sessionID(for: roomID)
+        let agents: [RemoteAgent] = request.agents.enumerated().map { idx, spec in
+            RemoteAgent(
+                id: UUID(), name: spec.name, model: "\(spec.providerID)/\(spec.modelID)",
+                colorHex: palette[idx % palette.count], activity: .idle,
+                sessionID: nextID("demo-room-agent")
+            )
+        }
+        let room = RemoteRoom(
+            id: roomID, title: title, directory: dir, mode: request.mode, agents: agents,
+            leadAgentID: agents.first?.id, state: .running, permissionMode: .ask,
+            sessionID: sessionID, lastActivity: Date(), phaseLabel: "Starting"
+        )
+        roomList.insert(room, at: 0)
+        let row = RemoteRoomBridge.hubRow(room)
+        sessions.insert(row, at: 0)
+        transcripts[sessionID] = RemoteTranscript(
+            sessionID: sessionID, title: title, items: [], activity: .idle,
+            permissionMode: .ask, roomID: roomID, agents: agents
+        )
+        if !recentFolders.contains(dir) { recentFolders.insert(dir, at: 0) }
+        emit(.roomUpserted(room: room))
+        emit(.sessionUpserted(session: row))
+        emit(.hubUpdated(hub: await hubSnapshot()))
+        return room
+    }
+
+    public func sessionDiff(sessionID: String) async throws -> RemoteSessionDiff {
+        recordedActions.append(.sessionDiff(sessionID: sessionID))
+        if let existing = diffs[sessionID] { return existing }
+        guard let session = sessions.first(where: { $0.id == sessionID }) else {
+            throw RemoteError(.notFound, "No session \(sessionID)")
+        }
+        return RemoteSessionDiff(sessionID: sessionID, directory: session.directory, files: [], truncated: false)
+    }
+
+    public func requestSecondOpinion(_ request: RemoteSecondOpinionRequest) async throws {
+        recordedActions.append(.requestSecondOpinion(request))
+        guard var transcript = transcripts[request.sessionID] else {
+            throw RemoteError(.notFound, "No session \(request.sessionID)")
+        }
+        let option = availableModels.first { $0.providerID == request.providerID && $0.modelID == request.modelID }
+        let modelName = option?.name ?? request.modelID
+        let makerName = option?.makerName ?? request.providerID
+        let opinion = RemoteSecondOpinion(
+            id: UUID(),
+            itemID: request.itemID,
+            modelName: modelName,
+            makerName: makerName,
+            status: "ready",
+            verdict: "Looks solid",
+            summary: "\(modelName) reviewed this reply and agrees with the main fix.",
+            concerns: ["Double check edge cases with a quick regression test."],
+            details: "Reviewed assistant reply \(request.itemID) in demo mode."
+        )
+        transcript.secondOpinions.append(opinion)
+        transcripts[request.sessionID] = transcript
+        emit(.transcriptUpdated(transcript: transcript))
+    }
+
     // MARK: Driving it from tests and previews
 
     /// Pushes an update to every subscriber and applies it to the demo state.
@@ -285,6 +469,20 @@ public actor DemoRemoteHost: RemoteHost {
             usage = u
         case .usage(let sid, let u):
             if let i = sessions.firstIndex(where: { $0.id == sid }) { sessions[i].usage = u }
+        case .hubUpdated(let hub):
+            sessions = hub.sessions
+            permissions = hub.permissions
+            availableModels = hub.availableModels
+            recentFolders = hub.recentFolders
+        case .transcriptUpdated(let t):
+            transcripts[t.sessionID] = t
+        case .sessionReplaced(let oldID, let newSession):
+            sessions.removeAll { $0.id == oldID }
+            if let i = sessions.firstIndex(where: { $0.id == newSession.id }) {
+                sessions[i] = newSession
+            } else {
+                sessions.insert(newSession, at: 0)
+            }
         case .textDelta, .permissionReplied, .permissionModeChanged:
             break
         }

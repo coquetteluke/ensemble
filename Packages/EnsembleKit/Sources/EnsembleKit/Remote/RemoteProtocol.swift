@@ -478,9 +478,19 @@ public struct RemoteTranscript: Codable, Hashable, Sendable {
     public var roomID: UUID?
     /// Agents that may speak in this chat (names and colours for rows, `@agent` choices for the composer).
     public var agents: [RemoteAgent]
+    /// Active model provider id (added after protocol 4 shipped).
+    public var modelProviderID: String?
+    /// Active model id (added after protocol 4 shipped).
+    public var modelID: String?
+    /// Staged next-message model display name (added after protocol 4 shipped).
+    public var pendingModelName: String?
+    /// Inline second opinions on replies in this transcript (added after protocol 4 shipped).
+    public var secondOpinions: [RemoteSecondOpinion]
 
     public init(sessionID: String, title: String, items: [TranscriptItem], activity: SessionActivity = .idle,
-                permissionMode: PermissionMode? = nil, roomID: UUID? = nil, agents: [RemoteAgent] = []) {
+                permissionMode: PermissionMode? = nil, roomID: UUID? = nil, agents: [RemoteAgent] = [],
+                modelProviderID: String? = nil, modelID: String? = nil, pendingModelName: String? = nil,
+                secondOpinions: [RemoteSecondOpinion] = []) {
         self.sessionID = sessionID
         self.title = title
         self.items = items
@@ -488,6 +498,218 @@ public struct RemoteTranscript: Codable, Hashable, Sendable {
         self.permissionMode = permissionMode
         self.roomID = roomID
         self.agents = agents
+        self.modelProviderID = modelProviderID
+        self.modelID = modelID
+        self.pendingModelName = pendingModelName
+        self.secondOpinions = secondOpinions
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID, title, items, activity, permissionMode, roomID, agents
+        case modelProviderID, modelID, pendingModelName, secondOpinions
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try c.decode(String.self, forKey: .sessionID)
+        title = try c.decode(String.self, forKey: .title)
+        items = try c.decode([TranscriptItem].self, forKey: .items)
+        activity = try c.decode(SessionActivity.self, forKey: .activity)
+        permissionMode = try c.decodeIfPresent(PermissionMode.self, forKey: .permissionMode)
+        roomID = try c.decodeIfPresent(UUID.self, forKey: .roomID)
+        agents = try c.decodeIfPresent([RemoteAgent].self, forKey: .agents) ?? []
+        modelProviderID = try c.decodeIfPresent(String.self, forKey: .modelProviderID)
+        modelID = try c.decodeIfPresent(String.self, forKey: .modelID)
+        pendingModelName = try c.decodeIfPresent(String.self, forKey: .pendingModelName)
+        secondOpinions = (try? c.decodeIfPresent([RemoteSecondOpinion].self, forKey: .secondOpinions)) ?? []
+    }
+}
+
+/// One available model the phone can pick for sessions, rooms, or second opinions.
+public struct RemoteModelOption: Codable, Hashable, Sendable, Identifiable {
+    public var providerID: String
+    public var modelID: String
+    public var name: String
+    public var makerName: String
+    public var engineLabel: String
+
+    public var id: String { "\(providerID)/\(modelID)" }
+
+    public init(providerID: String, modelID: String, name: String, makerName: String, engineLabel: String) {
+        self.providerID = providerID
+        self.modelID = modelID
+        self.name = name
+        self.makerName = makerName
+        self.engineLabel = engineLabel
+    }
+}
+
+/// Request from the phone to switch or stage a model in a session.
+public struct RemoteChangeModel: Codable, Hashable, Sendable {
+    public var sessionID: String
+    public var providerID: String
+    public var modelID: String
+
+    public init(sessionID: String, providerID: String, modelID: String) {
+        self.sessionID = sessionID
+        self.providerID = providerID
+        self.modelID = modelID
+    }
+}
+
+/// Request from the phone to create a new solo session.
+public struct RemoteCreateSession: Codable, Hashable, Sendable {
+    public var directory: String
+    public var providerID: String
+    public var modelID: String
+    public var title: String?
+
+    public init(directory: String, providerID: String, modelID: String, title: String? = nil) {
+        self.directory = directory
+        self.providerID = providerID
+        self.modelID = modelID
+        self.title = title
+    }
+}
+
+/// One agent specification when creating a room from the phone.
+public struct RemoteNewRoomAgent: Codable, Hashable, Sendable {
+    public var name: String
+    public var role: String
+    public var providerID: String
+    public var modelID: String
+
+    public init(name: String, role: String = "", providerID: String, modelID: String) {
+        self.name = name
+        self.role = role
+        self.providerID = providerID
+        self.modelID = modelID
+    }
+}
+
+/// Request from the phone to create a new multi-agent room.
+public struct RemoteCreateRoom: Codable, Hashable, Sendable {
+    public var directory: String
+    public var title: String
+    public var mode: RoomMode
+    public var agents: [RemoteNewRoomAgent]
+
+    public init(directory: String, title: String, mode: RoomMode, agents: [RemoteNewRoomAgent]) {
+        self.directory = directory
+        self.title = title
+        self.mode = mode
+        self.agents = agents
+    }
+}
+
+/// One changed file in a session or room working-tree diff.
+public struct RemoteDiffFile: Codable, Hashable, Sendable, Identifiable {
+    public var path: String
+    public var status: String
+    public var additions: Int
+    public var deletions: Int
+    public var diffText: String
+
+    public var id: String { path }
+
+    public init(path: String, status: String, additions: Int, deletions: Int, diffText: String) {
+        self.path = path
+        self.status = status
+        self.additions = additions
+        self.deletions = deletions
+        self.diffText = diffText
+    }
+}
+
+/// Working-tree diff for one session or room.
+public struct RemoteSessionDiff: Codable, Hashable, Sendable {
+    public var sessionID: String
+    public var directory: String
+    public var files: [RemoteDiffFile]
+    public var truncated: Bool
+
+    public init(sessionID: String, directory: String, files: [RemoteDiffFile], truncated: Bool = false) {
+        self.sessionID = sessionID
+        self.directory = directory
+        self.files = files
+        self.truncated = truncated
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID, directory, files, truncated
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try c.decode(String.self, forKey: .sessionID)
+        directory = try c.decode(String.self, forKey: .directory)
+        files = try c.decodeIfPresent([RemoteDiffFile].self, forKey: .files) ?? []
+        truncated = try c.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+    }
+}
+
+/// An inline second-opinion critique attached to an assistant reply.
+public struct RemoteSecondOpinion: Codable, Hashable, Sendable, Identifiable {
+    public var id: UUID
+    public var itemID: String
+    public var modelName: String
+    public var makerName: String
+    /// `"running"`, `"ready"`, or `"failed"`.
+    public var status: String
+    public var verdict: String?
+    public var summary: String?
+    public var concerns: [String]
+    public var details: String?
+    public var error: String?
+
+    public init(id: UUID = UUID(), itemID: String, modelName: String, makerName: String, status: String,
+                verdict: String? = nil, summary: String? = nil, concerns: [String] = [],
+                details: String? = nil, error: String? = nil) {
+        self.id = id
+        self.itemID = itemID
+        self.modelName = modelName
+        self.makerName = makerName
+        self.status = status
+        self.verdict = verdict
+        self.summary = summary
+        self.concerns = concerns
+        self.details = details
+        self.error = error
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, itemID, modelName, makerName, status, verdict, summary, concerns, details, error
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        itemID = try c.decode(String.self, forKey: .itemID)
+        modelName = try c.decode(String.self, forKey: .modelName)
+        makerName = try c.decodeIfPresent(String.self, forKey: .makerName) ?? ""
+        status = try c.decode(String.self, forKey: .status)
+        verdict = try c.decodeIfPresent(String.self, forKey: .verdict)
+        summary = try c.decodeIfPresent(String.self, forKey: .summary)
+        concerns = try c.decodeIfPresent([String].self, forKey: .concerns) ?? []
+        details = try c.decodeIfPresent(String.self, forKey: .details)
+        error = try c.decodeIfPresent(String.self, forKey: .error)
+    }
+}
+
+/// Request from the phone to ask another model for a second opinion on a reply.
+public struct RemoteSecondOpinionRequest: Codable, Hashable, Sendable {
+    public var sessionID: String
+    public var itemID: String
+    public var replyText: String
+    public var providerID: String
+    public var modelID: String
+
+    public init(sessionID: String, itemID: String, replyText: String, providerID: String, modelID: String) {
+        self.sessionID = sessionID
+        self.itemID = itemID
+        self.replyText = replyText
+        self.providerID = providerID
+        self.modelID = modelID
     }
 }
 
@@ -604,10 +826,29 @@ public struct RemotePlanResponse: Codable, Hashable, Sendable {
 public struct RemoteHubSnapshot: Codable, Hashable, Sendable {
     public var sessions: [SessionSummary]
     public var permissions: [PermissionRequest]
+    /// Models the Mac can currently run (added after protocol 4 shipped).
+    public var availableModels: [RemoteModelOption]
+    /// Recent project directories (added after protocol 4 shipped).
+    public var recentFolders: [String]
 
-    public init(sessions: [SessionSummary], permissions: [PermissionRequest] = []) {
+    public init(sessions: [SessionSummary], permissions: [PermissionRequest] = [],
+                availableModels: [RemoteModelOption] = [], recentFolders: [String] = []) {
         self.sessions = sessions
         self.permissions = permissions
+        self.availableModels = availableModels
+        self.recentFolders = recentFolders
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessions, permissions, availableModels, recentFolders
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessions = try c.decode([SessionSummary].self, forKey: .sessions)
+        permissions = try c.decodeIfPresent([PermissionRequest].self, forKey: .permissions) ?? []
+        availableModels = (try? c.decodeIfPresent([RemoteModelOption].self, forKey: .availableModels)) ?? []
+        recentFolders = try c.decodeIfPresent([String].self, forKey: .recentFolders) ?? []
     }
 }
 
@@ -628,11 +869,18 @@ public enum RemoteUpdate: Codable, Hashable, Sendable {
     case roomUpserted(room: RemoteRoom)
     case roomRemoved(roomID: UUID)
     case usageSummary(summary: RemoteUsageSummary)
+    /// Full hub snapshot update (added after protocol 4 shipped).
+    case hubUpdated(hub: RemoteHubSnapshot)
+    /// Full transcript snapshot update (added after protocol 4 shipped). Sent only to phones with the session open.
+    case transcriptUpdated(transcript: RemoteTranscript)
+    /// Empty session replaced during a cross-engine model restart (added after protocol 4 shipped).
+    case sessionReplaced(oldSessionID: String, newSession: SessionSummary)
 
     /// The session whose transcript this update changes, for updates that only phones with the chat open need.
     public var transcriptSessionID: String? {
         switch self {
         case .transcriptUpsert(let id, _), .textDelta(let id, _, _): id
+        case .transcriptUpdated(let t): t.sessionID
         default: nil
         }
     }
