@@ -16,6 +16,7 @@ struct ConversationView: View {
     @State private var position = ScrollPosition(edge: .bottom)
     /// The status line is too narrow for the "Work in a copy" switch; the composer's More menu offers it instead.
     @State private var worktreeSwitchInMore = false
+    @Environment(\.transcriptActions) private var parentActions
 
     static let columnWidth: CGFloat = 760
     /// Below this width (before zoom) the transcript, the composer and the status line use tighter side padding.
@@ -24,6 +25,7 @@ struct ConversationView: View {
     var body: some View {
         VStack(spacing: 0) {
             transcript
+                .environment(\.transcriptActions, enrichedTranscriptActions)
             ComposerColumn {
                 // "Trust this folder?" when the session's engine skips or refuses the folder's own settings.
                 SessionTrustCard(store: store, session: session)
@@ -43,6 +45,45 @@ struct ConversationView: View {
         .environment(\.sessionDirectory, session.directory)
         // Plan cards in the transcript answer through the store (`PlanCardView`).
         .environment(\.interactionStore, store)
+    }
+
+    private var activeRooms: RoomsController? {
+        RoomsController.live ?? AgentToolsCenter.shared.rooms
+    }
+
+    private var enrichedTranscriptActions: TranscriptActions {
+        var updated = parentActions
+        let session = self.session
+        let window = self.window
+        let openParent = parentActions.openSession
+        let rooms = activeRooms
+        updated.currentSessionID = session.id
+        updated.agentExchanges = AgentToolsCenter.shared.coordinator?.exchanges(for: session.id) ?? []
+        updated.secondOpinions = AgentToolsCenter.shared.secondOpinions.opinions(for: session.id)
+        updated.secondOpinionModels = SecondOpinionModels.options(from: store.models, current: session.info.model)
+        updated.canShowSecondOpinion = !isSnapshot
+        updated.openSession = { targetID in
+            if let roomID = UUID(uuidString: targetID),
+               let rooms,
+               rooms.state(roomID) != nil {
+                window.openRoom(roomID, rooms: rooms)
+            } else {
+                openParent(targetID)
+            }
+        }
+        updated.requestSecondOpinion = { itemID, replyText, model in
+            AgentToolsCenter.shared.requestSecondOpinion(in: session, itemID: itemID, replyText: replyText, model: model)
+        }
+        updated.retrySecondOpinion = { opinion in
+            AgentToolsCenter.shared.retrySecondOpinion(opinion, in: session)
+        }
+        updated.dismissSecondOpinion = { opinion in
+            AgentToolsCenter.shared.dismissSecondOpinion(opinion)
+        }
+        updated.dismissAgentExchange = { exchange in
+            AgentToolsCenter.shared.coordinator?.dismissExchange(exchange.id, for: session.id)
+        }
+        return updated
     }
 
     private var content: some View {

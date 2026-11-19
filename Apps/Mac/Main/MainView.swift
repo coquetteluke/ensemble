@@ -292,7 +292,7 @@ struct CenterColumn: View {
     var body: some View {
         VStack(spacing: 0) {
             // A room draws its own header (title, mode, phase, Pause, Stop, Take over); split panes draw one each.
-            if window.route != .room && !showsSplit { CenterHeader(store: store, window: window) }
+            if window.route != .room && !showsSplit { CenterHeader(store: store, window: window, rooms: rooms) }
             switch window.route {
             case .session:
                 if showsSplit {
@@ -459,7 +459,19 @@ private struct RoomsWindowSync: ViewModifier {
 struct CenterHeader: View {
     let store: SessionStore
     @Bindable var window: WindowState
+    var rooms: RoomsController? = nil
     @Environment(\.theme) private var theme
+    @Environment(\.isSnapshot) private var isSnapshot
+    @State private var showPromoteSheet = false
+    @State private var promotingToRoom = false
+
+    private var activeRooms: RoomsController? {
+        rooms ?? RoomsController.live ?? AgentToolsCenter.shared.rooms
+    }
+
+    private func addAgentDisabled(for session: SessionModel) -> Bool {
+        store.models.filter(\.available).count < 2 || promotingToRoom || activeRooms == nil
+    }
 
     var body: some View {
         HStack(spacing: theme.z(8)) {
@@ -507,7 +519,24 @@ struct CenterHeader: View {
                 EmptyView()
             }
             Spacer(minLength: theme.z(60))
-            if window.route == .session, store.selected != nil {
+            if window.route == .session, let session = store.selected {
+                if !session.isSubagent, store.sessionAgentIDs[session.id] == nil, !isSnapshot {
+                    let disabled = addAgentDisabled(for: session)
+                    Button {
+                        if activeRooms != nil { showPromoteSheet = true }
+                    } label: {
+                        HStack(spacing: theme.z(5)) {
+                            Image(systemName: "person.badge.plus")
+                                .font(theme.font(size: 11, weight: .medium))
+                            Text(promotingToRoom ? "Creating..." : "Add agent")
+                                .font(theme.font(size: 12, weight: .medium))
+                                .lineLimit(1)
+                        }
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(disabled)
+                    .help(disabled ? "Needs at least 2 available models" : "Add agents and continue in a room")
+                }
                 // Room for the window's toolbar button when no pane is open on the right.
                 TranscriptViewModeMenu()
                     .padding(.trailing, window.showContextPanel ? theme.z(12) : MainView.toolbarButtonsWidth)
@@ -517,6 +546,19 @@ struct CenterHeader: View {
         .frame(height: 52)
         .background(theme.background)
         .zIndex(1)
+        .sheet(isPresented: $showPromoteSheet) {
+            if let session = store.selected, let activeRooms {
+                PromoteToRoomSheet(
+                    store: store,
+                    session: session,
+                    rooms: activeRooms,
+                    isCreating: $promotingToRoom
+                ) { roomID in
+                    window.openRoom(roomID, rooms: activeRooms)
+                }
+                .ensembleTheme()
+            }
+        }
     }
 }
 

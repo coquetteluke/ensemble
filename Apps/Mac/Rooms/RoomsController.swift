@@ -7,6 +7,8 @@ import EnsembleKit
 @MainActor
 @Observable
 final class RoomsController {
+    weak static var live: RoomsController?
+
     let api: any OpenCodeAPI
     let store: any RoomStore
     let git: (any GitOps)?
@@ -54,6 +56,8 @@ final class RoomsController {
 
     /// Lists saved rooms, loads the model list and follows permission prompts and agent transcripts.
     func start() async {
+        Self.live = self
+        AgentToolsCenter.shared.rooms = self
         reload()
         guard eventTask == nil else { return }
         let stream = api.events()
@@ -218,6 +222,93 @@ final class RoomsController {
         return engine
     }
 
+    /// Promotes a solo session into a live room with its current model as Participant #1 (Lead) plus 1 to 3
+    /// additional models, injecting a compact context handoff summary (capped at 12,000 chars) to every participant.
+    @discardableResult
+    func promoteSessionToRoom(
+        session: SessionModel,
+        store: SessionStore,
+        title: String,
+        additionalModels: [ModelInfo],
+        mode: RoomMode,
+        starterPrompt: String = ""
+    ) async throws -> RoomEngine {
+        let leadModel = session.info.model
+            ?? store.models.first(where: \.available)?.ref
+            ?? ModelRef(providerID: "anthropic", id: "claude-sonnet-4")
+        let leadInfo = store.models.first { $0.ref == leadModel }
+            ?? ModelInfo(ref: leadModel, name: store.modelName(leadModel), providerName: leadModel.providerID)
+
+        var usedColors: [String] = []
+        var usedNames: [String] = []
+
+        let leadColor = RoomPalette.next(after: usedColors)
+        usedColors.append(leadColor)
+        let leadName = NewRoomDraft.defaultName(for: leadInfo, taken: usedNames)
+        usedNames.append(leadName)
+        let leadAgent = AgentSpec(
+            name: leadName,
+            model: leadModel,
+            role: "Lead from solo session",
+            colorHex: leadColor
+        )
+
+        var agents = [leadAgent]
+        for model in additionalModels.prefix(3) {
+            let color = RoomPalette.next(after: usedColors)
+            usedColors.append(color)
+            let name = NewRoomDraft.defaultName(for: model, taken: usedNames)
+            usedNames.append(name)
+            agents.append(
+                AgentSpec(
+                    name: name,
+                    model: model.ref,
+                    role: "",
+                    colorHex: color
+                )
+            )
+        }
+
+        let folder = store.projectFolder(for: session)
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackTitle = session.info.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let roomTitle = cleanTitle.isEmpty
+            ? (fallbackTitle.isEmpty ? Format.folderName(folder) : fallbackTitle)
+            : cleanTitle
+        let permMode: PermissionMode = session.permissionMode == .plan ? .auto : session.permissionMode
+        let spec = RoomSpec(
+            title: roomTitle,
+            directory: folder,
+            agents: agents,
+            mode: mode,
+            leadAgentID: mode == .debate ? nil : leadAgent.id,
+            permissionMode: permMode
+        )
+
+        let engine = try await create(spec: spec, userLeads: false)
+
+        let handoff = RoomHandoffBuilder.build(
+            title: roomTitle,
+            directory: folder,
+            modelName: store.modelName(leadModel),
+            items: session.items,
+            changedFiles: session.changedFiles
+        )
+        for agent in spec.agents {
+            if let sid = engine.sessionID(for: agent.id) {
+                try? await api.injectSynthetic(sid, text: handoff, wake: false)
+            }
+        }
+
+        syncAgents(into: store)
+        let trimmedPrompt = starterPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let task = trimmedPrompt.isEmpty
+            ? "Continue from the handed-off solo conversation context and collaborate on next steps."
+            : trimmedPrompt
+        await engine.start(task: task)
+        return engine
+    }
+
     /// Stops listening to a room. Its sessions, board and file stay.
     func close(_ roomID: UUID) {
         engines[roomID]?.close()
@@ -282,6 +373,8 @@ final class RoomsController {
     /// Gives the session store each room agent's name and colour, so room sessions show them in the session list
     /// and in the normal session view. Call after `start()` and when `rooms` changes.
     func syncAgents(into store: SessionStore) {
+        Self.live = self
+        AgentToolsCenter.shared.rooms = self
         for room in rooms {
             for agent in room.spec.agents {
                 if store.agents[agent.id] != agent { store.agents[agent.id] = agent }
