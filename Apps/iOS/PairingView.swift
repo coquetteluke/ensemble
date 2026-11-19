@@ -3,147 +3,102 @@ import EnsembleKit
 import SwiftUI
 import VisionKit
 
-/// First run: scan the QR code from the Mac, or paste the pairing code.
+/// First run and re-pairing: live QR scanner with paste-code sheet and Demo entry.
 struct PairingView: View {
     @Environment(RemoteAppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    /// True when shown as a sheet from Settings to pair again.
     var isSheet = false
 
     @State private var scanning = false
+    @State private var showPasteSheet = false
     @State private var pasted = ""
     @State private var error: String?
     @State private var cameraDenied = false
 
-    private var scannerAvailable: Bool {
-        DataScannerViewController.isSupported
-    }
+    private var scannerAvailable: Bool { DataScannerViewController.isSupported }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                header
+            VStack(alignment: .leading, spacing: 24) {
+                PairingHeader(isSheet: isSheet)
+
                 if scanning {
-                    scannerCard
+                    PairingScannerCard(
+                        onCode: { code in
+                            scanning = false
+                            submit(code)
+                        },
+                        onClose: { scanning = false }
+                    )
                 } else {
-                    scanButton
+                    VStack(alignment: .leading, spacing: 12) {
+                        Button {
+                            Task { await startScanning() }
+                        } label: {
+                            Label("Scan pairing code", systemImage: "qrcode.viewfinder")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(RemotePrimaryButtonStyle(minHeight: 50))
+                        .disabled(!scannerAvailable)
+
+                        if !scannerAvailable {
+                            Text("Camera scanning is unavailable on this device.")
+                                .font(RemoteTheme.font(size: 12.5, relativeTo: .caption))
+                                .foregroundStyle(RemoteTheme.tertiaryText)
+                        } else if cameraDenied {
+                            Text("Allow camera access in Settings to scan.")
+                                .font(RemoteTheme.font(size: 12.5, relativeTo: .caption))
+                                .foregroundStyle(RemoteTheme.warning)
+                        }
+
+                        Button {
+                            error = nil
+                            showPasteSheet = true
+                        } label: {
+                            Label("Paste pairing code", systemImage: "doc.on.clipboard")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(RemoteSecondaryButtonStyle(minHeight: 48))
+                    }
+                    .remoteCard(padding: 16)
                 }
-                pasteCard
+
                 if let error {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.footnote)
+                        .font(RemoteTheme.font(size: 13.5, relativeTo: .footnote))
                         .foregroundStyle(RemoteTheme.danger)
                 }
+
                 if !isSheet {
-                    Button("Try with sample data") { model.startDemo() }
-                        .font(.footnote)
-                        .foregroundStyle(RemoteTheme.secondaryText)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 8)
+                    Button {
+                        model.startDemo()
+                    } label: {
+                        Text("Try Demo")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(RemoteSecondaryButtonStyle())
                 }
             }
             .padding(20)
-            // Readable line length on the wide inner screen; full width on a phone.
-            .frame(maxWidth: 560)
+            .frame(maxWidth: 500)
             .frame(maxWidth: .infinity)
         }
         .remoteScreen()
         .toolbar {
             if isSheet {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-            }
-        }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Image(systemName: "iphone.and.arrow.forward")
-                .font(.system(size: 34, weight: .light))
-                .foregroundStyle(Color.accentColor)
-                .padding(.bottom, 6)
-            Text("Pair with your Mac")
-                .font(.title.weight(.semibold))
-                .foregroundStyle(RemoteTheme.primaryText)
-            Text("On your Mac, open Ensemble, turn on Remote Control and choose Show pairing code. Keep Tailscale on on both devices to connect from anywhere.")
-                .font(.subheadline)
-                .foregroundStyle(RemoteTheme.secondaryText)
-        }
-        .padding(.top, isSheet ? 0 : 40)
-    }
-
-    private var scanButton: some View {
-        Button {
-            Task { await startScanning() }
-        } label: {
-            Label("Scan pairing code", systemImage: "qrcode.viewfinder")
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
-        }
-        .buttonStyle(.borderedProminent)
-        .buttonBorderShape(.roundedRectangle(radius: 12))
-        .disabled(!scannerAvailable)
-        .overlay(alignment: .bottom) {
-            if !scannerAvailable {
-                Text("This device cannot scan codes. Paste the code instead.")
-                    .font(.caption)
-                    .foregroundStyle(RemoteTheme.tertiaryText)
-                    .offset(y: 26)
-            } else if cameraDenied {
-                Text("Allow camera access in Settings to scan.")
-                    .font(.caption)
-                    .foregroundStyle(RemoteTheme.warning)
-                    .offset(y: 26)
-            }
-        }
-        .padding(.bottom, scannerAvailable && !cameraDenied ? 0 : 22)
-    }
-
-    private var scannerCard: some View {
-        ZStack(alignment: .topTrailing) {
-            QRScannerView { code in
-                scanning = false
-                submit(code)
-            }
-            .frame(height: 320)
-            .clipShape(RoundedRectangle(cornerRadius: RemoteTheme.cornerRadius, style: .continuous))
-            Button {
-                scanning = false
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(.white)
-            }
-            .padding(10)
-            .accessibilityLabel("Stop scanning")
-        }
-    }
-
-    private var pasteCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Or paste the pairing code")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(RemoteTheme.primaryText)
-            TextField("Pairing code", text: $pasted, axis: .vertical)
-                .font(.system(.footnote, design: .monospaced))
-                .lineLimit(3...6)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .padding(10)
-                .background(RemoteTheme.cardRaised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            HStack {
-                Button("Paste") {
-                    if let text = UIPasteboard.general.string { pasted = text }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
                 }
-                .buttonStyle(.bordered)
-                Spacer()
-                Button("Pair") { submit(pasted) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(pasted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .remoteCard()
+        .sheet(isPresented: $showPasteSheet) {
+            PastePairingSheet(
+                code: $pasted,
+                error: $error,
+                onPair: { submit(pasted) }
+            )
+            .remoteThemeEnvironment()
+        }
     }
 
     private func startScanning() async {
@@ -165,10 +120,122 @@ struct PairingView: View {
         do {
             try model.pair(with: code)
             error = nil
+            showPasteSheet = false
             if isSheet { dismiss() }
         } catch {
             self.error = error.localizedDescription
         }
+    }
+}
+
+private struct PairingHeader: View {
+    let isSheet: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ConstellationSpinner(size: 46, frozenAt: 1.1)
+                .padding(.bottom, 4)
+            Text("Pair with your Mac")
+                .font(RemoteTheme.font(size: 26, weight: .semibold, relativeTo: .title))
+                .foregroundStyle(RemoteTheme.primaryText)
+            Text("Open Ensemble > Settings > Remote Control on your Mac.")
+                .font(RemoteTheme.font(size: 14.5, relativeTo: .subheadline))
+                .foregroundStyle(RemoteTheme.secondaryText)
+        }
+        .padding(.top, isSheet ? 4 : 32)
+    }
+}
+
+private struct PairingScannerCard: View {
+    let onCode: (String) -> Void
+    let onClose: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            QRScannerView(onCode: onCode)
+                .frame(height: 320)
+                .clipShape(RoundedRectangle(cornerRadius: RemoteTheme.cornerRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: RemoteTheme.cornerRadius, style: .continuous)
+                        .strokeBorder(RemoteTheme.border, lineWidth: 1)
+                )
+
+            Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title2)
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(.white)
+                    .frame(minWidth: RemoteTheme.minTapTarget, minHeight: RemoteTheme.minTapTarget)
+            }
+            .padding(6)
+            .accessibilityLabel("Stop scanning")
+        }
+    }
+}
+
+private struct PastePairingSheet: View {
+    @Binding var code: String
+    @Binding var error: String?
+    let onPair: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focused: Bool
+
+    private var trimmedEmpty: Bool {
+        code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                TextField("Pairing code", text: $code, axis: .vertical)
+                    .font(RemoteTheme.font(size: 13.5, design: .monospaced, relativeTo: .footnote))
+                    .lineLimit(4...8)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused($focused)
+                    .padding(12)
+                    .background(RemoteTheme.cardRaised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(RemoteTheme.border, lineWidth: 1)
+                    )
+
+                if let error {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
+                        .foregroundStyle(RemoteTheme.danger)
+                }
+
+                HStack(spacing: 10) {
+                    Button("Paste") {
+                        if let text = UIPasteboard.general.string {
+                            code = text
+                            error = nil
+                        }
+                    }
+                    .buttonStyle(RemoteSecondaryButtonStyle())
+
+                    Spacer()
+
+                    Button("Pair", action: onPair)
+                        .buttonStyle(RemotePrimaryButtonStyle())
+                        .disabled(trimmedEmpty)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(16)
+            .remoteScreen()
+            .navigationTitle("Paste pairing code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+            .onAppear { focused = true }
+        }
+        .presentationDetents([.medium])
     }
 }
 
@@ -184,7 +251,8 @@ struct QRScannerView: UIViewControllerRepresentable {
             isHighFrameRateTrackingEnabled: false,
             isPinchToZoomEnabled: true,
             isGuidanceEnabled: true,
-            isHighlightingEnabled: true)
+            isHighlightingEnabled: true
+        )
         scanner.delegate = context.coordinator
         return scanner
     }

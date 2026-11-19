@@ -1,268 +1,386 @@
 import EnsembleKit
 import SwiftUI
 
-/// Session Hub: every session and room sorted into Needs you, Running and Finished, with quick actions.
+/// Standalone Session Hub screen for compact width (outer Duo screen).
 struct HubView: View {
     let client: RemoteClient
-    /// Highlighted row (the chat open in the detail column on the inner screen).
     var selectedSessionID: String?
     var open: (ChatRoute) -> Void
+
+    var body: some View {
+        HubBoardContent(client: client, selectedSessionID: selectedSessionID, open: open)
+            .navigationTitle("Session Hub")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    StatusPill(client: client, inToolbar: true)
+                }
+            }
+    }
+}
+
+/// Reusable Session Hub board used in both the compact tab and the unfolded split sidebar.
+struct HubBoardContent: View {
+    let client: RemoteClient
+    var selectedSessionID: String?
+    var open: (ChatRoute) -> Void
+
     @State private var showOld = false
     @State private var actionError: String?
 
     private var groups: [HubBucket: [SessionSummary]] { HubBoard.group(client.sessions) }
     private var visibleBuckets: [HubBucket] {
-        let g = groups
-        return [HubBucket.needsYou, .running, .finished].filter { !(g[$0] ?? []).isEmpty }
+        let grouped = groups
+        return [HubBucket.needsYou, .running, .finished].filter { !(grouped[$0] ?? []).isEmpty }
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                if client.sessions.isEmpty {
-                    emptyState
+            LazyVStack(alignment: .leading, spacing: RemoteTheme.sectionGap) {
+                if !client.isInProcess && !client.state.isConnected {
+                    HubConnectionBanner(client: client)
                 }
+
+                if client.sessions.isEmpty {
+                    HubEmptyState(client: client)
+                }
+
                 ForEach(visibleBuckets, id: \.self) { bucket in
                     let rows = groups[bucket] ?? []
-                    VStack(alignment: .leading, spacing: 10) {
-                        section(bucket.label, count: rows.count)
-                        ForEach(rows) { row($0, bucket: bucket) }
-                    }
+                    HubSectionBlock(
+                        bucket: bucket,
+                        rows: rows,
+                        client: client,
+                        selectedSessionID: selectedSessionID,
+                        open: open,
+                        onAct: runAction,
+                        onError: { actionError = $0 }
+                    )
                 }
+
                 if let old = groups[.old], !old.isEmpty {
-                    Button {
-                        withAnimation(.snappy) { showOld.toggle() }
-                    } label: {
-                        HStack {
-                            Text(showOld ? "Hide older" : "Show older (\(old.count))")
-                            Image(systemName: showOld ? "chevron.up" : "chevron.down")
-                        }
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(RemoteTheme.secondaryText)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                    }
-                    .buttonStyle(.plain)
-                    if showOld {
-                        ForEach(old) { row($0, bucket: .old) }
-                    }
+                    HubOldSection(
+                        rows: old,
+                        expanded: $showOld,
+                        client: client,
+                        selectedSessionID: selectedSessionID,
+                        open: open,
+                        onAct: runAction,
+                        onError: { actionError = $0 }
+                    )
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, RemoteTheme.screenHorizontalPadding)
+            .padding(.top, 12)
             .padding(.bottom, 24)
         }
         .remoteScreen()
-        .navigationTitle("Session Hub")
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { StatusPill(client: client) } }
-        .refreshable { try? await client.refreshHub() }
+        .refreshable {
+            if !client.state.isConnected && !client.isInProcess {
+                client.reconnectNow()
+            }
+            try? await client.refreshHub()
+        }
         .actionErrorAlert($actionError)
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "tray")
-                .font(.largeTitle)
-                .foregroundStyle(RemoteTheme.tertiaryText)
-            Text(emptyText)
-                .font(.headline)
-                .foregroundStyle(RemoteTheme.secondaryText)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 80)
-    }
-
-    private var emptyText: String {
-        switch client.state {
-        case .connected: return "No sessions yet"
-        case .macOffline, .limitReached, .rejected: return client.state.statusText
-        case .idle, .connecting, .waiting: return "Waiting for your Mac"
-        }
-    }
-
-    private func section(_ title: String, count: Int) -> some View {
-        HStack(spacing: 6) {
-            Text(title)
-            Text("\(count)").foregroundStyle(RemoteTheme.tertiaryText)
-        }
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(RemoteTheme.secondaryText)
-        .padding(.top, 14)
-        .padding(.leading, 4)
-    }
-
-    private func row(_ s: SessionSummary, bucket: HubBucket) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button {
-                open(ChatRoute(sessionID: s.id, title: s.title))
-            } label: {
-                HubRowHeader(session: s, bucket: bucket)
-            }
-            .buttonStyle(.plain)
-            quickActions(s, bucket: bucket)
-        }
-        .remoteCard(selected: s.id == selectedSessionID)
-    }
-
-    @ViewBuilder
-    private func quickActions(_ s: SessionSummary, bucket: HubBucket) -> some View {
-        if let roomID = s.roomID, let room = client.room(id: roomID) {
-            roomActions(room)
-        } else if let ask = client.pendingPermissions(for: s.id).first, ask.isInteraction {
-            interactionActions(ask, session: s)
-        } else if let ask = client.pendingPermissions(for: s.id).first, PermissionDisplay.fitsQuickApproval(ask) {
-            VStack(alignment: .leading, spacing: 8) {
-                // Never truncated: everything a one-tap approval covers is on screen.
-                Text(ask.title)
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(RemoteTheme.primaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RemoteTheme.cardRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                HStack(spacing: 8) {
-                    Button("Allow once") { reply(ask, .once) }
-                        .buttonStyle(.borderedProminent)
-                    Button("Reject", role: .destructive) { reply(ask, .reject) }
-                        .buttonStyle(.bordered)
-                        .tint(RemoteTheme.danger)
-                }
-                .controlSize(.small)
-            }
-        } else if bucket == .running {
-            Button {
-                act { try await client.interrupt(target(for: s)) }
-            } label: {
-                Label("Stop", systemImage: "stop.fill")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
-    }
-
-    /// A room: open its decision, answer a short command from one of its agents in one tap (longer ones open the room),
-    /// or pause it while it runs.
-    @ViewBuilder
-    private func roomActions(_ room: RemoteRoom) -> some View {
-        let route = ChatRoute(sessionID: room.sessionID, title: room.title)
-        if let decision = client.openDecision(inRoom: room.id), decision.needsYou {
-            Button(RoomText.openLabel(decision)) { open(route) }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-        } else if let request = client.pendingPermissions(inRoom: room.id).first {
-            RoomPromptRow(request: request, agent: room.agents.first { $0.sessionID == request.sessionID }, client: client,
-                          open: { open(route) }, onError: { actionError = $0 })
-        } else if room.state == .running {
-            Button {
-                act { try await client.controlRoom(room.id, action: .pause) }
-            } label: {
-                Label("Pause", systemImage: "pause.fill")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
-    }
-
-    /// A plan: Proceed in its modes or Keep planning. A single question with choices: one tap per choice. Anything
-    /// else (several questions, checkboxes, typed answers) opens the chat, where the full card is.
-    @ViewBuilder
-    private func interactionActions(_ ask: PermissionRequest, session s: SessionSummary) -> some View {
-        if let plan = ask.plan {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(plan.title)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(RemoteTheme.primaryText)
-                    .lineLimit(3)
-                PlanButtons(plan: plan) { decision in
-                    act { try await client.respond(to: ask, decision: decision) }
-                }
-            }
-        } else if let questions = ask.questions, questions.count == 1, let question = questions.first,
-                  !question.multiSelect, !question.options.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(question.text)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(RemoteTheme.primaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                FlowButtons(labels: question.options.map(\.label)) { label in
-                    act { try await client.answer(ask, answers: [AgentQuestionAnswer(questionID: question.id, selected: [label])]) }
-                }
-                if question.allowsOther {
-                    Button("Type an answer") { open(ChatRoute(sessionID: s.id, title: s.title)) }
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(RemoteTheme.secondaryText)
-                }
-            }
-        } else {
-            Button {
-                open(ChatRoute(sessionID: s.id, title: s.title))
-            } label: {
-                Label("Answer", systemImage: "questionmark.bubble")
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-        }
-    }
-
-    private func target(for s: SessionSummary) -> RemoteTarget {
-        s.roomID.map { .room($0) } ?? .session(s.id)
-    }
-
-    private func reply(_ request: PermissionRequest, _ decision: PermissionDecision) {
-        act { try await client.reply(to: request, decision: decision) }
-    }
-
-    private func act(_ work: @escaping () async throws -> Void) {
+    private func runAction(_ work: @escaping () async throws -> Void) {
         Task {
             do { try await work() } catch { actionError = error.localizedDescription }
         }
     }
 }
 
+// MARK: - Connection banner & empty state
+
+struct HubConnectionBanner: View {
+    let client: RemoteClient
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(RemoteTheme.font(size: 16, weight: .semibold, relativeTo: .body))
+                .foregroundStyle(tint)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(client.state.statusText)
+                    .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .subheadline))
+                    .foregroundStyle(RemoteTheme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            Button("Reconnect") { client.reconnectNow() }
+                .buttonStyle(RemoteSecondaryButtonStyle(minHeight: 38))
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.09), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(tint.opacity(0.35), lineWidth: 1)
+        )
+    }
+
+    private var tint: Color {
+        switch client.state {
+        case .macOffline, .connecting, .waiting: RemoteTheme.warning
+        case .idle, .rejected, .limitReached: RemoteTheme.danger
+        case .connected: RemoteTheme.success
+        }
+    }
+
+    private var icon: String {
+        switch client.state {
+        case .macOffline: "desktopcomputer.trianglebadge.exclamationmark"
+        case .rejected, .limitReached: "exclamationmark.triangle.fill"
+        default: "wifi.exclamationmark"
+        }
+    }
+}
+
+private struct HubEmptyState: View {
+    let client: RemoteClient
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "tray")
+                .font(.system(size: 32, weight: .light))
+                .foregroundStyle(RemoteTheme.tertiaryText)
+            Text(emptyText)
+                .font(RemoteTheme.font(size: 16, weight: .medium, relativeTo: .headline))
+                .foregroundStyle(RemoteTheme.secondaryText)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 72)
+    }
+
+    private var emptyText: String {
+        switch client.state {
+        case .connected: "No sessions yet"
+        case .macOffline, .limitReached, .rejected: client.state.statusText
+        case .idle, .connecting, .waiting: "Waiting for your Mac"
+        }
+    }
+}
+
+// MARK: - Sections & Cards
+
+private struct HubSectionBlock: View {
+    let bucket: HubBucket
+    let rows: [SessionSummary]
+    let client: RemoteClient
+    let selectedSessionID: String?
+    let open: (ChatRoute) -> Void
+    let onAct: (@escaping () async throws -> Void) -> Void
+    let onError: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemoteTheme.cardGap) {
+            HubSectionHeader(bucket: bucket, count: rows.count)
+            ForEach(rows) { session in
+                HubSessionCard(
+                    session: session,
+                    bucket: bucket,
+                    client: client,
+                    selected: session.id == selectedSessionID,
+                    open: open,
+                    onAct: onAct,
+                    onError: onError
+                )
+            }
+        }
+    }
+}
+
+private struct HubOldSection: View {
+    let rows: [SessionSummary]
+    @Binding var expanded: Bool
+    let client: RemoteClient
+    let selectedSessionID: String?
+    let open: (ChatRoute) -> Void
+    let onAct: (@escaping () async throws -> Void) -> Void
+    let onError: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: RemoteTheme.cardGap) {
+            Button {
+                withAnimation(.snappy) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(expanded ? "Hide older" : "Older")
+                        .font(RemoteTheme.font(size: 14, weight: .semibold, relativeTo: .subheadline))
+                    Text("\(rows.count)")
+                        .font(RemoteTheme.font(size: 12, weight: .semibold, relativeTo: .caption).monospacedDigit())
+                        .foregroundStyle(RemoteTheme.tertiaryText)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(RemoteTheme.cardRaised, in: Capsule())
+                    Spacer(minLength: 4)
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(RemoteTheme.font(size: 12, weight: .semibold, relativeTo: .caption))
+                }
+                .foregroundStyle(RemoteTheme.secondaryText)
+                .padding(.horizontal, 4)
+                .frame(minHeight: RemoteTheme.minTapTarget)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                ForEach(rows) { session in
+                    HubSessionCard(
+                        session: session,
+                        bucket: .old,
+                        client: client,
+                        selected: session.id == selectedSessionID,
+                        open: open,
+                        onAct: onAct,
+                        onError: onError
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct HubSectionHeader: View {
+    let bucket: HubBucket
+    let count: Int
+
+    var body: some View {
+        HStack(spacing: 8) {
+            marker
+            Text(bucket.label)
+                .font(RemoteTheme.font(size: 14, weight: .semibold, relativeTo: .subheadline))
+                .foregroundStyle(bucket == .needsYou ? RemoteTheme.primaryText : RemoteTheme.secondaryText)
+            Text("\(count)")
+                .font(RemoteTheme.font(size: 12, weight: .semibold, relativeTo: .caption).monospacedDigit())
+                .foregroundStyle(bucket == .needsYou ? RemoteTheme.warning : RemoteTheme.tertiaryText)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 2)
+                .background(
+                    (bucket == .needsYou ? RemoteTheme.warning.opacity(0.16) : RemoteTheme.cardRaised),
+                    in: Capsule()
+                )
+        }
+        .padding(.horizontal, 2)
+    }
+
+    @ViewBuilder
+    private var marker: some View {
+        switch bucket {
+        case .needsYou:
+            RemoteLiveDot(color: RemoteTheme.warning, size: 7)
+        case .running:
+            RemoteLiveDot(color: RemoteTheme.success, size: 7, pulsing: true)
+        case .finished:
+            Circle().fill(RemoteTheme.tertiaryText.opacity(0.5)).frame(width: 7, height: 7)
+        case .old:
+            Circle().fill(RemoteTheme.tertiaryText.opacity(0.35)).frame(width: 7, height: 7)
+        }
+    }
+}
+
+private struct HubSessionCard: View {
+    let session: SessionSummary
+    let bucket: HubBucket
+    let client: RemoteClient
+    let selected: Bool
+    let open: (ChatRoute) -> Void
+    let onAct: (@escaping () async throws -> Void) -> Void
+    let onError: (String) -> Void
+
+    var body: some View {
+        let hasInlineAction = (session.roomID.flatMap { client.room(id: $0) } != nil)
+            || !client.pendingPermissions(for: session.id).isEmpty
+        VStack(alignment: .leading, spacing: 12) {
+            Button {
+                open(ChatRoute(sessionID: session.id, title: session.title))
+            } label: {
+                HubRowHeader(session: session, bucket: bucket, showsInlineAction: hasInlineAction)
+            }
+            .buttonStyle(.plain)
+
+            HubQuickActions(
+                session: session,
+                bucket: bucket,
+                client: client,
+                open: open,
+                onAct: onAct,
+                onError: onError
+            )
+        }
+        .remoteCard(selected: selected, attention: bucket == .needsYou)
+    }
+}
+
 struct HubRowHeader: View {
     let session: SessionSummary
     let bucket: HubBucket
+    var showsInlineAction = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             indicator
-                .frame(width: 18, height: 18)
-                .padding(.top, 1)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline) {
+                .frame(width: 20, height: 20)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(session.title)
-                        .font(.body.weight(.medium))
+                        .font(RemoteTheme.font(size: 15.5, weight: .semibold, relativeTo: .body))
                         .foregroundStyle(RemoteTheme.primaryText)
                         .lineLimit(2)
+                        .multilineTextAlignment(.leading)
                     Spacer(minLength: 8)
                     Text(RemoteFormat.age(session.lastActivity))
-                        .font(.caption)
+                        .font(RemoteTheme.font(size: 12, relativeTo: .caption).monospacedDigit())
                         .foregroundStyle(RemoteTheme.tertiaryText)
+                        .fixedSize()
                 }
+
                 HStack(spacing: 6) {
-                    if session.roomID != nil {
-                        Image(systemName: "person.2.fill").font(.caption2)
+                    HStack(spacing: 4) {
+                        Image(systemName: session.roomID != nil ? "person.2.fill" : "folder")
+                            .font(RemoteTheme.font(size: 10.5, weight: .medium, relativeTo: .caption2))
+                        Text(RemoteFormat.folderName(session.directory))
                     }
-                    Text(RemoteFormat.folderName(session.directory))
+                    .foregroundStyle(RemoteTheme.secondaryText)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2.5)
+                    .background(RemoteTheme.inlineCodeBackground, in: Capsule())
+
                     if !session.agentNames.isEmpty {
-                        Text("·")
                         Text(session.agentNames.joined(separator: ", "))
+                            .foregroundStyle(RemoteTheme.secondaryText)
+                            .lineLimit(1)
+                    }
+
+                    if session.usage.costUSD > 0 {
+                        Spacer(minLength: 4)
+                        Text(RemoteFormat.cost(session.usage.costUSD))
+                            .foregroundStyle(RemoteTheme.tertiaryText)
+                            .monospacedDigit()
+                            .fixedSize()
                     }
                 }
-                .font(.caption)
-                .foregroundStyle(RemoteTheme.secondaryText)
-                .lineLimit(1)
-                if let ask = session.pendingAsk, bucket == .needsYou {
+                .font(RemoteTheme.font(size: 12, relativeTo: .caption))
+
+                if let ask = session.pendingAsk, bucket == .needsYou, !showsInlineAction {
                     Text(ask)
-                        .font(.footnote)
+                        .font(RemoteTheme.font(size: 13, weight: .medium, relativeTo: .footnote))
                         .foregroundStyle(RemoteTheme.warning)
                         .lineLimit(2)
                 }
             }
+
             Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
+                .font(RemoteTheme.font(size: 11.5, weight: .semibold, relativeTo: .caption))
                 .foregroundStyle(RemoteTheme.tertiaryText)
-                .padding(.top, 4)
+                .padding(.top, 5)
         }
         .contentShape(Rectangle())
     }
@@ -271,34 +389,162 @@ struct HubRowHeader: View {
     private var indicator: some View {
         switch bucket {
         case .needsYou:
-            Image(systemName: "exclamationmark.circle.fill").foregroundStyle(RemoteTheme.warning)
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 17))
+                .foregroundStyle(RemoteTheme.warning)
         case .running:
-            ProgressView().controlSize(.small)
+            ConstellationSpinner(size: 16)
         case .finished:
-            Image(systemName: "checkmark.circle").foregroundStyle(RemoteTheme.success)
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 16))
+                .foregroundStyle(RemoteTheme.success)
         case .old:
-            Image(systemName: "clock").foregroundStyle(RemoteTheme.tertiaryText)
+            Image(systemName: "clock")
+                .font(.system(size: 15))
+                .foregroundStyle(RemoteTheme.tertiaryText)
         }
     }
 }
 
-/// Small bordered buttons that wrap onto more lines when they do not fit.
+// MARK: - Quick actions
+
+private struct HubQuickActions: View {
+    let session: SessionSummary
+    let bucket: HubBucket
+    let client: RemoteClient
+    let open: (ChatRoute) -> Void
+    let onAct: (@escaping () async throws -> Void) -> Void
+    let onError: (String) -> Void
+
+    var body: some View {
+        if let roomID = session.roomID, let room = client.room(id: roomID) {
+            HubRoomQuickActions(room: room, client: client, open: open, onAct: onAct, onError: onError)
+        } else if let ask = client.pendingPermissions(for: session.id).first, ask.isInteraction {
+            HubInteractionQuickActions(ask: ask, session: session, client: client, open: open, onAct: onAct)
+        } else if let ask = client.pendingPermissions(for: session.id).first, PermissionDisplay.fitsQuickApproval(ask) {
+            VStack(alignment: .leading, spacing: 10) {
+                // Never truncated: everything a one-tap approval covers is on screen.
+                RemoteCommandBox(text: ask.title)
+                HStack(spacing: 10) {
+                    Button("Allow once") {
+                        onAct { try await client.reply(to: ask, decision: .once) }
+                    }
+                    .buttonStyle(RemotePrimaryButtonStyle())
+
+                    Button("Reject", role: .destructive) {
+                        onAct { try await client.reply(to: ask, decision: .reject) }
+                    }
+                    .buttonStyle(
+                        RemoteSecondaryButtonStyle(
+                            foreground: RemoteTheme.danger,
+                            border: RemoteTheme.danger.opacity(0.4)
+                        )
+                    )
+                }
+            }
+        } else if bucket == .running {
+            let target: RemoteTarget = session.roomID.map { .room($0) } ?? .session(session.id)
+            Button {
+                onAct { try await client.interrupt(target) }
+            } label: {
+                Label("Stop", systemImage: "stop.fill")
+            }
+            .buttonStyle(RemoteSecondaryButtonStyle())
+        }
+    }
+}
+
+private struct HubRoomQuickActions: View {
+    let room: RemoteRoom
+    let client: RemoteClient
+    let open: (ChatRoute) -> Void
+    let onAct: (@escaping () async throws -> Void) -> Void
+    let onError: (String) -> Void
+
+    var body: some View {
+        let route = ChatRoute(sessionID: room.sessionID, title: room.title)
+        if let decision = client.openDecision(inRoom: room.id), decision.needsYou {
+            Button(RoomText.openLabel(decision)) { open(route) }
+                .buttonStyle(RemotePrimaryButtonStyle())
+        } else if let request = client.pendingPermissions(inRoom: room.id).first {
+            RoomPromptRow(
+                request: request,
+                agent: room.agents.first { $0.sessionID == request.sessionID },
+                client: client,
+                open: { open(route) },
+                onError: onError
+            )
+        } else if room.state == .running {
+            Button {
+                onAct { try await client.controlRoom(room.id, action: .pause) }
+            } label: {
+                Label("Pause", systemImage: "pause.fill")
+            }
+            .buttonStyle(RemoteSecondaryButtonStyle())
+        }
+    }
+}
+
+private struct HubInteractionQuickActions: View {
+    let ask: PermissionRequest
+    let session: SessionSummary
+    let client: RemoteClient
+    let open: (ChatRoute) -> Void
+    let onAct: (@escaping () async throws -> Void) -> Void
+
+    var body: some View {
+        if let plan = ask.plan {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(plan.title)
+                    .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
+                    .foregroundStyle(RemoteTheme.primaryText)
+                    .lineLimit(3)
+                PlanButtons(plan: plan) { decision in
+                    onAct { try await client.respond(to: ask, decision: decision) }
+                }
+            }
+        } else if let questions = ask.questions, questions.count == 1, let question = questions.first,
+                  !question.multiSelect, !question.options.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(question.text)
+                    .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
+                    .foregroundStyle(RemoteTheme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                FlowButtons(labels: question.options.map(\.label)) { label in
+                    onAct {
+                        try await client.answer(ask, answers: [AgentQuestionAnswer(questionID: question.id, selected: [label])])
+                    }
+                }
+                if question.allowsOther {
+                    Button("Type an answer") { open(ChatRoute(sessionID: session.id, title: session.title)) }
+                        .font(RemoteTheme.font(size: 13, weight: .medium, relativeTo: .footnote))
+                        .foregroundStyle(RemoteTheme.secondaryText)
+                        .frame(minHeight: 36)
+                }
+            }
+        } else {
+            Button {
+                open(ChatRoute(sessionID: session.id, title: session.title))
+            } label: {
+                Label("Answer", systemImage: "questionmark.bubble")
+            }
+            .buttonStyle(RemotePrimaryButtonStyle())
+        }
+    }
+}
+
+/// Small bordered buttons that wrap cleanly using FlowRow so labels never truncate.
 struct FlowButtons: View {
     let labels: [String]
     let onTap: (String) -> Void
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) { buttons }
-            VStack(alignment: .leading, spacing: 8) { buttons }
+        FlowRow(spacing: 8, lineSpacing: 8) {
+            ForEach(labels, id: \.self) { label in
+                Button(label) { onTap(label) }
+                    .buttonStyle(RemoteSecondaryButtonStyle(minHeight: 40))
+            }
         }
-        .controlSize(.small)
-    }
-
-    private var buttons: some View {
-        ForEach(labels, id: \.self) { label in
-            Button(label) { onTap(label) }
-                .buttonStyle(.bordered)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

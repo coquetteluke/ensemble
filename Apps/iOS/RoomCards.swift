@@ -1,10 +1,10 @@
 import EnsembleKit
 import SwiftUI
 
-// Pieces the Hub, the Rooms tab and the room chat share: the state chip, the agent strip, one-tap approval for short
-// commands, and the card for what a room waits on.
+// Pieces shared across Hub, Rooms, and Room Chat: state chip, tappable agent strip,
+// permission prompt row, room decision card, goal strip, and member roster.
 
-/// The room's step ("Waiting for plan approval", "Paused"), coloured by what it means for the user.
+/// The room's current step ("Building", "Awaiting approval", "Paused").
 struct RoomStateChip: View {
     let room: RemoteRoom
 
@@ -23,49 +23,93 @@ struct RoomStateChip: View {
     }
 }
 
-/// Each agent with its colour, name and what it is doing, in a line that scrolls sideways when it does not fit.
+/// Horizontal bar showing room state and participant agents. Tapping opens the Members sheet when provided.
 struct RoomAgentsBar: View {
     let room: RemoteRoom
+    var onTapMembers: (() -> Void)?
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                RoomStateChip(room: room)
-                ForEach(room.agents) { agent in
-                    HStack(spacing: 5) {
-                        Circle().fill(Color(remoteHex: agent.colorHex)).frame(width: 8, height: 8)
-                        Text(agent.name)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(RemoteTheme.primaryText)
-                        AgentActivityIcon(agent: agent)
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    RoomStateChip(room: room)
+                    ForEach(room.agents) { agent in
+                        agentChip(agent)
                     }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(RemoteTheme.cardRaised, in: Capsule())
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("\(agent.name), \(RoomText.activity(agent))")
+                    if let onTapMembers, !room.members.isEmpty || !room.agents.isEmpty {
+                        Button(action: onTapMembers) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "person.2")
+                                Text("Members")
+                                Image(systemName: "chevron.right")
+                                    .font(RemoteTheme.font(size: 9.5, weight: .semibold, relativeTo: .caption2))
+                            }
+                            .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption))
+                            .foregroundStyle(RemoteTheme.secondaryText)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(RemoteTheme.card, in: Capsule())
+                            .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .background(RemoteTheme.sidebar)
+            Rectangle().fill(RemoteTheme.separator).frame(height: 1)
         }
-        .background(RemoteTheme.background)
+    }
+
+    @ViewBuilder
+    private func agentChip(_ agent: RemoteAgent) -> some View {
+        let chip = HStack(spacing: 6) {
+            Circle().fill(Color(remoteHex: agent.colorHex)).frame(width: 8, height: 8)
+            Text(agent.name)
+                .font(RemoteTheme.font(size: 12.5, weight: .semibold, relativeTo: .caption))
+                .foregroundStyle(RemoteTheme.primaryText)
+            AgentActivityIcon(agent: agent)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(RemoteTheme.cardRaised, in: Capsule())
+        .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(agent.name), \(RoomText.activity(agent))")
+
+        if let onTapMembers {
+            Button(action: onTapMembers) { chip }
+                .buttonStyle(.plain)
+        } else {
+            chip
+        }
     }
 }
 
-/// A small mark for what an agent is doing: a spinner while it works, a raised hand while it waits for permission.
+/// Small activity mark for a room agent.
 struct AgentActivityIcon: View {
     let agent: RemoteAgent
 
     var body: some View {
         if agent.capped == true {
-            Image(systemName: "dollarsign.circle").font(.caption2).foregroundStyle(RemoteTheme.danger)
+            Image(systemName: "dollarsign.circle")
+                .font(RemoteTheme.font(size: 11, relativeTo: .caption2))
+                .foregroundStyle(RemoteTheme.danger)
         } else {
             switch agent.activity {
-            case .working: ProgressView().controlSize(.mini)
-            case .waitingForPermission: Image(systemName: "hand.raised.fill").font(.caption2).foregroundStyle(RemoteTheme.warning)
-            case .failed: Image(systemName: "xmark.circle.fill").font(.caption2).foregroundStyle(RemoteTheme.danger)
-            case .idle: EmptyView()
+            case .working:
+                Spinner(size: 10)
+            case .waitingForPermission:
+                Image(systemName: "hand.raised.fill")
+                    .font(RemoteTheme.font(size: 11, relativeTo: .caption2))
+                    .foregroundStyle(RemoteTheme.warning)
+            case .failed:
+                Image(systemName: "xmark.circle.fill")
+                    .font(RemoteTheme.font(size: 11, relativeTo: .caption2))
+                    .foregroundStyle(RemoteTheme.danger)
+            case .idle:
+                EmptyView()
             }
         }
     }
@@ -82,7 +126,6 @@ enum RoomText {
         }
     }
 
-    /// The button that opens a decision in the room chat.
     static func openLabel(_ decision: RemoteRoomDecision) -> String {
         switch decision.kind {
         case .approvePlan: "Review the plan"
@@ -105,7 +148,6 @@ enum RoomText {
         }
     }
 
-    /// What a prompt asks, without the command (shown in full under it).
     static func ask(_ request: PermissionRequest, agent: String?) -> String {
         let who = agent ?? "An agent"
         switch request.kind {
@@ -117,8 +159,7 @@ enum RoomText {
     }
 }
 
-/// One room prompt in a list: short single-line commands in full with Allow once and Reject; anything longer only says
-/// how long it is and opens the room chat, where the whole command is on its card.
+/// One room prompt in a list: short single-line commands inline with Allow once / Reject; longer ones open the room.
 struct RoomPromptRow: View {
     let request: PermissionRequest
     let agent: RemoteAgent?
@@ -130,40 +171,40 @@ struct RoomPromptRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: "hand.raised.fill").font(.caption).foregroundStyle(RemoteTheme.warning)
+                Image(systemName: "hand.raised.fill")
+                    .font(RemoteTheme.font(size: 12, relativeTo: .caption))
+                    .foregroundStyle(RemoteTheme.warning)
                 if let agent {
                     Circle().fill(Color(remoteHex: agent.colorHex)).frame(width: 7, height: 7)
                 }
                 Text(RoomText.ask(request, agent: agent?.name))
-                    .font(.footnote.weight(.medium))
+                    .font(RemoteTheme.font(size: 13.5, weight: .semibold, relativeTo: .footnote))
                     .foregroundStyle(RemoteTheme.primaryText)
             }
+
             if PermissionDisplay.fitsQuickApproval(request) && !request.isInteraction {
-                // Never truncated: everything a one-tap approval covers is on screen.
-                Text(request.title)
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(RemoteTheme.primaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RemoteTheme.cardRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                AdaptiveButtonRow {
+                RemoteCommandBox(text: request.title)
+                FlowRow(spacing: 8, lineSpacing: 8) {
                     Button("Allow once") { reply(.once) }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(RemotePrimaryButtonStyle())
                     Button("Reject", role: .destructive) { reply(.reject) }
-                        .buttonStyle(.bordered)
-                        .tint(RemoteTheme.danger)
+                        .buttonStyle(
+                            RemoteSecondaryButtonStyle(
+                                foreground: RemoteTheme.danger,
+                                border: RemoteTheme.danger.opacity(0.4)
+                            )
+                        )
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .disabled(busy || !client.state.isConnected)
             } else {
                 Text(summary)
-                    .font(.footnote)
+                    .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
                     .foregroundStyle(RemoteTheme.secondaryText)
                 Button(action: open) {
                     Label("Read it in full", systemImage: "text.magnifyingglass")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(RemoteSecondaryButtonStyle())
             }
         }
     }
@@ -183,21 +224,7 @@ struct RoomPromptRow: View {
     }
 }
 
-/// Buttons side by side, or one under another when they do not fit (narrow screen, large text).
-struct AdaptiveButtonRow<Content: View>: View {
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) { content }
-            VStack(alignment: .leading, spacing: 8) { content }
-        }
-        .controlSize(.small)
-    }
-}
-
-/// What a room waits on: the decision's title and agent, its text (the plan, the review, the verdict), its items
-/// (assignments, conflicting files), and a button per answer. Answers that take text open a sheet.
+/// Interactive card for what a room waits on (Approve plan, Edit, Accept Verdict, Build it).
 struct RoomDecisionCard: View {
     let room: RemoteRoom
     let decision: RemoteRoomDecision
@@ -206,82 +233,98 @@ struct RoomDecisionCard: View {
     @State private var busy = false
     @State private var expanded = false
     @State private var writing: RemoteRoomChoice?
+    @ScaledMetric(relativeTo: .body) private var messageSize: CGFloat = 15
 
     private var agents: [UUID: RemoteAgent] {
         Dictionary(room.agents.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
     }
-    private var isLong: Bool { (decision.text ?? "").split(separator: "\n").count > 12 }
+    private var lines: [String] {
+        (decision.text ?? "").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    }
+    private var isLong: Bool { lines.count > 12 }
+    private var visibleMarkdown: String {
+        guard let text = decision.text else { return "" }
+        if expanded || !isLong { return text }
+        return lines.prefix(12).joined(separator: "\n")
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Image(systemName: RoomText.symbol(decision.kind))
-                    .foregroundStyle(decision.needsYou ? RemoteTheme.warning : Color.accentColor)
+                    .foregroundStyle(decision.needsYou ? RemoteTheme.warning : RemoteTheme.accent)
                 Text(decision.title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(RemoteTheme.font(size: 15, weight: .semibold, relativeTo: .subheadline))
                     .foregroundStyle(RemoteTheme.primaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
             if let agent = decision.agentID.flatMap({ agents[$0] }) {
                 AgentTag(agent: agent)
             }
+
             if let text = decision.text, !text.isEmpty {
-                AgentMessageText(text: text, size: 15)
+                MarkdownView(visibleMarkdown, fontSize: messageSize)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(expanded || !isLong ? nil : 12)
                 if isLong {
-                    Button(expanded ? "Show less" : "Show all of it") { withAnimation(.snappy) { expanded.toggle() } }
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(RemoteTheme.secondaryText)
+                    Button(expanded ? "Show less" : "Show all of it") {
+                        withAnimation(.snappy) { expanded.toggle() }
+                    }
+                    .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
+                    .foregroundStyle(RemoteTheme.secondaryText)
+                    .frame(minHeight: 36)
                 }
             }
+
             if !decision.items.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 10) {
                     ForEach(Array(decision.items.enumerated()), id: \.offset) { _, item in
                         if let agent = item.agentID.flatMap({ agents[$0] }) {
-                            VStack(alignment: .leading, spacing: 2) {
+                            VStack(alignment: .leading, spacing: 3) {
                                 AgentTag(agent: agent)
                                 Text(item.text)
-                                    .font(.footnote)
+                                    .font(RemoteTheme.font(size: 13.5, relativeTo: .footnote))
                                     .foregroundStyle(RemoteTheme.primaryText)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         } else {
                             Text(PermissionDisplay.visible(item.text))
-                                .font(.system(.footnote, design: .monospaced))
+                                .font(RemoteTheme.font(size: 12.5, design: .monospaced, relativeTo: .footnote))
                                 .foregroundStyle(RemoteTheme.primaryText)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
-                .padding(10)
+                .padding(11)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(RemoteTheme.cardRaised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(RemoteTheme.border, lineWidth: 0.75)
+                )
             }
+
             if let note = decision.note {
                 Text(note)
-                    .font(.footnote)
+                    .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
                     .foregroundStyle(RemoteTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            AdaptiveButtonRow {
+
+            FlowRow(spacing: 8, lineSpacing: 8) {
                 ForEach(decision.choices) { choice in
                     choiceButton(choice)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .disabled(busy || !client.state.isConnected)
         }
-        .remoteCard(padding: 12)
-        .overlay {
-            if decision.needsYou {
-                RoundedRectangle(cornerRadius: RemoteTheme.cornerRadius, style: .continuous)
-                    .strokeBorder(RemoteTheme.warning.opacity(0.55), lineWidth: 1)
-            }
-        }
+        .remoteCard(padding: 14, attention: decision.needsYou)
         .sheet(item: $writing) { choice in
             DecisionTextSheet(decision: decision, choice: choice) { text in
                 send(choice, text: text)
             }
+            .remoteThemeEnvironment()
         }
     }
 
@@ -292,11 +335,19 @@ struct RoomDecisionCard: View {
         }
         switch choice.style {
         case .primary:
-            Button(choice.label, action: action).buttonStyle(.borderedProminent)
+            Button(choice.label, action: action)
+                .buttonStyle(RemotePrimaryButtonStyle())
         case .destructive:
-            Button(choice.label, role: .destructive, action: action).buttonStyle(.bordered).tint(RemoteTheme.danger)
+            Button(choice.label, role: .destructive, action: action)
+                .buttonStyle(
+                    RemoteSecondaryButtonStyle(
+                        foreground: RemoteTheme.danger,
+                        border: RemoteTheme.danger.opacity(0.4)
+                    )
+                )
         case .standard:
-            Button(choice.label, action: action).buttonStyle(.bordered)
+            Button(choice.label, action: action)
+                .buttonStyle(RemoteSecondaryButtonStyle())
         }
     }
 
@@ -309,7 +360,7 @@ struct RoomDecisionCard: View {
     }
 }
 
-/// Text for an answer that takes it: the redo feedback, the plan you write, the verdict.
+/// Text entry sheet for room decisions that carry feedback, plans, or verdicts.
 struct DecisionTextSheet: View {
     let decision: RemoteRoomDecision
     let choice: RemoteRoomChoice
@@ -329,17 +380,25 @@ struct DecisionTextSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 12) {
                 Text(decision.title)
-                    .font(.footnote)
+                    .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
                     .foregroundStyle(RemoteTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 TextField(choice.placeholder ?? "", text: $text, axis: .vertical)
-                    .font(choice.template != nil ? .system(.body, design: .monospaced) : .body)
+                    .font(
+                        choice.template != nil
+                            ? RemoteTheme.font(size: 14, design: .monospaced, relativeTo: .body)
+                            : RemoteTheme.font(size: 15, relativeTo: .body)
+                    )
                     .lineLimit(4...16)
                     .focused($focused)
-                    .padding(10)
+                    .padding(12)
                     .background(RemoteTheme.cardRaised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(RemoteTheme.border, lineWidth: 1)
+                    )
                 Spacer(minLength: 0)
             }
             .padding(16)
@@ -359,11 +418,10 @@ struct DecisionTextSheet: View {
             .onAppear { focused = true }
         }
         .presentationDetents([.medium, .large])
-        .preferredColorScheme(.dark)
     }
 }
 
-/// Pause, Resume and Stop for a room. Stop asks first: it ends the run.
+/// Pause, Resume, and Stop controls for an active room.
 struct RoomControls: View {
     let room: RemoteRoom
     let client: RemoteClient
@@ -372,18 +430,23 @@ struct RoomControls: View {
 
     var body: some View {
         if room.state == .running || room.state == .paused || room.isRunActive {
-            AdaptiveButtonRow {
+            FlowRow(spacing: 8, lineSpacing: 8) {
                 if room.state == .paused {
                     Button { control(.resume) } label: { Label("Resume", systemImage: "play.fill") }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(RemotePrimaryButtonStyle())
                 } else if room.state == .running {
                     Button { control(.pause) } label: { Label("Pause", systemImage: "pause.fill") }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(RemoteSecondaryButtonStyle())
                 }
                 Button(role: .destructive) { confirmStop = true } label: { Label("Stop", systemImage: "stop.fill") }
-                    .buttonStyle(.bordered)
-                    .tint(RemoteTheme.danger)
+                    .buttonStyle(
+                        RemoteSecondaryButtonStyle(
+                            foreground: RemoteTheme.danger,
+                            border: RemoteTheme.danger.opacity(0.4)
+                        )
+                    )
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .disabled(!client.state.isConnected)
             .confirmationDialog("Stop \(room.title)?", isPresented: $confirmStop, titleVisibility: .visible) {
                 Button("Stop the room", role: .destructive) { control(.stop) }
@@ -400,60 +463,69 @@ struct RoomControls: View {
     }
 }
 
-// MARK: - Goal and Members (read only; the Mac runs them)
+// MARK: - Goal and Members
 
-/// The room's goal: what it is, how far it got, and what it spent. Goals are set and stopped on the Mac.
+/// The room's goal strip.
 struct RoomGoalStrip: View {
     let goal: RemoteGoal
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Image(systemName: symbol)
-                .font(.footnote.weight(.semibold))
+                .font(RemoteTheme.font(size: 13, weight: .semibold, relativeTo: .footnote))
                 .foregroundStyle(color)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(goal.condition)
-                    .font(.footnote.weight(.medium))
+                    .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
                     .foregroundStyle(RemoteTheme.primaryText)
                     .lineLimit(2)
                 Text(detail)
-                    .font(.caption)
+                    .font(RemoteTheme.font(size: 12, relativeTo: .caption))
                     .foregroundStyle(RemoteTheme.secondaryText)
                     .lineLimit(2)
             }
             Spacer(minLength: 4)
             Text(cost)
-                .font(.caption.monospacedDigit())
+                .font(RemoteTheme.font(size: 12, relativeTo: .caption).monospacedDigit())
                 .foregroundStyle(RemoteTheme.tertiaryText)
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(color.opacity(0.1), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(color.opacity(0.25), lineWidth: 0.75)
+        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(goal.active ? "Active goal" : "Goal"): \(goal.condition). \(detail)")
     }
 
-    private var symbol: String { goal.active ? "target" : (goal.statusLabel.hasPrefix("Met") ? "checkmark.circle.fill" : "stop.circle") }
+    private var symbol: String {
+        goal.active ? "target" : (goal.statusLabel.hasPrefix("Met") ? "checkmark.circle.fill" : "stop.circle")
+    }
 
     private var color: Color {
-        if goal.active { return .accentColor }
+        if goal.active { return RemoteTheme.accent }
         return goal.statusLabel.hasPrefix("Met") ? RemoteTheme.success : RemoteTheme.secondaryText
     }
 
-    /// "Active goal · Run 2 of 10 · Not met yet: one test fails".
     private var detail: String {
         var parts = [goal.active ? "Active goal" : "Goal", goal.statusLabel]
-        if goal.active, let reason = goal.lastReason, !reason.isEmpty { parts.append("Not met yet: \(reason)") }
+        if goal.active, let reason = goal.lastReason, !reason.isEmpty {
+            parts.append("Not met yet: \(reason)")
+        }
         return parts.joined(separator: " \u{00B7} ")
     }
 
     private var cost: String {
-        if let cap = goal.maxCostUSD { return "\(RemoteFormat.cost(goal.costSpentUSD)) of \(RemoteFormat.cost(cap))" }
+        if let cap = goal.maxCostUSD {
+            return "\(RemoteFormat.cost(goal.costSpentUSD)) of \(RemoteFormat.cost(cap))"
+        }
         return RemoteFormat.cost(goal.costSpentUSD)
     }
 }
 
-/// Each agent with its part in the run, its state, what it is doing and its spend.
+/// Each agent with its role, state, step, and spend.
 struct RoomMembersList: View {
     let room: RemoteRoom
 
@@ -478,26 +550,29 @@ struct RoomMemberRow: View {
             HStack(spacing: 8) {
                 AgentTag(agent: agent)
                 if showsRole {
-                    Chip(text: member.role, color: member.role == "Lead" || member.role == "Judge" ? .accentColor : RemoteTheme.secondaryText)
+                    Chip(
+                        text: member.role,
+                        color: member.role == "Lead" || member.role == "Judge" ? RemoteTheme.accent : RemoteTheme.secondaryText
+                    )
                 }
                 Spacer(minLength: 4)
                 Text(member.stateLabel)
-                    .font(.caption.weight(.medium))
+                    .font(RemoteTheme.font(size: 12, weight: .semibold, relativeTo: .caption))
                     .foregroundStyle(RoomText.memberColor(member.state))
             }
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if let step = member.step {
                     Text(step)
-                        .font(.caption)
+                        .font(RemoteTheme.font(size: 12.5, relativeTo: .caption))
                         .foregroundStyle(member.state == "waitingOnYou" ? RemoteTheme.warning : RemoteTheme.secondaryText)
                         .lineLimit(2)
                 }
                 Spacer(minLength: 4)
                 Text(RemoteFormat.cost(member.costUSD))
-                    .font(.caption.monospacedDigit())
+                    .font(RemoteTheme.font(size: 12, relativeTo: .caption).monospacedDigit())
                     .foregroundStyle(RemoteTheme.tertiaryText)
             }
-            .padding(.leading, 13)
+            .padding(.leading, 14)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(agent.name), \(member.role), \(member.stateLabel)\(member.step.map { ", \($0)" } ?? "")")
@@ -505,10 +580,9 @@ struct RoomMemberRow: View {
 }
 
 extension RoomText {
-    /// Colour of a member state the phone knows; the rest are grey.
     static func memberColor(_ state: String) -> Color {
         switch state {
-        case "active": .accentColor
+        case "active": RemoteTheme.accent
         case "waitingOnYou": RemoteTheme.warning
         case "finished": RemoteTheme.success
         case "stopped": RemoteTheme.danger
