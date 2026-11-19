@@ -90,7 +90,10 @@ final class MacRemoteHost: RemoteHost {
         var permissions = store.sessions.flatMap(\.pendingPermissions)
         let known = Set(permissions.map(\.id))
         // Prompts the rooms know about that the session list has not loaded (subagents of room agents).
-        permissions += (rooms?.permissions.values.flatMap { $0 } ?? []).filter { !known.contains($0.id) }
+        // Prompts held or filtered out by the store's safety check for loaded sessions must stay hidden.
+        permissions += (rooms?.permissions.values.flatMap { $0 } ?? []).filter {
+            !known.contains($0.id) && session($0.sessionID) == nil && !store.safetyCheck.isHolding($0.id)
+        }
         return RemoteHubSnapshot(sessions: roots.map(summary) + remoteRooms().map(\.row), permissions: permissions)
     }
 
@@ -114,13 +117,33 @@ final class MacRemoteHost: RemoteHost {
     }
 
     private func remoteRoom(_ state: RoomState, rooms: RoomsController) -> RemoteRoom {
+        var permissions: [PermissionRequest] = []
+        var visibleRootIDs = Set<String>()
+        for sid in state.sessions.values {
+            let visible = (rooms.permissions[sid] ?? []).filter { !isSuppressedRoomPermission($0) }
+            if !visible.isEmpty { visibleRootIDs.insert(sid) }
+            permissions += visible
+        }
         var activity: [UUID: AgentActivity] = [:]
         // Saved rooms that are not open have no live engine: their agents are idle (or capped).
         if let engine = rooms.engines[state.id] {
-            for agent in state.spec.agents { activity[agent.id] = rooms.activity(of: agent.id, in: engine) }
+            for agent in state.spec.agents {
+                var current = rooms.activity(of: agent.id, in: engine)
+                if current == .waitingForPermission, let sid = state.sessions[agent.id], !visibleRootIDs.contains(sid) {
+                    current = .working
+                }
+                activity[agent.id] = current
+            }
         }
-        let permissions = state.sessions.values.flatMap { rooms.permissions[$0] ?? [] }
         return RemoteRoomBridge.room(state, activity: activity, permissions: permissions, running: rooms.isRunning(state.id))
+    }
+
+    private func isSuppressedRoomPermission(_ request: PermissionRequest) -> Bool {
+        if store.safetyCheck.isHolding(request.id) { return true }
+        if let session = session(request.sessionID) {
+            return !session.pendingPermissions.contains { $0.id == request.id }
+        }
+        return false
     }
 
     /// The room whose Hub row or transcript id this is.
@@ -149,6 +172,7 @@ final class MacRemoteHost: RemoteHost {
 
     func updates() async -> AsyncStream<RemoteUpdate> {
         let events = store.engine.events()
+        let visiblePermissions = store.safetyCheck.visiblePermissions()
         return AsyncStream { continuation in
             let eventTask = Task { @MainActor [weak self] in
                 for await event in events {
@@ -162,11 +186,24 @@ final class MacRemoteHost: RemoteHost {
                 }
                 continuation.finish()
             }
+            let permissionTask = Task { @MainActor [weak self] in
+                for await request in visiblePermissions {
+                    guard let self else { break }
+                    continuation.yield(.permissionAsked(request: request))
+                    if let s = self.session(request.sessionID),
+                       !s.isSubagent,
+                       !self.store.isSideQuestionSession(s.id),
+                       !self.roomAgentSessionIDs.contains(s.id) {
+                        continuation.yield(.sessionUpserted(session: self.summary(s)))
+                    }
+                }
+            }
             let roomTask = Task { @MainActor [weak self] in
                 await self?.watchRooms { continuation.yield($0) }
             }
             continuation.onTermination = { _ in
                 eventTask.cancel()
+                permissionTask.cancel()
                 roomTask.cancel()
             }
         }
@@ -243,9 +280,14 @@ final class MacRemoteHost: RemoteHost {
             return [.transcriptUpsert(sessionID: sid, item: .tool(tool))]
         case .permissionAsked(let request):
             let summary = await refreshedSummary(request.sessionID)
-            // The store's copy, with what it adds (the mode a plan's Proceed switches to).
-            let shown = session(request.sessionID)?.pendingPermissions.first { $0.id == request.id } ?? request
-            var out: [RemoteUpdate] = [.permissionAsked(request: shown)]
+            // Prompts for sessions managed by SessionStore arrive via `visiblePermissions()` after the safety check.
+            if store.isListening, session(request.sessionID) != nil { return [] }
+            guard !store.safetyCheck.isHolding(request.id) else { return [] }
+            if let s = session(request.sessionID) {
+                guard let shown = s.pendingPermissions.first(where: { $0.id == request.id }) else { return [] }
+                return [.permissionAsked(request: shown)] + (summary.map { [.sessionUpserted(session: $0)] } ?? [])
+            }
+            var out: [RemoteUpdate] = [.permissionAsked(request: request)]
             if let summary { out.append(.sessionUpserted(session: summary)) }
             return out
         case .permissionReplied(let sid, let rid):
@@ -253,8 +295,12 @@ final class MacRemoteHost: RemoteHost {
             if let s = await refreshedSummary(sid) { out.append(.sessionUpserted(session: s)) }
             return out
         case .activity(let sid, let activity):
+            let summary = await refreshedSummary(sid)
+            if activity == .waitingForPermission, let s = session(sid), s.pendingPermissions.isEmpty {
+                return []
+            }
             var out: [RemoteUpdate] = [.activity(sessionID: sid, activity: activity)]
-            if let s = await refreshedSummary(sid) { out.append(.sessionUpserted(session: s)) }
+            if let summary { out.append(.sessionUpserted(session: summary)) }
             return out
         case .usageUpdated(let sid, let usage):
             return [.usage(sessionID: sid, usage: usage)]

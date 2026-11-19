@@ -265,4 +265,29 @@ import Testing
         let access = ModelProviderAccess(integration: integration, activeCredentialIDs: ["crd_oauth"])
         #expect(access == ModelProviderAccess(hasSignIn: true, hasKey: true, acceptsKey: true, activeMethod: .oauth))
     }
+
+    @Test func singlePickersDeduplicateOpusAndResolveAliases() throws {
+        let folders = ModelCatalog.folders(Self.everything, billing: Self.billing)
+        let allChoices = folders.flatMap(\.all)
+        let opusChoices = allChoices.filter { $0.tier == "opus" && $0.version == [5, 5] }
+        #expect(opusChoices.count == 1)
+        let opus = try #require(opusChoices.first)
+        // `claude-code/default` resolves to the canonical `claude-code/opus` subscription route.
+        #expect(ModelCatalog.resolvedRef(for: ModelRef(providerID: "claude-code", id: "default"), in: folders)
+                == ModelRef(providerID: "claude-code", id: "opus"))
+        // Choosing an alternate available provider keeps that route selected.
+        #expect(ModelCatalog.resolvedRef(for: ModelRef(providerID: "anthropic", id: "claude-opus-5-5"), in: folders)
+                == ModelRef(providerID: "anthropic", id: "claude-opus-5-5"))
+        #expect(ModelCatalog.pickerRoute(for: opus, selected: nil)?.ref == ModelRef(providerID: "claude-code", id: "opus"))
+        // An unavailable selected route falls back to the ready primary route.
+        let withUnavailableAPI = ModelCatalog.folders(
+            Self.claudeCLI + [Self.info("anthropic", "claude-opus-5-5", "Claude Opus 5.5", available: false)],
+            billing: Self.billing
+        )
+        let resolvedFallback = ModelCatalog.resolvedRef(
+            for: ModelRef(providerID: "anthropic", id: "claude-opus-5-5"),
+            in: withUnavailableAPI
+        )
+        #expect(resolvedFallback == ModelRef(providerID: "claude-code", id: "opus"))
+    }
 }

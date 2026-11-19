@@ -55,6 +55,7 @@ struct ModelPickerView: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
+    @FocusState private var searchFocused: Bool
     @State private var query: String
     /// Open folders by maker id; "older:<maker id>" for a maker's Older models.
     @State private var open: Set<String>
@@ -90,7 +91,9 @@ struct ModelPickerView: View {
         let folders = ModelCatalog.folders(models, billing: billing)
         let top = ModelCatalog.topFolder(for: current, in: folders)
         VStack(alignment: .leading, spacing: 0) {
+            // Do not auto-focus on appear so 1 to 9 shortcuts work immediately; once focused, digits type into search.
             InputField("Search models", text: $query, icon: "magnifyingglass", height: theme.z(28))
+                .focused($searchFocused)
                 .padding(theme.z(8))
             AdaptiveScroll(.vertical) {
                 VStack(alignment: .leading, spacing: theme.z(1)) {
@@ -273,7 +276,7 @@ struct ModelPickerView: View {
                 note: note(choice, selected: selected, current: currentOption, several: several, usable: usable),
                 context: choice.contextLimit.map { Format.tokens($0) },
                 selected: selected, usable: usable, shortcut: shortcut,
-                digitShortcut: searching || keyEntry != nil ? nil : shortcut,
+                digitShortcut: searchFocused || searching || keyEntry != nil ? nil : shortcut,
                 payButton: several, payOpen: optionsFor == choice.id,
                 help: helpText(choice),
                 onPick: { pick(choice, options: options) },

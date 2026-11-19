@@ -68,15 +68,31 @@ struct ModelsSettingsView: View {
     let store: SessionStore
     @Environment(\.theme) private var theme
     @AppStorage("defaultModel") private var defaultModel = ""
+    @State private var modelBilling: [String: ModelBilling]?
 
     var body: some View {
+        let folders = ModelCatalog.folders(store.models, billing: modelBilling)
+        let selectedRef = ModelRef(string: defaultModel)
+        let selection = Binding<String>(
+            get: {
+                guard !defaultModel.isEmpty else { return "" }
+                return ModelCatalog.resolvedRef(for: selectedRef, in: folders)?.description ?? defaultModel
+            },
+            set: { defaultModel = $0 }
+        )
         Form {
             Section {
-                Picker("Default model", selection: $defaultModel) {
+                Picker("Default model", selection: selection) {
                     Text("First available").tag("")
-                    ForEach(store.models) { model in
-                        Text("\(model.name)  (\(model.providerName))").tag(model.ref.description)
-                            .disabled(!model.available)
+                    ForEach(folders) { folder in
+                        Section(folder.maker.name) {
+                            ForEach(folder.all) { choice in
+                                if let route = ModelCatalog.pickerRoute(for: choice, selected: selectedRef) {
+                                    Text("\(choice.name)  (\(route.providerName))").tag(route.ref.description)
+                                        .disabled(!choice.available)
+                                }
+                            }
+                        }
                     }
                 }
             } footer: {
@@ -85,20 +101,26 @@ struct ModelsSettingsView: View {
                     .foregroundStyle(theme.textTertiary)
             }
             Section("Available models") {
-                ForEach(store.models) { model in
-                    HStack {
-                        Text(model.name)
-                        Spacer()
-                        Text(model.ref.description)
-                            .font(theme.font(size: 11.5, design: .monospaced))
-                            .foregroundStyle(theme.textTertiary)
-                        StatusDot(model.available ? theme.success : theme.textTertiary.opacity(0.5))
+                ForEach(folders.flatMap(\.all)) { choice in
+                    if let route = ModelCatalog.pickerRoute(for: choice, selected: selectedRef) {
+                        HStack {
+                            Text(choice.name)
+                            Spacer()
+                            Text(route.ref.description)
+                                .font(theme.font(size: 11.5, design: .monospaced))
+                                .foregroundStyle(theme.textTertiary)
+                            StatusDot(choice.available ? theme.success : theme.textTertiary.opacity(0.5))
+                        }
                     }
                 }
             }
         }
         .formStyle(.grouped)
         .zoomedForm()
+        .task(id: store.models.count) {
+            guard let billing = store.engine as? any EngineModelBilling else { return }
+            modelBilling = try? await billing.modelBilling()
+        }
         .onChange(of: defaultModel) {
             store.defaultModel = ModelRef(string: defaultModel)
         }

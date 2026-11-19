@@ -121,6 +121,38 @@ import Testing
         }
     }
 
+    @Test func ensembleToolsDoNotAskTwice() {
+        let readOrPropose = [
+            "ensemble_propose_session",
+            "ensemble_browser_snapshot",
+            "ensemble_browser_screenshot",
+            "ensemble_browser_console",
+            "ensemble_list_agents",
+            "ensemble_ask_agent",
+        ]
+        let mutating = [
+            "ensemble_browser_navigate",
+            "ensemble_browser_click",
+            "ensemble_browser_type",
+            "ensemble_browser_scroll",
+            "ensemble_message_agent",
+        ]
+        for mode in [PermissionMode.ask, .acceptEdits, .auto, .bypass] {
+            for tool in readOrPropose + mutating {
+                #expect(effect(tool, "*", mode) == "allow", "\(tool) should not ask OpenCode in \(mode)")
+            }
+        }
+        for tool in readOrPropose {
+            #expect(effect(tool, "*", .plan) == "allow", "\(tool) should be allowed in Plan")
+        }
+        for tool in mutating {
+            #expect(effect(tool, "*", .plan) == "deny", "\(tool) should stay denied in Plan")
+        }
+        // Unrelated MCP tools still ask or deny as before.
+        #expect(effect("github_create_issue", "*", .plan) == "deny")
+        #expect(effect("ensemble_other_future", "*", .ask) == "allow")
+    }
+
     @Test func autoAsksForCommandsOutsideTheSafeList() {
         for command in [
             "rm -r -f x", "rm -rf x", "/bin/rm -rf x", "python3 -c \"import os; os.remove('x')\"", "node -e \"1\"", "perl -e 1",
@@ -302,8 +334,11 @@ import Testing
         let firstAuto = PermissionRules.ruleset(for: .auto).filter { !configRules.contains($0) && !dotRules.contains($0) }
             + ["make", "npm test *", "swift build *", "git diff *"].map { PermissionRule("shell", $0, "allow") }
         let oldAsk = PermissionRules.ruleset(for: .ask) + [PermissionRule("edit", "Makefile", "ask")]
+        let withoutEnsembleAsk = PermissionRules.ruleset(for: .ask).filter { !$0.action.hasPrefix("ensemble_") }
+        let withoutEnsemblePlan = PermissionRules.ruleset(for: .plan).filter { !$0.action.hasPrefix("ensemble_") }
         for (rules, mode) in [(previousAuto, PermissionMode.auto), (firstAuto, .auto), (previousAcceptEdits, .acceptEdits),
-                              (firstAcceptEdits, .acceptEdits), (oldAsk, .ask)] {
+                              (firstAcceptEdits, .acceptEdits), (oldAsk, .ask),
+                              (withoutEnsembleAsk, .ask), (withoutEnsemblePlan, .plan)] {
             #expect(PermissionRules.mode(for: rules) == nil)
             #expect(PermissionRules.outdatedMode(for: rules) == mode)
         }
