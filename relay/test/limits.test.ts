@@ -235,9 +235,14 @@ describe("bad handshakes block an address", () => {
       putSpy.mockRestore();
       delSpy.mockRestore();
 
-      // An entry that reached exact BLOCK_MS age is deleted and leaves only the 90-day clean-up alarm.
-      await state.storage.put("fails", { stale: { count: 1, since: freshNow - BLOCK_MS, blockedUntil: 0 } });
+      // Non-expired entries schedule an earlier alarm than the 90-day clean-up.
       await priv.rearm();
+      const pendingAlarm = await state.storage.getAlarm();
+      expect(pendingAlarm).not.toBeNull();
+      expect(pendingAlarm! - freshNow).toBeLessThanOrEqual(BLOCK_MS + 1000);
+
+      // An entry that reached exact BLOCK_MS age is deleted by alarm() and leaves only the 90-day clean-up alarm.
+      await state.storage.put("fails", { stale: { count: 1, since: freshNow - BLOCK_MS, blockedUntil: 0 } });
     });
 
     expect(await runDurableObjectAlarm(stubOf(mac))).toBe(true);
