@@ -219,11 +219,13 @@ struct RemotePairingView: View {
                 .foregroundStyle(theme.textSecondary)
         case .on:
             VStack(alignment: .leading, spacing: theme.z(4)) {
-                Label("Listening on \(controller.status.listening.joined(separator: ", "))",
-                      systemImage: "dot.radiowaves.left.and.right")
-                    .font(theme.font(size: 12.5))
-                    .foregroundStyle(theme.success)
-                    .fixedSize(horizontal: false, vertical: true)
+                if !controller.status.listening.isEmpty {
+                    Label("Listening on \(controller.status.listening.joined(separator: ", "))",
+                          systemImage: "dot.radiowaves.left.and.right")
+                        .font(theme.font(size: 12.5))
+                        .foregroundStyle(theme.success)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if controller.relayEnabled {
                     HStack(spacing: theme.z(6)) {
                         StatusDot(RemoteRelayStatusDisplay.color(for: controller.relayStatus, theme: theme))
@@ -390,6 +392,11 @@ struct RemoteControlSettingsView: View {
         }
         .onChange(of: controller.relayURL) {
             relayAddressText = controller.relayURL
+        }
+        .onChange(of: relayAddressText) {
+            if !relayAddressEdited {
+                relayAddressError = nil
+            }
         }
         .sheet(isPresented: $showPairing) {
             RemotePairingView(controller: controller)

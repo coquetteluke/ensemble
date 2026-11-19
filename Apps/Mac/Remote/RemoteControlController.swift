@@ -215,12 +215,15 @@ final class RemoteControlController {
         defaults.set(enabled, forKey: Keys.relayEnabled)
         rotatedTakenMailboxOnce = false
         rebuildPairing()
+        let gen = relayGeneration
         if enabled {
             await server?.setActiveRelay(currentActiveRelay())
+            guard relayGeneration == gen, relayEnabled else { return }
             await syncRelayHosts()
         } else {
             await stopRelayHosts()
-            await server?.setActiveRelay(nil)
+            guard relayGeneration == gen + 1, !relayEnabled else { return }
+            await server?.setActiveRelay(currentActiveRelay())
         }
     }
 
@@ -540,10 +543,15 @@ final class RemoteControlController {
             // inside a cancelled `relayStatusTask`.
             relayStatusTask?.cancel()
             relayStatusTask = nil
-            let active = currentActiveRelay()
+            let gen = relayGeneration
+            let rotatedMailbox = identity?.mailboxID
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                await self.server?.setActiveRelay(active)
+                guard let self,
+                      self.relayGeneration == gen,
+                      self.identity?.mailboxID == rotatedMailbox else { return }
+                await self.server?.setActiveRelay(self.currentActiveRelay())
+                guard self.relayGeneration == gen,
+                      self.identity?.mailboxID == rotatedMailbox else { return }
                 await self.syncRelayHosts()
             }
             return

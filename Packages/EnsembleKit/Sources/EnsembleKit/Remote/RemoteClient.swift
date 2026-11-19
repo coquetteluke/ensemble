@@ -276,10 +276,10 @@ public final class RemoteClient {
                 try? await Task.sleep(for: .seconds(1))
 
             case .failed(let refusal, let macOffline, let limit, let errorText):
-                // A refusal on a direct host arrives before the host proves anything, whereas macOffline from the
-                // relay arrives only after the phone proved the access key. Only enter rejected when no path proved
-                // the token is still valid.
-                if !macOffline, let refusal {
+                // A refusal on a direct host arrives before the host proves anything, whereas macOffline and limit
+                // from the relay arrive only after the phone proved the access key. Only enter rejected when no path
+                // proved the token is still valid.
+                if !macOffline && limit == nil, let refusal {
                     lastError = refusal.message
                     state = .rejected(refusal.message)
                     return

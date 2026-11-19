@@ -142,9 +142,10 @@ enum RelayLiveConfig {
             #expect(actualPayload.utf8.count > 5 * 1024 * 1024)
             #expect(actualPayload == largePayload)
 
-            // 4. Idle WebSocket ping/pong survival: stay idle for 5.5 s (> 4 s server heartbeat limit at 1 s interval,
-            //    and > 5 client ping intervals). If workerd does not answer WebSocket .ping frames on either socket,
-            //    the connection drops or reconnects with a new peer ID.
+            // 4. Idle WebSocket ping/pong survival: stay idle for 5.5 s (> RemoteServer's 4 s heartbeat drop threshold
+            //    at 1 s interval, proving workerd answers RFC 6455 .ping with .pong on the Mac's adopted data socket;
+            //    RemoteClient sends pings every 1 s here with a hardcoded 10 s per-ping timeout). If workerd stops
+            //    answering the Mac's .ping frames, RemoteServer drops the peer and the client reconnects with a new peer ID.
             try await Task.sleep(for: .milliseconds(5500))
 
             #expect(client.state == .connected(via: .relay))

@@ -49,7 +49,7 @@ You only need a free Cloudflare account (Workers Free plan with SQLite-backed Du
    curl -i https://<your-host>/v1/nope
    ```
 6. Point Ensemble at your relay:
-   - On your Mac, open Ensemble's **Remote / Pair iPhone** settings, expand **Advanced**, and set **Relay address** to `wss://<your-host>`.
+   - On your Mac, open Ensemble's **Settings -> Remote**, expand **Advanced**, and set **Relay address** to `wss://<your-host>`.
    - Already-paired phones learn the new relay address over the encrypted channel the next time they connect; the Mac keeps the previous relay host running for 30 days so no QR rescan is needed.
 
 ## Privacy and platform limits

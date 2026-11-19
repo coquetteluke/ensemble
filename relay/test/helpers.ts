@@ -138,11 +138,13 @@ export interface Mac {
   key: Key;
 }
 
+let setupCounter = 0;
+
 export async function setup(): Promise<Mac> {
   const id = randomID();
   const accessKey = b64url(crypto.getRandomValues(new Uint8Array(32)));
   const key = await newKey();
-  const host = await claim(id, key, accessKey);
+  const host = await claim(id, key, accessKey, `2001:db8:f00d:${(++setupCounter).toString(16)}::1`);
   expect((await host.next()).t).toBe("ready");
   return { id, accessKey, host, key };
 }

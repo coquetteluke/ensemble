@@ -1,6 +1,7 @@
 import { env, evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
-import { DAILY_BYTES, DAILY_MESSAGES, IDLE_DELETE_MS } from "../src/limits";
+import { describe, expect, it, vi } from "vitest";
+import { addressKey } from "../src/address";
+import { BLOCK_MS, DAILY_BYTES, DAILY_MESSAGES, IDLE_DELETE_MS, MAX_TRACKED_ADDRESSES } from "../src/limits";
 import type { Mailbox } from "../src/mailbox";
 import {
   auth,
@@ -143,6 +144,111 @@ describe("bad handshakes block an address", () => {
     mac.host.send({ t: "badHandshake", conn: b64url(crypto.getRandomValues(new Uint8Array(16))) });
     expect(await mac.host.quiet()).toBe(true);
   });
+
+  it("active blocks survive table saturation by counting-only entries", async () => {
+    const mac = await setup();
+    const blockedIP = "198.51.100.50";
+    for (let i = 0; i < 5; i++) {
+      const phone = await phoneFrom(mac, blockedIP);
+      expect(await phone.next()).toEqual({ t: "waiting" });
+      const note = await mac.host.next();
+      mac.host.send({ t: "badHandshake", conn: note.conn });
+      phone.ws.close(1000);
+      await phone.closeCode();
+    }
+    await mac.host.quiet(50);
+
+    // Fill the remaining slots with newer unblocked counting entries, then report fresh failures.
+    const blockedKey = await addressKey(blockedIP);
+    await runInDurableObject(stubOf(mac), async (_inst, state) => {
+      const fails = (await state.storage.get<Record<string, { count: number; since: number; blockedUntil: number }>>("fails")) ?? {};
+      const base = Date.now();
+      for (let i = 0; Object.keys(fails).length < MAX_TRACKED_ADDRESSES; i++) {
+        fails[`counting-${i}`] = { count: 1, since: base + i, blockedUntil: 0 };
+      }
+      await state.storage.put("fails", fails);
+    });
+
+    for (let i = 0; i < 5; i++) {
+      const phone = await phoneFrom(mac, `198.51.101.${i + 1}`);
+      expect(await phone.next()).toEqual({ t: "waiting" });
+      const note = await mac.host.next();
+      mac.host.send({ t: "badHandshake", conn: note.conn });
+      phone.ws.close(1000);
+      await phone.closeCode();
+    }
+    await mac.host.quiet(50);
+
+    const blocked = await connect(mac.id, "phone", blockedIP);
+    expect(await blocked.closeCode()).toBe(4001);
+
+    // When all slots hold active blocks, a new unblocked counting entry is refused instead of evicting a block.
+    await runInDurableObject(stubOf(mac), async (_inst, state) => {
+      const now = Date.now();
+      const fullBlocks: Record<string, { count: number; since: number; blockedUntil: number }> = {
+        [blockedKey]: { count: 5, since: now - 10_000, blockedUntil: now + BLOCK_MS },
+      };
+      for (let i = 1; i < MAX_TRACKED_ADDRESSES; i++) {
+        fullBlocks[`block-${i}`] = { count: 5, since: now - 5_000 + i, blockedUntil: now + BLOCK_MS };
+      }
+      await state.storage.put("fails", fullBlocks);
+    });
+
+    const newcomerIP = "198.51.102.99";
+    const newcomer = await phoneFrom(mac, newcomerIP);
+    expect(await newcomer.next()).toEqual({ t: "waiting" });
+    const newcomerNote = await mac.host.next();
+    mac.host.send({ t: "badHandshake", conn: newcomerNote.conn });
+    newcomer.ws.close(1000);
+    await newcomer.closeCode();
+    await mac.host.quiet(50);
+
+    const newcomerKey = await addressKey(newcomerIP);
+    const storedFails = await runInDurableObject(stubOf(mac), (_inst, state) =>
+      state.storage.get<Record<string, { count: number; since: number; blockedUntil: number }>>("fails"),
+    );
+    expect(Object.keys(storedFails!)).toHaveLength(MAX_TRACKED_ADDRESSES);
+    expect(storedFails![blockedKey]).toBeDefined();
+    expect(storedFails![newcomerKey]).toBeUndefined();
+  });
+
+  it("exact-expiry fails are removed by alarm without looping or rewriting untouched entries", async () => {
+    const mac = await setup();
+    await runInDurableObject(stubOf(mac), async (inst: Mailbox, state) => {
+      const priv = inst as unknown as {
+        expired(f: { count: number; since: number; blockedUntil: number }, now: number): boolean;
+        pruneFails(now: number): Promise<void>;
+        rearm(): Promise<void>;
+      };
+      const base = 1_000_000;
+      expect(priv.expired({ count: 1, since: base, blockedUntil: 0 }, base + BLOCK_MS - 1)).toBe(false);
+      expect(priv.expired({ count: 1, since: base, blockedUntil: 0 }, base + BLOCK_MS)).toBe(true);
+
+      // Non-expired entries do not trigger a redundant storage write in pruneFails.
+      const freshNow = Date.now();
+      await state.storage.put("fails", { active: { count: 1, since: freshNow, blockedUntil: 0 } });
+      const putSpy = vi.spyOn(state.storage, "put");
+      const delSpy = vi.spyOn(state.storage, "delete");
+      await priv.pruneFails(freshNow + 1000);
+      expect(putSpy).not.toHaveBeenCalled();
+      expect(delSpy).not.toHaveBeenCalled();
+      putSpy.mockRestore();
+      delSpy.mockRestore();
+
+      // An entry that reached exact BLOCK_MS age is deleted and leaves only the 90-day clean-up alarm.
+      await state.storage.put("fails", { stale: { count: 1, since: freshNow - BLOCK_MS, blockedUntil: 0 } });
+      await priv.rearm();
+    });
+
+    expect(await runDurableObjectAlarm(stubOf(mac))).toBe(true);
+    const [failsAfter, alarmAfter] = await runInDurableObject(stubOf(mac), async (_inst, state) => [
+      await state.storage.get("fails"),
+      await state.storage.getAlarm(),
+    ]);
+    expect(failsAfter).toBeUndefined();
+    expect(alarmAfter).not.toBeNull();
+    expect(alarmAfter! - Date.now()).toBeGreaterThan(IDLE_DELETE_MS - 60_000);
+  });
 });
 
 describe("daily budget", () => {
@@ -209,6 +315,56 @@ describe("daily budget", () => {
     expect(await again.next()).toEqual({ t: "limit", kind: "daily", resetsAt: nextMidnight() });
     expect(await again.closeCode()).toBe(4029);
     expect(await mac.host.quiet()).toBe(true);
+  });
+
+  it("a reconnecting host after the daily budget is spent immediately receives limit after ready", async () => {
+    const mac = await setup();
+    const { phone, data } = await paired(mac);
+    await prime(mac, { messages: DAILY_MESSAGES });
+    phone.ws.send("over");
+    await expectPairEnded(data);
+    expect(await mac.host.next()).toEqual({ t: "limit", kind: "daily", resetsAt: nextMidnight() });
+
+    mac.host.ws.close(1000);
+    await mac.host.closeCode();
+    await evictDurableObject(stubOf(mac));
+
+    const reconnected = await auth(mac.id, mac.key);
+    expect(await reconnected.next()).toEqual({ t: "ready" });
+    expect(await reconnected.next()).toEqual({ t: "limit", kind: "daily", resetsAt: nextMidnight() });
+
+    const blockedPhone = await phoneFrom(mac, "203.0.113.51");
+    expect(await blockedPhone.next()).toEqual({ t: "limit", kind: "daily", resetsAt: nextMidnight() });
+    expect(await blockedPhone.closeCode()).toBe(4029);
+    expect(await reconnected.quiet()).toBe(true);
+  });
+
+  it("webSocketError folds unflushed counts, closes the peer, and updates lastUsed on host error", async () => {
+    const mac = await setup();
+    const { phone, data } = await paired(mac);
+    for (let i = 0; i < 4; i++) {
+      phone.ws.send(`m${i}`);
+      await data.nextRaw();
+    }
+    await runInDurableObject(stubOf(mac), async (inst: Mailbox, state) => {
+      const phoneWs = state.getWebSockets().find((w) => {
+        const a = w.deserializeAttachment() as { role?: string } | null;
+        return a?.role === "phone";
+      })!;
+      await inst.webSocketError(phoneWs);
+    });
+    expect(await data.closeCode()).toBe(1000);
+    expect(await phone.closeCode()).toBe(1000);
+    expect((await stored(mac))!.messages).toBe(4);
+
+    await runInDurableObject(stubOf(mac), async (inst: Mailbox, state) => {
+      await state.storage.put("lastUsed", 1);
+      const hostWs = state.getWebSockets("host")[0]!;
+      await inst.webSocketError(hostWs);
+    });
+    expect(await mac.host.closeCode()).toBe(1000);
+    const lastUsed = await runInDurableObject(stubOf(mac), (_inst, state) => state.storage.get<number>("lastUsed"));
+    expect(lastUsed).toBeGreaterThan(1);
   });
 
   it("unwritten counts survive hibernation and reach storage with the alarm", async () => {
@@ -424,6 +580,25 @@ describe("claims by IPv6 prefix", () => {
       expect((await c.next()).t).toBe("ready");
     }
     const eleventh = await claim(randomID(), await newKey(), undefined, "2001:db8:1:2:ffff::9");
+    expect(await eleventh.closeCode()).toBe(4029);
+  });
+
+  it("missing CF-Connecting-IP fails closed and still hits claim and unproven limits", async () => {
+    const mac = await setup();
+    const held: Client[] = [];
+    for (let i = 0; i < 3; i++) {
+      const c = await connect(mac.id, "phone");
+      await c.next();
+      held.push(c);
+    }
+    const fourth = await connect(mac.id, "phone");
+    expect(await fourth.closeCode()).toBe(4029);
+
+    for (let i = 0; i < 10; i++) {
+      const c = await claim(randomID(), await newKey());
+      expect((await c.next()).t).toBe("ready");
+    }
+    const eleventh = await claim(randomID(), await newKey());
     expect(await eleventh.closeCode()).toBe(4029);
   });
 });

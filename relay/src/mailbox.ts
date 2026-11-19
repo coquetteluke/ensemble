@@ -179,18 +179,25 @@ export class Mailbox extends DurableObject<Env> {
     const att = ws.deserializeAttachment() as Attachment | null;
     this.closePeer(ws);
     this.safeClose(ws, sendableCode(code), "closed");
+    await this.cleanupSocket(ws, att);
+  }
+
+  async webSocketError(ws: WebSocket): Promise<void> {
+    const att = ws.deserializeAttachment() as Attachment | null;
+    this.closePeer(ws);
+    this.safeClose(ws, 1000, "error");
+    await this.cleanupSocket(ws, att);
+  }
+
+  private async cleanupSocket(ws: WebSocket, att: Attachment | null) {
     try {
       if (att?.role === "host" && att.authed) await this.ctx.storage.put("lastUsed", Date.now());
       // Counts this socket has not yet written would vanish with it, so they go into the stored budget now.
       if (att?.dMsgs || att?.dBytes) await this.foldClosing(ws, att);
-      if (att?.deadline !== undefined || att?.role === "host") await this.rearm();
+      if (att?.deadline !== undefined || att?.role === "host" || att?.dMsgs || att?.dBytes) await this.rearm();
     } catch {
-      // Storage trouble must not surface from a close handler.
+      // Storage trouble must not surface from a close or error handler.
     }
-  }
-
-  async webSocketError(ws: WebSocket): Promise<void> {
-    this.closePeer(ws);
   }
 
   private async hostMessage(ws: WebSocket, att: Attachment, message: string | ArrayBuffer) {
@@ -387,13 +394,18 @@ export class Mailbox extends DurableObject<Env> {
     }
     ws.serializeAttachment({ ...att, authed: true, nonce: undefined, deadline: undefined } satisfies Attachment);
     this.safeSend(ws, encodeControl({ t: "ready" }));
+    await this.loadBudget();
+    if (this.budgetSpent()) {
+      this.budget.notifiedDay = this.budget.day;
+      this.safeSend(ws, encodeControl({ t: "limit", kind: "daily", resetsAt: this.resetsAt() }));
+    }
     await this.rearm();
   }
 
   // Bad handshakes -----------------------------------------------------------------------------------------
 
   private expired(f: Fail, now: number): boolean {
-    return f.blockedUntil !== 0 ? f.blockedUntil <= now : now - f.since > BLOCK_MS;
+    return f.blockedUntil !== 0 ? f.blockedUntil <= now : now - f.since >= BLOCK_MS;
   }
 
   private async isBlocked(key: string): Promise<boolean> {
@@ -418,24 +430,53 @@ export class Mailbox extends DurableObject<Env> {
   private async addFailure(key: string) {
     const now = Date.now();
     const fails = (await this.ctx.storage.get<Record<string, Fail>>("fails")) ?? {};
-    for (const [k, f] of Object.entries(fails)) if (this.expired(f, now)) delete fails[k];
-    const f = fails[key] ?? { count: 0, since: now, blockedUntil: 0 };
-    f.count++;
-    if (f.count >= FAILURES_BEFORE_BLOCK) f.blockedUntil = now + BLOCK_MS;
-    fails[key] = f;
-    const keys = Object.keys(fails);
-    if (keys.length > MAX_TRACKED_ADDRESSES) {
-      keys.sort((a, b) => fails[a]!.since - fails[b]!.since);
-      for (const k of keys.slice(0, keys.length - MAX_TRACKED_ADDRESSES)) delete fails[k];
+    let changed = false;
+    for (const [k, f] of Object.entries(fails)) {
+      if (this.expired(f, now)) {
+        delete fails[k];
+        changed = true;
+      }
     }
-    await this.ctx.storage.put("fails", fails);
+    const existing = fails[key];
+    if (existing) {
+      existing.count++;
+      if (existing.count >= FAILURES_BEFORE_BLOCK) existing.blockedUntil = now + BLOCK_MS;
+      changed = true;
+    } else {
+      const entry: Fail = { count: 1, since: now, blockedUntil: FAILURES_BEFORE_BLOCK <= 1 ? now + BLOCK_MS : 0 };
+      const total = Object.keys(fails).length;
+      if (total >= MAX_TRACKED_ADDRESSES) {
+        const evictable = Object.keys(fails)
+          .filter((k) => fails[k]!.blockedUntil <= now)
+          .sort((a, b) => fails[a]!.since - fails[b]!.since);
+        const needed = total - MAX_TRACKED_ADDRESSES + 1;
+        if (evictable.length >= needed) {
+          for (const k of evictable.slice(0, needed)) delete fails[k];
+          fails[key] = entry;
+          changed = true;
+        }
+      } else {
+        fails[key] = entry;
+        changed = true;
+      }
+    }
+    if (!changed) return;
+    if (Object.keys(fails).length === 0) await this.ctx.storage.delete("fails");
+    else await this.ctx.storage.put("fails", fails);
     await this.rearm();
   }
 
   private async pruneFails(now: number) {
     const fails = await this.ctx.storage.get<Record<string, Fail>>("fails");
     if (!fails) return;
-    for (const [k, f] of Object.entries(fails)) if (this.expired(f, now)) delete fails[k];
+    let changed = false;
+    for (const [k, f] of Object.entries(fails)) {
+      if (this.expired(f, now)) {
+        delete fails[k];
+        changed = true;
+      }
+    }
+    if (!changed) return;
     if (Object.keys(fails).length === 0) await this.ctx.storage.delete("fails");
     else await this.ctx.storage.put("fails", fails);
   }

@@ -253,6 +253,43 @@ import Testing
         }
     }
 
+    @Test func directRefusalDoesNotRejectWhenRelayConfirmsToken() async throws {
+        try await withHarness { h in
+            // A second local server with a different token acts as a stale or spoofed LAN host returning .unauthorized.
+            let wrongConfig = RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Wrong Mac",
+                                                         helloTimeout: .seconds(10), acceptedHosts: ["127.0.0.1"])
+            let wrongServer = RemoteServer(host: DemoRemoteHost(), token: RemoteToken.generate(), configuration: wrongConfig)
+            try await wrongServer.start()
+            let wrongPort = Int(try #require(await wrongServer.boundPort))
+            defer { Task { await wrongServer.stop() } }
+
+            // 1. Direct .unauthorized + relay .limit -> .limitReached (not .rejected).
+            h.fake.setPhoneLimit(h.mailbox, resetsAt: Int(Date().timeIntervalSince1970) + 3600)
+            let limitClient = client(h, hosts: ["127.0.0.1"], port: wrongPort)
+            limitClient.start()
+            defer { limitClient.stop() }
+            try await waitUntil("limitReached despite direct unauthorized refusal") {
+                if case .limitReached = limitClient.state { return true }
+                return false
+            }
+            limitClient.stop()
+            h.fake.setPhoneLimit(h.mailbox, resetsAt: nil)
+
+            // 2. Direct .unauthorized + relay .macOffline -> .macOffline (not .rejected).
+            await h.relay.stop()
+            try await pollUntil("the Mac's control socket to close") { !h.fake.hostIsReady(h.mailbox) }
+            let offlineClient = client(h, hosts: ["127.0.0.1"], port: wrongPort)
+            offlineClient.start()
+            defer { offlineClient.stop() }
+            try await waitUntil("macOffline despite direct unauthorized refusal") {
+                if case .macOffline = offlineClient.state { return true }
+                return false
+            }
+            offlineClient.stop()
+            await wrongServer.stop()
+        }
+    }
+
     @Test func relayDialerErrorsAndAddressRules() async throws {
         try await withHarness { h in
             let session = URLSession(configuration: .ephemeral)
