@@ -2,7 +2,7 @@ import EnsembleKit
 import SwiftUI
 
 /// Picks the layout from the horizontal size class: tabs on a compact width (outer Duo screen / iPhone),
-/// a two-column split view on a regular width (unfolded Duo inner screen, portrait and landscape).
+/// panes side by side on a regular width (unfolded Duo inner screen, portrait and landscape).
 /// Both read from `RemoteAppModel`, so folding or unfolding keeps the open chat, drafts, and scroll anchor.
 struct MainTabView: View {
     let client: RemoteClient
@@ -75,128 +75,151 @@ private struct CompactChatDestination: View {
     }
 }
 
-// MARK: - Unfolded inner split shell
+// MARK: - Unfolded inner pane shell
 
-/// Inner screen: Hub/Rooms sidebar (310-380 pt) with Usage/Settings footer, and full-bleed detail view.
+/// Inner screen: the session list, the chat and the details panel as panes this app lays out itself.
+///
+/// A NavigationSplitView cannot do this. Asked for a list as wide as half the screen (the book fold) it shows its
+/// overlay mode for most of a second, the chat full width and dimmed under the list, before it settles. Here the
+/// panes are plain views in a row (or a column for the laptop fold), so a fold or a button moves them in one step
+/// and `WindowCrossfade` dissolves the old layout into the new one.
 struct SplitRootView: View {
     let client: RemoteClient
     @Environment(RemoteAppModel.self) private var model
-    @State private var columns: NavigationSplitViewVisibility = .all
-    @State private var width: CGFloat = 0
-    @State private var didInitializeWidth = false
-
-    /// Unfolded Duo landscape is ~951 pt; unfolded Duo portrait is ~669 pt.
-    private let sideBySideWidth: CGFloat = 780
-    /// Whether the list and the chat sit side by side. It follows the width, but only drops to one column once the
-    /// width has stayed narrow for a moment: while iOS resizes the window (unfolding, folding, rotating) it briefly
-    /// reports a narrow width, and following that at once flashed the chat full screen.
-    @State private var sideBySide = true
-    @State private var collapseTask: Task<Void, Never>?
-    private var isSideBySide: Bool { sideBySide }
-
     @Environment(\.foldLayout) private var fold
-    /// Where this view sits on screen, to put the book layout's page break on the crease.
-    @State private var globalMinX: CGFloat = 0
+    @AppStorage("remote.panes.sidebar") private var sidebarWanted = true
+    @AppStorage("remote.panes.details") private var detailsWanted = false
+    /// Where the panes sit on screen, to turn the crease's screen position into a pane width.
+    @State private var frame: CGRect = .zero
+    @State private var toggleHaptic = 0
 
-    /// Sidebar width that puts the page break on the crease while partly folded like a book, nil otherwise.
-    private var bookSidebarWidth: CGFloat? {
-        guard case .book(let creaseX) = fold else { return nil }
-        return max(240, creaseX - globalMinX)
+    private var chat: ChatRoute? {
+        model.tab == .hub || model.tab == .rooms ? model.selectedChat : nil
+    }
+
+    private var plan: PanePlan {
+        let local: FoldLayout = switch fold {
+        case .flat: .flat
+        case .book(let creaseX): .book(creaseX: creaseX - frame.minX)
+        case .laptop(let creaseY): .laptop(creaseY: creaseY - frame.minY)
+        }
+        return PanePlan.resolve(size: frame.size, fold: local, sidebarWanted: sidebarWanted,
+                                detailsWanted: detailsWanted, hasChat: chat != nil)
     }
 
     var body: some View {
-        // One split view in every posture: folding animates the sidebar out to the crease instead of swapping
-        // the whole screen, so the lists and the chat never redraw mid-fold.
-        splitLayout
-            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minX } action: { globalMinX = $0 }
-            .onChange(of: bookSidebarWidth != nil) { _, folded in
-                if folded { columns = .all }
-            }
-    }
+        let plan = plan
+        let gutter = FoldMetrics.creaseGutter
+        // Laptop fold without a chat: the detail on top, the list below. With a chat, the chat takes the whole
+        // height and puts the deck under its own message box.
+        let stackedCrease: CGFloat? = if case .laptop(let creaseY) = plan.shape, chat == nil { creaseY } else { nil }
+        let isBook = if case .book = plan.shape { true } else { false }
+        let stack = stackedCrease == nil ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
 
-    private var splitLayout: some View {
-        NavigationSplitView(columnVisibility: $columns) {
-            SplitSidebarView(
-                client: client,
-                onOpenRoute: open,
-                onSelectUtilityTab: selectUtilityTab
-            )
-            .padding(.trailing, bookSidebarWidth == nil ? 0 : FoldMetrics.creaseGutter)
-            .background(RemoteTheme.sidebar.ignoresSafeArea())
-            .navigationSplitViewColumnWidth(min: bookSidebarWidth ?? 310, ideal: bookSidebarWidth ?? 340,
-                                            max: bookSidebarWidth ?? 380)
-            .toolbar(.hidden, for: .navigationBar)
-        } detail: {
+        stack {
+            if let width = plan.sidebarWidth {
+                sidebarPane()
+                    .safeAreaPadding(.trailing, isBook ? gutter : 0)
+                    .frame(width: width)
+                    .overlay(alignment: .trailing) { paneEdge }
+            }
+
+            // Always the second child, whatever is around it, so the chat keeps its place and its scroll position.
             NavigationStack {
-                SplitDetailView(
-                    client: client,
-                    isSideBySide: isSideBySide,
-                    showStatusInToolbar: !isSideBySide || columns == .detailOnly,
-                    onShowSidebar: { columns = .doubleColumn }
-                )
+                SplitDetailView(client: client)
             }
-            .padding(.leading, bookSidebarWidth == nil ? 0 : FoldMetrics.creaseGutter)
+            .safeAreaPadding(.leading, isBook && plan.sidebarWidth != nil ? gutter : 0)
+            .safeAreaPadding(.trailing, isBook && plan.detailsWidth != nil ? gutter : 0)
+            .frame(height: stackedCrease.map { max(0, $0 - gutter) })
+            .frame(maxWidth: .infinity, maxHeight: stackedCrease == nil ? .infinity : nil)
             .background(RemoteTheme.background.ignoresSafeArea())
+
+            if let width = plan.detailsWidth, let chat {
+                detailsPane(chat)
+                    .safeAreaPadding(.leading, isBook ? gutter : 0)
+                    .frame(width: width)
+                    .overlay(alignment: .leading) { paneEdge }
+            }
+
+            if stackedCrease != nil {
+                sidebarPane(compact: true)
+                    .padding(.top, gutter)
+                    .frame(maxHeight: .infinity)
+                    .background(RemoteTheme.sidebar.ignoresSafeArea())
+            }
         }
-        .navigationSplitViewStyle(.balanced)
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
-            width = newWidth
-            let wide = newWidth >= sideBySideWidth
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
+        .environment(\.paneControls, PaneControls(
+            isActive: true,
+            sidebarShown: plan.showsSidebar || stackedCrease != nil,
+            detailsShown: plan.showsDetails,
+            canShowDetails: chat != nil,
+            toggleSidebar: { toggleSidebar(plan) },
+            toggleDetails: { toggleDetails(plan) }
+        ))
+        .environment(\.laptopDeck, deck(plan))
+        .sensoryFeedback(.selection, trigger: toggleHaptic)
+    }
 
-            if !didInitializeWidth {
-                didInitializeWidth = true
-                sideBySide = wide
-                applyColumns(sideBySide: wide)
-                return
-            }
+    /// The session list. `compact` is the short form for the lower half of the laptop fold.
+    private func sidebarPane(compact: Bool = false) -> some View {
+        SplitSidebarView(client: client, compact: compact, onOpenRoute: { model.open($0, from: $1) },
+                         onSelectUtilityTab: selectUtilityTab)
+    }
 
-            if wide {
-                collapseTask?.cancel()
-                if !sideBySide {
-                    sideBySide = true
-                    applyColumns(sideBySide: true)
-                }
-                return
-            }
+    /// The hairline between a side pane and the chat.
+    private var paneEdge: some View {
+        Rectangle().fill(RemoteTheme.separator).frame(width: 1).ignoresSafeArea()
+    }
 
-            guard sideBySide else { return }
-            collapseTask?.cancel()
-            collapseTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(400))
-                guard !Task.isCancelled, width < sideBySideWidth, !fold.isFolded else { return }
-                sideBySide = false
-                applyColumns(sideBySide: false)
-            }
+    private func detailsPane(_ chat: ChatRoute) -> some View {
+        SessionDetailsPanel(client: client, sessionID: chat.sessionID)
+            .id(chat.sessionID)
+    }
+
+    /// What the chat puts under its message box in the laptop fold.
+    private func deck(_ plan: PanePlan) -> AnyView? {
+        guard case .laptop = plan.shape, let chat else { return nil }
+        switch plan.deck {
+        case .none: return nil
+        case .sidebar: return AnyView(sidebarPane(compact: true))
+        case .details: return AnyView(detailsPane(chat))
         }
     }
 
-    private func applyColumns(sideBySide: Bool) {
-        if sideBySide {
-            columns = .all
-        } else if model.selectedChat == nil && (model.tab == .hub || model.tab == .rooms) {
-            columns = .doubleColumn
+    private func toggleSidebar(_ plan: PanePlan) {
+        toggleHaptic += 1
+        WindowCrossfade.runInKeyWindow()
+        if plan.showsSidebar {
+            sidebarWanted = false
         } else {
-            columns = .detailOnly
+            sidebarWanted = true
+            if !plan.fitsBoth { detailsWanted = false }
         }
     }
 
-    private func open(_ route: ChatRoute, from list: RemoteTab) {
-        model.open(route, from: list)
-        if !isSideBySide {
-            columns = .detailOnly
+    private func toggleDetails(_ plan: PanePlan) {
+        toggleHaptic += 1
+        WindowCrossfade.runInKeyWindow()
+        if plan.showsDetails {
+            detailsWanted = false
+            // The book fold always has two pages: without the details, the list is the other one.
+            if case .book = plan.shape { sidebarWanted = true }
+        } else {
+            detailsWanted = true
         }
     }
 
     private func selectUtilityTab(_ tab: RemoteTab) {
         model.tab = model.tab == tab ? model.listTab : tab
-        if !isSideBySide {
-            columns = .detailOnly
-        }
     }
 }
 
 private struct SplitSidebarView: View {
     let client: RemoteClient
+    /// One header row with everything in it and no footer, for the lower half of the laptop fold.
+    var compact = false
     let onOpenRoute: (ChatRoute, RemoteTab) -> Void
     let onSelectUtilityTab: (RemoteTab) -> Void
     @Environment(RemoteAppModel.self) private var model
@@ -205,7 +228,7 @@ private struct SplitSidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SplitSidebarHeader(client: client) {
+            SplitSidebarHeader(client: client, compact: compact, onSelectUtilityTab: onSelectUtilityTab) {
                 if model.listTab == .rooms {
                     showNewRoom = true
                 } else {
@@ -231,7 +254,9 @@ private struct SplitSidebarView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            SplitSidebarFooter(onSelect: onSelectUtilityTab)
+            if !compact {
+                SplitSidebarFooter(onSelect: onSelectUtilityTab)
+            }
         }
         .background(RemoteTheme.sidebar.ignoresSafeArea())
         .sheet(isPresented: $showNewSession) {
@@ -251,57 +276,107 @@ private struct SplitSidebarView: View {
 
 private struct SplitSidebarHeader: View {
     let client: RemoteClient
+    var compact = false
+    var onSelectUtilityTab: (RemoteTab) -> Void = { _ in }
     let onNew: () -> Void
     @Environment(RemoteAppModel.self) private var model
+    @Environment(\.paneControls) private var controls
 
     private var hubBadge: Int { needsYouCount(client) }
     private var roomsBadge: Int { client.rooms.count(where: \.needsYou) }
 
     var body: some View {
-        VStack(spacing: 10) {
-            HStack(alignment: .center, spacing: 8) {
-                Text("Ensemble")
-                    .font(RemoteTheme.font(size: 18, weight: .semibold, relativeTo: .headline))
-                    .foregroundStyle(RemoteTheme.primaryText)
-                Spacer(minLength: 8)
-                StatusPill(client: client)
-                Button(action: onNew) {
-                    Image(systemName: "plus")
-                        .font(RemoteTheme.font(size: 13.5, weight: .semibold, relativeTo: .subheadline))
-                        .foregroundStyle(RemoteTheme.accent)
-                        .frame(width: 30, height: 30)
-                        .background(RemoteTheme.accent.opacity(0.14), in: Circle())
-                        .frame(minWidth: 36, minHeight: 36)
-                        .contentShape(Rectangle())
+        Group {
+            if compact {
+                HStack(alignment: .center, spacing: 8) {
+                    if controls.isActive {
+                        SidebarToggleButton()
+                            .padding(.leading, -8)
+                    }
+                    segments
+                    utilityButton("Usage", systemImage: "chart.bar", target: .usage)
+                    utilityButton("Settings", systemImage: "gearshape", target: .settings)
+                    newButton
                 }
-                .buttonStyle(.plain)
-                .disabled(!client.state.isConnected || client.availableModels.isEmpty)
-                .accessibilityLabel(model.listTab == .rooms ? "New room" : "New session")
-                .accessibilityHint(
-                    !client.state.isConnected
-                        ? "Connect to your Mac first"
-                        : (client.availableModels.isEmpty ? "Loading available models from your Mac" : "")
-                )
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+            } else {
+                VStack(spacing: 10) {
+                    HStack(alignment: .center, spacing: 8) {
+                        if controls.isActive {
+                            SidebarToggleButton()
+                                .padding(.leading, -8)
+                        }
+                        Text("Ensemble")
+                            .font(RemoteTheme.font(size: 18, weight: .semibold, relativeTo: .headline))
+                            .foregroundStyle(RemoteTheme.primaryText)
+                            .lineLimit(1)
+                            .fixedSize()
+                        Spacer(minLength: 4)
+                        StatusPill(client: client)
+                        newButton
+                    }
+                    segments
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
+                .padding(.bottom, 12)
             }
-
-            HStack(spacing: 4) {
-                segmentButton(title: "Hub", badge: hubBadge, target: .hub)
-                segmentButton(title: "Rooms", badge: roomsBadge, target: .rooms)
-            }
-            .padding(3)
-            .background(RemoteTheme.codeBackground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(RemoteTheme.border, lineWidth: 0.75)
-            )
         }
-        .padding(.horizontal, 14)
-        .padding(.top, 10)
-        .padding(.bottom, 12)
         .background(RemoteTheme.sidebar)
         .overlay(alignment: .bottom) {
             Rectangle().fill(RemoteTheme.separator).frame(height: 1)
         }
+    }
+
+    private var segments: some View {
+        HStack(spacing: 4) {
+            segmentButton(title: "Hub", badge: hubBadge, target: .hub)
+            segmentButton(title: "Rooms", badge: roomsBadge, target: .rooms)
+        }
+        .padding(3)
+        .background(RemoteTheme.codeBackground, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(RemoteTheme.border, lineWidth: 0.75)
+        )
+    }
+
+    private var newButton: some View {
+        Button(action: onNew) {
+            Image(systemName: "plus")
+                .font(RemoteTheme.font(size: 13.5, weight: .semibold, relativeTo: .subheadline))
+                .foregroundStyle(RemoteTheme.accent)
+                .frame(width: 30, height: 30)
+                .background(RemoteTheme.accent.opacity(0.14), in: Circle())
+                .frame(minWidth: 36, minHeight: 36)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!client.state.isConnected || client.availableModels.isEmpty)
+        .accessibilityLabel(model.listTab == .rooms ? "New room" : "New session")
+        .accessibilityHint(
+            !client.state.isConnected
+                ? "Connect to your Mac first"
+                : (client.availableModels.isEmpty ? "Loading available models from your Mac" : "")
+        )
+    }
+
+    /// Usage or Settings as an icon, where the short header has no room for the footer's labelled buttons.
+    private func utilityButton(_ title: String, systemImage: String, target: RemoteTab) -> some View {
+        let active = model.tab == target
+        return Button {
+            onSelectUtilityTab(target)
+        } label: {
+            Image(systemName: systemImage)
+                .font(RemoteTheme.font(size: 14, weight: .medium, relativeTo: .subheadline))
+                .foregroundStyle(active ? RemoteTheme.accent : RemoteTheme.secondaryText)
+                .frame(width: 36, height: 36)
+                .background(active ? RemoteTheme.accent.opacity(0.14) : .clear, in: Circle())
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 
     private func segmentButton(title: String, badge: Int, target: RemoteTab) -> some View {
@@ -382,31 +457,38 @@ private struct SplitSidebarFooter: View {
 
 private struct SplitDetailView: View {
     let client: RemoteClient
-    let isSideBySide: Bool
-    let showStatusInToolbar: Bool
-    let onShowSidebar: () -> Void
     @Environment(RemoteAppModel.self) private var model
+    @Environment(\.paneControls) private var controls
 
     var body: some View {
-        switch model.tab {
-        case .usage:
-            UsageView(client: client, showStatusInToolbar: showStatusInToolbar)
-        case .settings:
-            SettingsView(client: client, showStatusInToolbar: showStatusInToolbar)
-        case .hub, .rooms:
-            if let route = model.selectedChat {
-                ChatView(client: client, sessionID: route.sessionID, title: route.title)
-                    .id(route.sessionID)
-            } else {
-                EmptyDetailView(isSideBySide: isSideBySide, onShowSidebar: onShowSidebar)
+        Group {
+            switch model.tab {
+            case .usage:
+                UsageView(client: client, showStatusInToolbar: !controls.sidebarShown)
+            case .settings:
+                SettingsView(client: client, showStatusInToolbar: !controls.sidebarShown)
+            case .hub, .rooms:
+                if let route = model.selectedChat {
+                    ChatView(client: client, sessionID: route.sessionID, title: route.title)
+                        .id(route.sessionID)
+                } else {
+                    EmptyDetailView()
+                }
+            }
+        }
+        .toolbar {
+            if !controls.sidebarShown {
+                ToolbarItem(placement: .topBarLeading) { SidebarToggleButton() }
+            }
+            if controls.canShowDetails {
+                ToolbarItem(placement: .topBarTrailing) { DetailsToggleButton() }
             }
         }
     }
 }
 
 private struct EmptyDetailView: View {
-    let isSideBySide: Bool
-    let onShowSidebar: () -> Void
+    @Environment(\.paneControls) private var controls
 
     var body: some View {
         VStack(spacing: 16) {
@@ -414,13 +496,14 @@ private struct EmptyDetailView: View {
             Text("No chat selected")
                 .font(RemoteTheme.font(size: 16, weight: .medium, relativeTo: .headline))
                 .foregroundStyle(RemoteTheme.secondaryText)
-            if !isSideBySide {
-                Button("Show list", action: onShowSidebar)
+            if !controls.sidebarShown {
+                Button("Show list") { controls.toggleSidebar() }
                     .buttonStyle(RemoteSecondaryButtonStyle())
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(RemoteTheme.background.ignoresSafeArea())
+        .toolbar(.visible, for: .navigationBar)
     }
 }
 

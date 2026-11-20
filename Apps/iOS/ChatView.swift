@@ -10,8 +10,12 @@ struct ChatView: View {
     @Environment(RemoteAppModel.self) private var model
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.foldLayout) private var fold
+    @Environment(\.laptopDeck) private var laptopDeck
+    @Environment(\.paneControls) private var paneControls
     /// The chat's bottom edge on screen, to size the laptop layout's lower half.
     @State private var globalMaxY: CGFloat = 0
+    /// The chat's width. A fold or a side pane changes it.
+    @State private var chatWidth: CGFloat = 0
     @State private var sending = false
     @State private var loadError: String?
     @State private var actionError: String?
@@ -131,19 +135,31 @@ struct ChatView: View {
         return candidate.isEmpty ? "Chat" : candidate
     }
 
+    /// Next to an open side pane the bar has room for the title and two buttons, so Changes moves into the menu.
+    private var isNarrow: Bool { paneControls.isActive && chatWidth > 0 && chatWidth < 430 }
+
     /// Height of the lower half when the phone is partly folded like a laptop (nil otherwise).
     private var laptopDeckHeight: CGFloat? {
         guard case .laptop(let creaseY) = fold, globalMaxY > creaseY else { return nil }
         return globalMaxY - creaseY
     }
 
-    /// The message box. Partly folded like a laptop, it takes the whole lower half, below the crease.
+    /// The message box. Partly folded like a laptop, it sits right under the crease with the session list (or
+    /// the details) below it, so the lower half is a deck and the chat keeps the upper half. With the keyboard up
+    /// the deck is short and holds the message box alone.
     @ViewBuilder private var composerDeck: some View {
         if let deck = laptopDeckHeight {
             VStack(spacing: 0) {
-                composerCard(minLines: 5)
+                composerCard(minLines: laptopDeck == nil || deck < Self.deckWithPaneMinHeight ? 4 : 1)
                     .padding(.top, FoldMetrics.creaseGutter)
-                Spacer(minLength: 0)
+                if let laptopDeck, deck >= Self.deckWithPaneMinHeight {
+                    laptopDeck
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(alignment: .top) { Rectangle().fill(RemoteTheme.separator).frame(height: 1) }
+                        .padding(.top, 6)
+                } else {
+                    Spacer(minLength: 0)
+                }
             }
             .frame(height: deck, alignment: .top)
             .frame(maxWidth: .infinity)
@@ -153,6 +169,9 @@ struct ChatView: View {
             composerCard(minLines: 1)
         }
     }
+
+    /// Below this height (the keyboard is up) the deck has no room for a pane under the message box.
+    private static let deckWithPaneMinHeight: CGFloat = 300
 
     private func composerCard(minLines: Int) -> some View {
         RemoteComposerCard(
@@ -282,7 +301,7 @@ struct ChatView: View {
                         }
                         if activity == .working {
                             HStack(spacing: 8) {
-                                ConstellationSpinner(size: 15)
+                                ConstellationSpinner(size: 20)
                                 Text("Working")
                                     .font(RemoteTheme.font(size: 13, weight: .medium, relativeTo: .footnote))
                                     .foregroundStyle(RemoteTheme.secondaryText)
@@ -371,6 +390,9 @@ struct ChatView: View {
             .onChange(of: transcript != nil) { _, loaded in
                 if loaded { restoreScroll(proxy) }
             }
+            // A fold or a side pane reshapes the chat. If it showed the newest message, it still should.
+            .onChange(of: chatWidth) { _, _ in keepLatestInView(proxy) }
+            .onChange(of: laptopDeckHeight) { _, _ in keepLatestInView(proxy) }
             .onChange(of: decision?.id) { _, id in
                 if id != nil && !showFind {
                     withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
@@ -485,6 +507,7 @@ struct ChatView: View {
             composerDeck
         }
         .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { globalMaxY = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width.rounded() } action: { chatWidth = $0 }
         .sheet(isPresented: $showMembers) {
             if let room {
                 RoomMembersSheet(room: room)
@@ -529,9 +552,23 @@ struct ChatView: View {
         }
     }
 
+    private func keepLatestInView(_ proxy: ScrollViewProxy) {
+        guard !showFind, transcript != nil else { return }
+        let anchor = model.scrollAnchors[sessionID]
+        let atEnd = anchor == nil || anchor == Self.bottomID || anchor == Self.workingID
+            || anchor == Self.decisionID || anchor == transcript?.items.last?.id
+        guard atEnd else { return }
+        // After the layout pass, so the new size is the one scrolled in. Rows settle their heights once they are
+        // on screen, so a second pass lands on the true end.
+        DispatchQueue.main.async { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+    }
+
     private func restoreScroll(_ proxy: ScrollViewProxy) {
         let anchorTarget = (startAnchor ?? nil) ?? Self.bottomID
         DispatchQueue.main.async { proxy.scrollTo(anchorTarget, anchor: .bottom) }
+        // Rows settle their heights once they are on screen: a second pass lands on the true spot.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { proxy.scrollTo(anchorTarget, anchor: .bottom) }
     }
 
     private func open() async {
@@ -553,20 +590,35 @@ struct ChatView: View {
                 .font(RemoteTheme.font(size: 16, weight: .semibold, relativeTo: .headline))
                 .foregroundStyle(RemoteTheme.primaryText)
                 .lineLimit(1)
+                .truncationMode(.tail)
+                // Flexible, so a narrow bar shortens the title instead of dropping it.
+                .frame(maxWidth: .infinity)
+                // The bar measures its title once. A new identity makes it measure again at the new width.
+                .id(chatWidth)
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
-            Button {
-                showDiffSheet = true
-            } label: {
-                Image(systemName: "plus.forwardslash.minus")
-                    .font(RemoteTheme.font(size: 14, weight: .medium, relativeTo: .body))
-                    .foregroundStyle(RemoteTheme.secondaryText)
-                    .frame(minWidth: 36, minHeight: 36)
+            if !isNarrow {
+                Button {
+                    showDiffSheet = true
+                } label: {
+                    Image(systemName: "plus.forwardslash.minus")
+                        .font(RemoteTheme.font(size: 14, weight: .medium, relativeTo: .body))
+                        .foregroundStyle(RemoteTheme.secondaryText)
+                        .frame(minWidth: 36, minHeight: 36)
+                }
+                .disabled(!client.state.isConnected)
+                .accessibilityLabel("Changes")
             }
-            .disabled(!client.state.isConnected)
-            .accessibilityLabel("Changes")
 
             Menu {
+                if isNarrow {
+                    Button {
+                        showDiffSheet = true
+                    } label: {
+                        Label("Changes", systemImage: "plus.forwardslash.minus")
+                    }
+                    .disabled(!client.state.isConnected)
+                }
                 if hasHistory {
                     Button {
                         withAnimation(.snappy) {
