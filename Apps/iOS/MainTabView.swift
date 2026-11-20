@@ -87,7 +87,12 @@ struct SplitRootView: View {
 
     /// Unfolded Duo landscape is ~951 pt; unfolded Duo portrait is ~669 pt.
     private let sideBySideWidth: CGFloat = 780
-    private var isSideBySide: Bool { width >= sideBySideWidth }
+    /// Whether the list and the chat sit side by side. It follows the width, but only drops to one column once the
+    /// width has stayed narrow for a moment: while iOS resizes the window (unfolding, folding, rotating) it briefly
+    /// reports a narrow width, and following that at once flashed the chat full screen.
+    @State private var sideBySide = true
+    @State private var collapseTask: Task<Void, Never>?
+    private var isSideBySide: Bool { sideBySide }
 
     @Environment(\.foldLayout) private var fold
     /// Where this view sits on screen, to put the book layout's page break on the crease.
@@ -135,31 +140,43 @@ struct SplitRootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
-            let wasSideBySide = width >= sideBySideWidth
             width = newWidth
-            let nowSideBySide = newWidth >= sideBySideWidth
+            let wide = newWidth >= sideBySideWidth
 
             if !didInitializeWidth {
                 didInitializeWidth = true
-                if nowSideBySide {
-                    columns = .all
-                } else {
-                    columns = (model.selectedChat == nil && (model.tab == .hub || model.tab == .rooms))
-                        ? .doubleColumn
-                        : .detailOnly
+                sideBySide = wide
+                applyColumns(sideBySide: wide)
+                return
+            }
+
+            if wide {
+                collapseTask?.cancel()
+                if !sideBySide {
+                    sideBySide = true
+                    applyColumns(sideBySide: true)
                 }
                 return
             }
 
-            if wasSideBySide != nowSideBySide {
-                if nowSideBySide {
-                    columns = .all
-                } else if model.selectedChat == nil && (model.tab == .hub || model.tab == .rooms) {
-                    columns = .doubleColumn
-                } else {
-                    columns = .detailOnly
-                }
+            guard sideBySide else { return }
+            collapseTask?.cancel()
+            collapseTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(400))
+                guard !Task.isCancelled, width < sideBySideWidth, !fold.isFolded else { return }
+                sideBySide = false
+                applyColumns(sideBySide: false)
             }
+        }
+    }
+
+    private func applyColumns(sideBySide: Bool) {
+        if sideBySide {
+            columns = .all
+        } else if model.selectedChat == nil && (model.tab == .hub || model.tab == .rooms) {
+            columns = .doubleColumn
+        } else {
+            columns = .detailOnly
         }
     }
 
