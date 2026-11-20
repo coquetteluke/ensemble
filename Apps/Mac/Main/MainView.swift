@@ -85,36 +85,39 @@ struct MainView: View {
         .modifier(AgentToolsWindowSync(store: store, window: window))
         .navigationTitle(windowTitle)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                BackgroundToolbarButton(store: store, window: window, rooms: rooms)
-            }
-            .sharedBackgroundVisibility(.hidden)
-            ToolbarItem(placement: .primaryAction) {
-                ReviewToolbarButton(isOpen: window.reviewOpen) { window.toggleReview() }
-            }
-            .sharedBackgroundVisibility(.hidden)
-            ToolbarItem(placement: .primaryAction) {
-                BrowserToolbarButton(isOpen: window.browserOpen) { window.toggleBrowser() }
-            }
-            .sharedBackgroundVisibility(.hidden)
-            ToolbarItem(placement: .primaryAction) {
-                TerminalToolbarButton(isOpen: window.terminalOpen) { window.toggleTerminal() }
-            }
-            .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .navigation) {
                 IconButton("sidebar.left", help: window.showSidebar ? "Hide sidebar" : "Show sidebar", size: 28) {
                     window.toggleSidebar()
                 }
             }
             .sharedBackgroundVisibility(.hidden)
-            ToolbarItem(placement: .primaryAction) {
+            // The six window buttons sit at the top right, where the title row leaves room for them
+            // (`toolbarButtonsWidth`). `.primaryAction` would put them on the leading edge, over the title.
+            ToolbarSpacer(.flexible)
+            ToolbarItem(placement: .automatic) {
+                BackgroundToolbarButton(store: store, window: window, rooms: rooms)
+            }
+            .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .automatic) {
+                ReviewToolbarButton(isOpen: window.reviewOpen) { window.toggleReview() }
+            }
+            .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .automatic) {
+                BrowserToolbarButton(isOpen: window.browserOpen) { window.toggleBrowser() }
+            }
+            .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .automatic) {
+                TerminalToolbarButton(isOpen: window.terminalOpen) { window.toggleTerminal() }
+            }
+            .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .automatic) {
                 IconButton("puzzlepiece.extension", help: "Customizations: what each agent loads in this folder", size: 28) {
                     CustomizationsFocus.shared.show(folder: currentFolder)
                     openSettings()
                 }
             }
             .sharedBackgroundVisibility(.hidden)
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItem(placement: .automatic) {
                 IconButton("sidebar.right", help: window.contextPanelVisible ? "Hide context panel (Option-Command-I)" : "Show context panel (Option-Command-I)",
                            size: 28, active: window.contextPanelVisible) {
                     window.toggleContextPanel()
