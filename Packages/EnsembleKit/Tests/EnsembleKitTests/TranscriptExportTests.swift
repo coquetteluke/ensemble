@@ -15,13 +15,13 @@ import Testing
 
         let md = TranscriptExport.markdown(
             title: "Reconnect Fix",
-            directory: "/Users/luke/Ensemble",
+            directory: "/Users/sam/Ensemble",
             modelName: "Claude Sonnet",
             items: items
         )
 
         #expect(md.hasPrefix("# Reconnect Fix\n\n"))
-        #expect(md.contains("Folder: `/Users/luke/Ensemble` \u{00B7} Model: Claude Sonnet"))
+        #expect(md.contains("Folder: `/Users/sam/Ensemble` \u{00B7} Model: Claude Sonnet"))
         #expect(md.contains("## You\n\nFix the reconnect loop"))
         #expect(md.contains("## Assistant\n\nAdded exponential backoff to the SSE client."))
         #expect(md.contains("## You\n\nGreat, add a test too."))

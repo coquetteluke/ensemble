@@ -314,8 +314,13 @@ public struct TranscriptList: View {
     private func retryableErrorID() -> String? {
         guard onRetry != nil, !isTranscriptWorking else { return nil }
         for item in items.reversed() {
-            if case .error(let id, _) = item {
+            switch item {
+            case .error(let id, _):
                 return id
+            case .user, .agentText, .board:
+                return nil
+            default:
+                continue
             }
         }
         return nil

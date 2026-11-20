@@ -36,7 +36,7 @@ enum RelayLiveConfig {
         let largeSummary = SessionSummary(
             id: largeSessionID,
             title: "Large 5 MiB transcript",
-            directory: "/Users/luke/Ensemble",
+            directory: "/Users/sam/Ensemble",
             activity: .idle,
             lastActivity: Date(),
             usage: .zero

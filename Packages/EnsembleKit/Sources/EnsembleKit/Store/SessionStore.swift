@@ -672,9 +672,9 @@ public final class SessionStore {
         let primaryID = session.id
         threadLinks.restoreRecord(prepared.previousThreadRecord, for: primaryID)
         if prepared.createdNewBackingSession {
+            deletedSessionIDs.insert(prepared.backingSessionID)
             byID.removeValue(forKey: prepared.backingSessionID)
             sessions.removeAll { $0.id == prepared.backingSessionID }
-            try? await engine.deleteSession(prepared.backingSessionID)
         }
         dropLocalEdit(primaryID, .model, at: prepared.previousModelEditTime)
         session.info.model = prepared.previousModel
@@ -686,6 +686,9 @@ public final class SessionStore {
         }
         session.items.removeAll { $0.id == prepared.switchNoticeID }
         syncRouterThreadLinks()
+        if prepared.createdNewBackingSession {
+            try? await engine.deleteSession(prepared.backingSessionID)
+        }
     }
 
     /// Creates or reuses a backing session on the engine for `targetModel`, builds a compact handoff,
@@ -796,11 +799,14 @@ public final class SessionStore {
         } catch {
             threadLinks.restoreRecord(previousRecord, for: primaryID)
             if let createdBackingID {
+                deletedSessionIDs.insert(createdBackingID)
                 byID.removeValue(forKey: createdBackingID)
                 sessions.removeAll { $0.id == createdBackingID }
-                try? await engine.deleteSession(createdBackingID)
             }
             syncRouterThreadLinks()
+            if let createdBackingID {
+                try? await engine.deleteSession(createdBackingID)
+            }
             throw error
         }
     }

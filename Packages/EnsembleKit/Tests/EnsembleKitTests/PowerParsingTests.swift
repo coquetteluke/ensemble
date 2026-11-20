@@ -44,7 +44,7 @@ import Testing
 
     @Test func adminRuleWithPasswordIsNotEnough() {
         let listing = """
-        User luke may run the following commands on mac:
+        User sam may run the following commands on mac:
             (ALL) ALL
             (root) NOPASSWD: /usr/bin/true
         """
@@ -53,7 +53,7 @@ import Testing
 
     @Test func otherRuleShapes() {
         func allows(_ entries: String) -> Bool {
-            PowerParsing.sudoListingAllowsPMSet("User luke may run the following commands on mac:\n" + entries)
+            PowerParsing.sudoListingAllowsPMSet("User sam may run the following commands on mac:\n" + entries)
         }
         #expect(allows("    (ALL) NOPASSWD: ALL"))
         #expect(allows("    (ALL : ALL) NOPASSWD: /usr/bin/pmset"))
@@ -87,11 +87,11 @@ import Testing
     }
 
     @Test func ruleMatchesTheLidlockRule() {
-        #expect(PowerSudoers.ruleLine(user: "luke") == "luke ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0")
+        #expect(PowerSudoers.ruleLine(user: "sam") == "sam ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0")
     }
 
     @Test func installScriptChecksBeforeInstalling() throws {
-        let script = try #require(PowerSudoers.installScript(user: "luke"))
+        let script = try #require(PowerSudoers.installScript(user: "sam"))
         let lines = script.split(separator: "\n").map(String.init)
         func index(_ needle: String) throws -> Int {
             try #require(lines.firstIndex { $0.contains(needle) }, "missing \(needle)")
@@ -103,7 +103,7 @@ import Testing
         let move = try index("/bin/mv -f")
         #expect(write < check && check < owner && owner < mode && mode < move)
         #expect(lines[0] == "set -e")
-        #expect(script.contains("'luke ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0'"))
+        #expect(script.contains("'sam ALL=(root) NOPASSWD: /usr/bin/pmset disablesleep 1, /usr/bin/pmset disablesleep 0'"))
         #expect(script.contains("'/private/etc/sudoers.d/ensemble-pmset'"))
         // The temporary file has a dot in its name, so sudo never reads it.
         #expect(script.contains("/private/etc/sudoers.d/.ensemble-pmset.XXXXXX"))
@@ -112,7 +112,7 @@ import Testing
 
     @Test func appleScriptEscapesTheShellScript() throws {
         #expect(PowerSudoers.appleScriptQuoted(#"a "b" \n"#) == #""a \"b\" \\n""#)
-        let source = try #require(PowerSudoers.appleScript(user: "luke"))
+        let source = try #require(PowerSudoers.appleScript(user: "sam"))
         #expect(source.hasPrefix("do shell script \"set -e\n"))
         #expect(source.hasSuffix("with administrator privileges"))
         #expect(source.contains(#"printf '%s\\n'"#))

@@ -73,7 +73,7 @@ import Testing
             kind: .session,
             title: "Build auth",
             model: "Claude Sonnet",
-            folder: "/Users/luke/SecretClient/AppRepo",
+            folder: "/Users/sam/SecretClient/AppRepo",
             activity: "idle"
         )
         #expect(entry.folder == "AppRepo")
@@ -211,7 +211,7 @@ import Testing
         let prompt = SecondOpinionPromptBuilder.build(
             replyText: "Use an actor to serialize state.",
             diffSummary: "diff --git a/File.swift b/File.swift",
-            directory: "/Users/luke/Ensemble"
+            directory: "/Users/sam/Ensemble"
         )
         #expect(prompt.contains("Use an actor to serialize state."))
         #expect(prompt.contains("diff --git"))
@@ -268,23 +268,23 @@ import Testing
         let ownRoomID = UUID()
         let otherRoomID = UUID()
         let untrustedRoomID = UUID()
-        app.add("s1", folder: "/Users/luke/ProjA")
-        app.add("s2", folder: "/Users/luke/ProjA")
-        app.add("s3", folder: "/Users/luke/UntrustedRepo")
+        app.add("s1", folder: "/Users/sam/ProjA")
+        app.add("s2", folder: "/Users/sam/ProjA")
+        app.add("s3", folder: "/Users/sam/UntrustedRepo")
         let dirs: [String: String] = [
-            "s1": "/Users/luke/ProjA",
-            "s2": "/Users/luke/ProjA",
-            "s3": "/Users/luke/UntrustedRepo",
-            ownRoomID.uuidString: "/Users/luke/ProjA",
-            otherRoomID.uuidString: "/Users/luke/ProjA",
-            untrustedRoomID.uuidString: "/Users/luke/UntrustedRepo",
+            "s1": "/Users/sam/ProjA",
+            "s2": "/Users/sam/ProjA",
+            "s3": "/Users/sam/UntrustedRepo",
+            ownRoomID.uuidString: "/Users/sam/ProjA",
+            otherRoomID.uuidString: "/Users/sam/ProjA",
+            untrustedRoomID.uuidString: "/Users/sam/UntrustedRepo",
         ]
-        var trustedFolders: Set<String> = ["/Users/luke/ProjA"]
+        var trustedFolders: Set<String> = ["/Users/sam/ProjA"]
         let coord = AgentToolsCoordinator(environment: AgentToolsEnvironment(
             session: { app.sessions[$0] },
             browser: { _ in nil },
             isTrusted: { trustedFolders.contains($0) },
-            knownFolders: { ["/Users/luke/ProjA", "/Users/luke/UntrustedRepo"] },
+            knownFolders: { ["/Users/sam/ProjA", "/Users/sam/UntrustedRepo"] },
             resolveModel: { asked, s in (s.model, "Claude", asked == nil) },
             showBrowser: { _ in },
             log: { _, _ in },
@@ -292,15 +292,15 @@ import Testing
             send: { _, _ in },
             listAgents: { _, ownRoom in
                 var entries: [AgentDirectoryEntry] = [
-                    AgentDirectoryEntry(id: "s1", kind: .session, title: "Caller", model: "Claude", folder: "/Users/luke/ProjA", activity: "working"),
-                    AgentDirectoryEntry(id: "s2", kind: .session, title: "Target", model: "Gemini", folder: "/Users/luke/ProjA", activity: "idle"),
-                    AgentDirectoryEntry(id: "s3", kind: .session, title: "Untrusted", model: "GPT", folder: "/Users/luke/UntrustedRepo", activity: "idle"),
+                    AgentDirectoryEntry(id: "s1", kind: .session, title: "Caller", model: "Claude", folder: "/Users/sam/ProjA", activity: "working"),
+                    AgentDirectoryEntry(id: "s2", kind: .session, title: "Target", model: "Gemini", folder: "/Users/sam/ProjA", activity: "idle"),
+                    AgentDirectoryEntry(id: "s3", kind: .session, title: "Untrusted", model: "GPT", folder: "/Users/sam/UntrustedRepo", activity: "idle"),
                 ]
                 if let ownRoom {
-                    entries.append(AgentDirectoryEntry(id: ownRoom.uuidString, kind: .room, title: "Own Room", model: "Claude, GPT", folder: "/Users/luke/ProjA", activity: "idle"))
+                    entries.append(AgentDirectoryEntry(id: ownRoom.uuidString, kind: .room, title: "Own Room", model: "Claude, GPT", folder: "/Users/sam/ProjA", activity: "idle"))
                 }
-                entries.append(AgentDirectoryEntry(id: otherRoomID.uuidString, kind: .room, title: "Review Room", model: "Claude, Gemini", folder: "/Users/luke/ProjA", activity: "working"))
-                entries.append(AgentDirectoryEntry(id: untrustedRoomID.uuidString, kind: .room, title: "Untrusted Room", model: "Claude", folder: "/Users/luke/UntrustedRepo", activity: "idle"))
+                entries.append(AgentDirectoryEntry(id: otherRoomID.uuidString, kind: .room, title: "Review Room", model: "Claude, Gemini", folder: "/Users/sam/ProjA", activity: "working"))
+                entries.append(AgentDirectoryEntry(id: untrustedRoomID.uuidString, kind: .room, title: "Untrusted Room", model: "Claude", folder: "/Users/sam/UntrustedRepo", activity: "idle"))
                 return entries
             },
             ownRoomID: { $0 == "s1" ? ownRoomID : nil },
@@ -320,27 +320,27 @@ import Testing
         #expect(untrustedResult.text.contains("untrusted"))
 
         // Revoking trust on caller's folder also blocks list_agents.
-        trustedFolders.remove("/Users/luke/ProjA")
+        trustedFolders.remove("/Users/sam/ProjA")
         let revokedResult = await coord.handle(.listAgents, caller: .init(sessionID: "s1", canUseSiteGrants: false))
         #expect(revokedResult.isError)
     }
 
     @Test func messageAgentBlocksUntrustedCrossFolderAndPrivilegeEscalation() async {
         let sessions: [String: AgentToolsEnvironment.Session] = [
-            "untrusted": .init(id: "untrusted", rootID: "untrusted", directory: "/Users/luke/Untrusted", model: ModelRef(providerID: "anthropic", id: "claude-sonnet-4"), permissionMode: .auto, archived: false, turn: "1", title: "Untrusted", modelName: "Claude"),
-            "askA": .init(id: "askA", rootID: "askA", directory: "/Users/luke/ProjA", model: ModelRef(providerID: "anthropic", id: "claude-sonnet-4"), permissionMode: .ask, archived: false, turn: "1", title: "Ask A", modelName: "Claude"),
-            "planA": .init(id: "planA", rootID: "planA", directory: "/Users/luke/ProjA", model: ModelRef(providerID: "google", id: "gemini-2.5-pro"), permissionMode: .plan, archived: false, turn: "1", title: "Plan A", modelName: "Gemini"),
-            "autoA": .init(id: "autoA", rootID: "autoA", directory: "/Users/luke/ProjA", model: ModelRef(providerID: "google", id: "gemini-2.5-pro"), permissionMode: .auto, archived: false, turn: "1", title: "Auto A", modelName: "Gemini"),
-            "askB": .init(id: "askB", rootID: "askB", directory: "/Users/luke/ProjB", model: ModelRef(providerID: "openai", id: "gpt-5"), permissionMode: .ask, archived: false, turn: "1", title: "Ask B", modelName: "GPT-5"),
+            "untrusted": .init(id: "untrusted", rootID: "untrusted", directory: "/Users/sam/Untrusted", model: ModelRef(providerID: "anthropic", id: "claude-sonnet-4"), permissionMode: .auto, archived: false, turn: "1", title: "Untrusted", modelName: "Claude"),
+            "askA": .init(id: "askA", rootID: "askA", directory: "/Users/sam/ProjA", model: ModelRef(providerID: "anthropic", id: "claude-sonnet-4"), permissionMode: .ask, archived: false, turn: "1", title: "Ask A", modelName: "Claude"),
+            "planA": .init(id: "planA", rootID: "planA", directory: "/Users/sam/ProjA", model: ModelRef(providerID: "google", id: "gemini-2.5-pro"), permissionMode: .plan, archived: false, turn: "1", title: "Plan A", modelName: "Gemini"),
+            "autoA": .init(id: "autoA", rootID: "autoA", directory: "/Users/sam/ProjA", model: ModelRef(providerID: "google", id: "gemini-2.5-pro"), permissionMode: .auto, archived: false, turn: "1", title: "Auto A", modelName: "Gemini"),
+            "askB": .init(id: "askB", rootID: "askB", directory: "/Users/sam/ProjB", model: ModelRef(providerID: "openai", id: "gpt-5"), permissionMode: .ask, archived: false, turn: "1", title: "Ask B", modelName: "GPT-5"),
         ]
-        let trusted: Set<String> = ["/Users/luke/ProjA", "/Users/luke/ProjB"]
+        let trusted: Set<String> = ["/Users/sam/ProjA", "/Users/sam/ProjB"]
         var deliveredPayloads: [(String, String)] = []
 
         let coord = AgentToolsCoordinator(environment: AgentToolsEnvironment(
             session: { sessions[$0] },
             browser: { _ in nil },
             isTrusted: { trusted.contains($0) },
-            knownFolders: { ["/Users/luke/ProjA", "/Users/luke/ProjB", "/Users/luke/Untrusted"] },
+            knownFolders: { ["/Users/sam/ProjA", "/Users/sam/ProjB", "/Users/sam/Untrusted"] },
             resolveModel: { asked, s in (s.model, s.modelName, asked == nil) },
             showBrowser: { _ in },
             log: { _, _ in },

@@ -214,6 +214,7 @@ final class AgentToolsCenter {
             session: { [weak store] id in
                 guard let store else { return nil }
                 let primaryID = store.primarySessionID(for: id)
+                guard !store.hiddenSessionIDs.contains(id), !store.hiddenSessionIDs.contains(primaryID) else { return nil }
                 guard let model = store.session(primaryID) else { return nil }
                 return info(model, store: store)
             },
