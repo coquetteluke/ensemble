@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
 
 /// Renders Settings > Remote in each relay status (`connected`, `unreachable`, `limitReached`, `mailboxTaken`, and
 /// Advanced validation) plus `RemotePairingView` with relay-only QR codes, dark and light at the requested zoom.
-/// Uses in-memory token and identity stores and temporary UserDefaults suites; never touches Keychain or the internet.
+/// Uses in-memory token, identity and settings stores; never touches Keychain, saved settings or the internet.
 @MainActor
 enum RelaySnapshots {
     @discardableResult
@@ -177,11 +177,7 @@ enum RelaySnapshots {
     }
 
     private static func runControllerChecks() async {
-        let suiteName = "ensemble.relay.check.\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suiteName) else {
-            preconditionFailure("Could not open temporary UserDefaults suite")
-        }
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryDefaults()
 
         let tokenStore = InMemoryRemoteTokenStore()
         let identityStore = InMemoryRelayIdentityStore()
@@ -238,9 +234,8 @@ enum RelaySnapshots {
         await controller.setRelayEnabled(true)
 
         // Check `stop()` cancelling an in-flight `.starting` phase.
-        let slowSuite = "ensemble.relay.slow.\(UUID().uuidString)"
-        if let slowDefaults = UserDefaults(suiteName: slowSuite) {
-            defer { slowDefaults.removePersistentDomain(forName: slowSuite) }
+        do {
+            let slowDefaults = InMemoryDefaults()
             let slowController = RemoteControlController(
                 host: DemoRemoteHost(),
                 tokenStore: InMemoryRemoteTokenStore(),
@@ -273,11 +268,7 @@ enum RelaySnapshots {
             relay2.stop()
         }
 
-        let liveSuite = "ensemble.relay.live.\(UUID().uuidString)"
-        guard let liveDefaults = UserDefaults(suiteName: liveSuite) else {
-            preconditionFailure("Could not open live UserDefaults suite")
-        }
-        defer { liveDefaults.removePersistentDomain(forName: liveSuite) }
+        let liveDefaults = InMemoryDefaults()
 
         let liveIdentityStore = InMemoryRelayIdentityStore()
         let liveController = RemoteControlController(

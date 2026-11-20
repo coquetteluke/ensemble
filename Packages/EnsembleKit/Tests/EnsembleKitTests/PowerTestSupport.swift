@@ -99,7 +99,7 @@ final class FakePowerBackend: PowerBackend {
             .appendingPathComponent("ensemble-power-tests-\(UUID().uuidString)", isDirectory: true)
         let marker = PowerMarker(url: folder.appendingPathComponent("power-lid-lock.marker"))
         if markerExists { marker.write() }
-        let suite = defaults ?? UserDefaults(suiteName: "ensemble-power-tests-\(UUID().uuidString)")!
+        let suite = defaults ?? InMemoryDefaults()
         let backend = FakePowerBackend(initial, markerURL: marker.url)
         let clock = TestClock()
         self.backend = backend

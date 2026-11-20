@@ -563,10 +563,8 @@ import Testing
         #expect(failed == .failed("provider down"))
     }
 
-    @Test func savedSettingsAreRead() throws {
-        let suite = "ensemble-safety-check-tests-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+    @Test func savedSettingsAreRead() {
+        let defaults = InMemoryDefaults()
         #expect(SafetyCheckSettings.load(from: defaults) == SafetyCheckSettings())
         defaults.set("off", forKey: SafetyCheckSettings.Key.enabled)
         defaults.set("openai/gpt-5-mini", forKey: SafetyCheckSettings.Key.model)
