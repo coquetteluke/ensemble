@@ -80,7 +80,7 @@ log="$work/build.log"
 if ! xcodebuild -project Ensemble.xcodeproj -scheme Ensemble -configuration Release \
     -destination 'generic/platform=macOS' -derivedDataPath "$work/dd" \
     ARCHS="$archs" ONLY_ACTIVE_ARCH=NO \
-    CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
+    CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
     build >"$log" 2>&1; then
   mkdir -p "$dist"
   cp "$log" "$dist/make-installer.log"
@@ -107,10 +107,15 @@ done < <(find "$app/Contents" -type f -perm +111 ! -path "$app/Contents/MacOS/En
 programs+=("$app/Contents/MacOS/Ensemble")
 
 sign() {
-  # Keeps what Xcode gave the program (its identifier and entitlements) and the hardened runtime.
+  # Keeps what Xcode gave the program (its identifier, its entitlements, the hardened runtime), except the
+  # debugging entitlement Xcode adds to local builds: a copy for other people must not be open to debuggers.
+  # (Building with CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO would drop that one too, and the microphone
+  # entitlement with it, which breaks dictation.)
   local target="$1" entitlements="$work/entitlements.plist"
   local options=(--force --sign - --options runtime --timestamp=none --preserve-metadata=identifier)
+  rm -f "$entitlements"
   if codesign -d --entitlements - --xml "$target" >"$entitlements" 2>/dev/null && [ -s "$entitlements" ]; then
+    /usr/libexec/PlistBuddy -c "Delete :com.apple.security.get-task-allow" "$entitlements" >/dev/null 2>&1 || true
     options+=(--entitlements "$entitlements")
   fi
   codesign "${options[@]}" "$target" 2>/dev/null || fail "codesign failed for $target"
@@ -124,10 +129,16 @@ codesign --verify --deep --strict "$app" || fail "the signed app does not verify
 signature="$(codesign -dvv "$app" 2>&1)"
 echo "$signature" | grep -q "^Signature=adhoc" || fail "the app is not signed ad hoc"
 echo "$signature" | grep -q "^TeamIdentifier=not set" || fail "the signature names a team"
-if codesign -d --entitlements - --xml "$app" 2>/dev/null | grep -q "get-task-allow"; then
-  fail "the app carries the debugging entitlement (get-task-allow)"
+kept="$(codesign -d --entitlements - --xml "$app" 2>/dev/null || true)"
+case "$kept" in *get-task-allow*) fail "the app carries the debugging entitlement (get-task-allow)" ;; esac
+# The app asks for the microphone (dictation). Under the hardened runtime that needs the entitlement too.
+if plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist" >/dev/null 2>&1; then
+  case "$kept" in
+    *com.apple.security.device.audio-input*) ;;
+    *) fail "the app lost its microphone entitlement, so dictation would not work" ;;
+  esac
 fi
-lipo -archs "$app/Contents/MacOS/Ensemble"
+built_archs="$(lipo -archs "$app/Contents/MacOS/Ensemble")"
 
 # ---- Nothing personal in the bundle ----
 step "Checking the app for personal details and keys"
@@ -163,10 +174,10 @@ dmg="$dist/Ensemble-$version.dmg"
 rm -f "$dmg"
 # macOS 27 replaces `hdiutil create` and `hdiutil attach` with `diskutil image`. Use it where it exists.
 if diskutil image create from --help >/dev/null 2>&1; then
-  diskutil image create from --format ULMO --volumeName "Ensemble $version" "$stage" "$dmg" >/dev/null \
-    || fail "diskutil could not make $dmg"
-  diskutil image attach --readOnly --nobrowse --mountPoint "$mount" "$dmg" >/dev/null \
-    || fail "the disk image does not mount"
+  diskutil image create from --format ULMO --volumeName "Ensemble $version" "$stage" "$dmg" >"$work/image.log" 2>&1 \
+    || { cat "$work/image.log" >&2; fail "diskutil could not make $dmg"; }
+  diskutil image attach --readOnly --nobrowse --mountPoint "$mount" "$dmg" >"$work/image.log" 2>&1 \
+    || { cat "$work/image.log" >&2; fail "the disk image does not mount"; }
 else
   hdiutil create -quiet -volname "Ensemble $version" -srcfolder "$stage" -fs HFS+ -format ULMO "$dmg" \
     || fail "hdiutil could not make $dmg"
@@ -188,5 +199,5 @@ rm -f "$dist/make-installer.log"
 step "Done"
 echo "Disk image: $dmg"
 echo "Size:       $(du -h "$dmg" | cut -f1 | tr -d ' ')"
-echo "Built from: commit $commit, version $version, $archs"
+echo "Built from: commit $commit, version $version, $built_archs"
 echo "SHA-256:    $(cut -d' ' -f1 "$dist/SHA256SUMS")"
