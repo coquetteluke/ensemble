@@ -179,6 +179,8 @@ struct EnsembleApp: App {
                 }
             }
             .frame(minWidth: 980, minHeight: 620)
+            // In full screen the toolbar would be its own empty strip over the title row; MainView draws the buttons.
+            .windowToolbarFullScreenVisibility(.onHover)
             .ensembleTheme()
             .preferredColorScheme(colorScheme)
             .environment(power)

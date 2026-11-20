@@ -73,6 +73,7 @@ struct MainView: View {
         }
         .background(theme.background)
         .overlay(alignment: .topLeading) { if isSnapshot { SnapshotWindowChrome(window: window) } }
+        .overlay(alignment: .top) { if FullScreenState.shared.isOn && !isSnapshot { fullScreenButtons } }
         .ignoresSafeArea()
         .environment(\.transcriptActions, actions)
         .searchLayer(search, store: store, window: window)
@@ -306,6 +307,32 @@ struct MainView: View {
     }
 
     /// The folder on screen, for Customizations: the room's in a room, else the selected (focused) session's.
+    /// The window toolbar's buttons, drawn in the title row while the window is in full screen (the toolbar itself
+    /// then shows only on hover).
+    private var fullScreenButtons: some View {
+        HStack(spacing: theme.z(6)) {
+            IconButton("sidebar.left", help: window.showSidebar ? "Hide sidebar" : "Show sidebar", size: 28) {
+                window.toggleSidebar()
+            }
+            Spacer(minLength: 0)
+            BackgroundToolbarButton(store: store, window: window, rooms: rooms)
+            ReviewToolbarButton(isOpen: window.reviewOpen) { window.toggleReview() }
+            BrowserToolbarButton(isOpen: window.browserOpen) { window.toggleBrowser() }
+            TerminalToolbarButton(isOpen: window.terminalOpen) { window.toggleTerminal() }
+            IconButton("puzzlepiece.extension", help: "Customizations: what each agent loads in this folder", size: 28) {
+                CustomizationsFocus.shared.show(folder: currentFolder)
+                openSettings()
+            }
+            IconButton("sidebar.right", help: window.contextPanelVisible ? "Hide context panel (Option-Command-I)" : "Show context panel (Option-Command-I)",
+                       size: 28, active: window.contextPanelVisible) {
+                window.toggleContextPanel()
+            }
+        }
+        .padding(.horizontal, theme.z(14))
+        .frame(height: 52)
+        .allowsHitTesting(true)
+    }
+
     private var currentFolder: String? {
         if window.route == .room, let room = rooms?.selectedEngine { return room.state.spec.directory }
         return store.selected?.directory
@@ -578,7 +605,8 @@ struct CenterHeader: View {
     var body: some View {
         HStack(spacing: theme.z(8)) {
             if !window.showSidebar {
-                Color.clear.frame(width: 110, height: 1)
+                // Room for the traffic lights and the sidebar button, or only the button in full screen.
+                Color.clear.frame(width: FullScreenState.shared.isOn ? 36 : 110, height: 1)
             }
             switch window.route {
             case .session:
