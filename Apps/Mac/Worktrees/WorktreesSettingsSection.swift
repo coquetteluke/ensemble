@@ -41,7 +41,7 @@ struct WorktreesSettingsSection: View {
                         .foregroundStyle(theme.textTertiary)
                 }
                 Spacer(minLength: 0)
-                Button("Remove Unused\u{2026}") { confirmUnused = true }
+                Button("Remove unused\u{2026}") { confirmUnused = true }
                     .disabled(unused.isEmpty)
                     .help(unused.isEmpty ? "No copy is unused: each belongs to a session you still have or a room still running"
                           : "Removes copies whose session is gone or archived, and copies of finished rooms. Copies with uncommitted changes stay")
@@ -72,7 +72,7 @@ struct WorktreesSettingsSection: View {
         }
         .confirmationDialog(unused.count == 1 ? "Remove 1 unused copy?" : "Remove \(unused.count) unused copies?",
                             isPresented: $confirmUnused) {
-            Button("Remove Unused", role: .destructive) {
+            Button("Remove unused", role: .destructive) {
                 Task {
                     let outcome = await store.removeUnusedWorktrees()
                     result = Self.unusedResult(outcome)
@@ -133,6 +133,7 @@ struct WorktreeRow: View {
             HStack(alignment: .firstTextBaseline, spacing: theme.z(8)) {
                 Image(systemName: status.record.room == nil ? "square.on.square" : "person.2")
                     .foregroundStyle(theme.textSecondary)
+                    .frame(width: theme.z(18))
                 VStack(alignment: .leading, spacing: theme.z(3)) {
                     HStack(spacing: theme.z(6)) {
                         Text(Format.folderName(status.record.home))

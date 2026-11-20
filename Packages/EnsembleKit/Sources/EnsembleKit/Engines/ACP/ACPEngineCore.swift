@@ -1087,7 +1087,7 @@ actor ACPEngineCore {
         let live = lives[sessionID]
         let available = live?.configOptions.first { $0.category == "mode" }.map { $0.choices.map(\.value) } ?? (live?.modes.map(\.id) ?? [])
         let known = available.isEmpty ? definition.modeIDs[.plan] != nil : ACPModes.modeID(for: .plan, definition: definition, available: available) != nil
-        return known ? .supported : .unsupported(reason: "\(definition.displayName) has no plan mode.")
+        return known ? .supported : .unsupported(reason: "\(definition.displayName) has no plan mode")
     }
 
     func replyPermission(requestID: String, decision: PermissionDecision) throws {

@@ -512,7 +512,7 @@ struct ComposerView: View {
                         .frame(height: theme.z(32))
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(RowButtonStyle())
+                    .buttonStyle(RowButtonStyle(raised: true))
                     .padding(theme.z(4))
                     .background(theme.popover)
                 }

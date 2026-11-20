@@ -922,7 +922,7 @@ private struct SecondOpinionModelPicker: View {
                     .padding(.vertical, theme.z(5))
                     .contentShape(Rectangle())
                 }
-                .buttonStyle(RowButtonStyle())
+                .buttonStyle(RowButtonStyle(raised: true))
             }
         }
     }
@@ -932,6 +932,7 @@ private struct SecondOpinionModelPicker: View {
 public struct AgentNameTag: View {
     let agent: AgentSpec
     @Environment(\.theme) private var theme
+    @Environment(\.interactionStore) private var store
 
     public init(agent: AgentSpec) { self.agent = agent }
 
@@ -941,9 +942,10 @@ public struct AgentNameTag: View {
             Text(agent.name)
                 .font(theme.font(size: 12.5, weight: .semibold))
                 .foregroundStyle(theme.textPrimary)
-            Text(agent.model.id)
+            Text(Format.shortModelName(id: agent.model.id, knownName: store?.model(for: agent.model)?.name))
                 .font(theme.font(size: 11.5))
                 .foregroundStyle(theme.textTertiary)
+                .help(agent.model.id)
         }
     }
 }
@@ -1154,6 +1156,7 @@ public struct UsageLimitCard: View {
                 Rectangle().fill(theme.warning.opacity(0.22)).frame(height: 1)
                 footer
                     .padding(.horizontal, theme.z(12))
+                    .padding(.vertical, theme.z(8))
                     .frame(minHeight: theme.z(36))
             }
         }

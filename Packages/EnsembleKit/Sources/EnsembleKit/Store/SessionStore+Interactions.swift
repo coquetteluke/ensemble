@@ -34,7 +34,7 @@ extension SessionStore {
         if let known = planSupport[primaryID] { return known }
         let targetID = backingSessionID(for: primaryID)
         let support = await interactionControl?.planModeSupport(sessionID: targetID)
-            ?? .unsupported(reason: "This engine has no plan mode.")
+            ?? .unsupported(reason: "This engine has no plan mode")
         planSupport[primaryID] = support
         return support
     }

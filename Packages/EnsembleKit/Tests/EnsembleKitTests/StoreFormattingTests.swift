@@ -14,6 +14,18 @@ import Testing
         #expect(Format.tokens(1_250_000) == "1.3M")
     }
 
+    @Test func shortModelNames() {
+        #expect(Format.shortModelName(id: "claude-opus-5-5") == "Opus 5.5")
+        #expect(Format.shortModelName(id: "anthropic/claude-haiku-4-5-20251001") == "Haiku 4.5")
+        #expect(Format.shortModelName(id: "claude-3-5-sonnet") == "Sonnet 3.5")
+        #expect(Format.shortModelName(id: "gpt-5.5") == "GPT-5.5")
+        #expect(Format.shortModelName(id: "gpt-5.5-codex") == "GPT-5.5 Codex")
+        #expect(Format.shortModelName(id: "gemini-2.5-flash") == "Gemini 2.5 Flash")
+        #expect(Format.shortModelName(id: "o3") == "o3")
+        #expect(Format.shortModelName(id: "claude-opus-5-5", knownName: "Claude Opus 5.5") == "Opus 5.5")
+        #expect(Format.shortModelName(id: "mock-model", knownName: "Mock") == "Mock")
+    }
+
     @Test func percentages() {
         #expect(Format.percent(403_300, of: 1_000_000) == "40.3%")
         #expect(Format.percent(357, of: 1_000_000) == "0.0%")

@@ -81,6 +81,40 @@ public enum Format {
         return (add, del)
     }
 
+    /// Short model name for a label beside an agent's name: the engine's own name when known (without a leading
+    /// "Claude "), else a readable form of the id ("claude-opus-5-5" is "Opus 5.5", "gpt-5.5" is "GPT-5.5",
+    /// "gemini-2.5-flash" is "Gemini 2.5 Flash"). Ids it does not recognise come back unchanged.
+    public static func shortModelName(id: String, knownName: String? = nil) -> String {
+        if let knownName, !knownName.isEmpty {
+            return knownName.hasPrefix("Claude ") ? String(knownName.dropFirst(7)) : knownName
+        }
+        var base = id.split(separator: "/").last.map(String.init) ?? id
+        var parts = base.split(separator: "-").map(String.init)
+        // A trailing release date ("-20251001") says nothing a reader needs.
+        if parts.count > 1, let last = parts.last, last.count == 8, last.allSatisfy(\.isNumber) { parts.removeLast() }
+        guard let first = parts.first?.lowercased() else { return id }
+        func word(_ part: String) -> String { part.prefix(1).uppercased() + part.dropFirst() }
+        func isNumber(_ part: String) -> Bool { !part.isEmpty && part.allSatisfy(\.isNumber) }
+        switch first {
+        case "claude":
+            let rest = Array(parts.dropFirst())
+            let numbers = rest.filter(isNumber)
+            let words = rest.filter { !isNumber($0) }
+            guard !words.isEmpty, !numbers.isEmpty else { return id }
+            return (words.map(word) + [numbers.joined(separator: ".")]).joined(separator: " ")
+        case "gpt":
+            guard parts.count > 1 else { return id }
+            base = "GPT-" + parts[1]
+            let rest = parts.dropFirst(2).map(word)
+            return ([base] + rest).joined(separator: " ")
+        case "gemini":
+            guard parts.count > 1 else { return id }
+            return (["Gemini"] + parts.dropFirst().map(word)).joined(separator: " ")
+        default:
+            return id
+        }
+    }
+
     private static func trimmed(_ value: Double) -> String {
         if value == value.rounded() { return String(Int(value)) }
         return String(format: "%.1f", value)

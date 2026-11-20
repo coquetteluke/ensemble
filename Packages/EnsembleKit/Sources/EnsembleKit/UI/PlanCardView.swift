@@ -47,11 +47,11 @@ public struct PlanCardView: View {
         VStack(alignment: .leading, spacing: 0) {
             header
             if isOpen || expanded {
-                HLine()
+                HLine(color: theme.border)
                 document
             }
             if isOpen {
-                HLine()
+                HLine(color: theme.border)
                 footer
             }
         }

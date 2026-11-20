@@ -305,7 +305,7 @@ struct BranchMenuContent: View {
             .padding(.vertical, theme.z(5))
             .frame(minHeight: theme.z(28))
         }
-        .buttonStyle(RowButtonStyle())
+        .buttonStyle(RowButtonStyle(raised: true))
         .disabled(!enabled)
         .help(branch.checkedOutAt.map { "Git allows a branch in one checkout at a time. It is checked out in \($0)" }
             ?? (branch.isCurrent ? "The copy is on this branch" : "Check out \(branch.name) in this copy"))

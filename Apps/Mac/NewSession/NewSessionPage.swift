@@ -370,7 +370,7 @@ private struct FolderRow: View {
             .padding(.horizontal, theme.z(12))
             .frame(height: theme.z(38))
             .background(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous)
-                .fill(selected ? theme.selection : (hovering ? theme.hover : .clear)))
+                .fill(selected ? theme.raisedSelection : (hovering ? theme.raisedHover : .clear)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

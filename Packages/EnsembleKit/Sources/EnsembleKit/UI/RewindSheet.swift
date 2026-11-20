@@ -188,6 +188,7 @@ struct RewindChoiceRow: View {
                         Image(systemName: choice.scope.symbol)
                             .font(theme.font(size: 11))
                             .foregroundStyle(choice.isAvailable ? theme.textSecondary : theme.textTertiary.opacity(0.7))
+                            .frame(width: theme.z(14))
                         Text(choice.scope.title)
                             .font(theme.font(size: 13, weight: .medium))
                             .foregroundStyle(choice.isAvailable ? theme.textPrimary : theme.textTertiary)
@@ -211,7 +212,7 @@ struct RewindChoiceRow: View {
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: theme.z(7), style: .continuous)
-                    .fill(selected && choice.isAvailable ? theme.selection : (hovering && enabled ? theme.hover : .clear))
+                    .fill(selected && choice.isAvailable ? theme.raisedSelection : (hovering && enabled ? theme.raisedHover : .clear))
             )
         }
         .buttonStyle(.plain)

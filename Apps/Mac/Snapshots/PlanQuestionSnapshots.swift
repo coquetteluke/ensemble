@@ -116,7 +116,7 @@ enum PlanQuestionSnapshots {
                 VStack(alignment: .leading, spacing: 16) {
                     ModeMenuContent(current: .plan, planSupport: .supported) { _ in }
                     ModeMenuContent(current: .ask,
-                                    planSupport: .unsupported(reason: "OpenCode (ACP) has no plan mode.")) { _ in }
+                                    planSupport: .unsupported(reason: "OpenCode (ACP) has no plan mode")) { _ in }
                 }
                 .padding(20)
             }

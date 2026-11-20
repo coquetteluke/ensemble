@@ -358,7 +358,7 @@ enum CommandRegistry {
     static let notes: [ShortcutNote] = [
         ShortcutNote(title: "Switch to session 1 to 9", area: .sessions, caps: ["\u{2318}", "1\u{2026}9"]),
         ShortcutNote(title: "Open beside (split view)", area: .split, caps: ["\u{2325}", "Click"]),
-        ShortcutNote(title: "Move between Session Hub cards", area: .sessions, caps: ["\u{2191}", "\u{2193}"]),
+        ShortcutNote(title: "Move between Hub cards", area: .sessions, caps: ["\u{2191}", "\u{2193}"]),
         ShortcutNote(title: "Send a Session Hub reply", area: .sessions, caps: ["\u{2318}", "\u{21A9}"]),
         ShortcutNote(title: "Send", area: .composer, caps: ["\u{21A9}"]),
         ShortcutNote(title: "New line", area: .composer, caps: ["\u{21E7}", "\u{21A9}"]),
@@ -370,7 +370,7 @@ enum CommandRegistry {
         ShortcutNote(title: "Close", area: .search, caps: ["esc"]),
         ShortcutNote(title: "New tab", area: .terminal, caps: ["\u{2318}", "T"]),
         ShortcutNote(title: "Close tab", area: .terminal, caps: ["\u{2318}", "W"]),
-        ShortcutNote(title: "Select while a program uses the mouse", area: .terminal, caps: ["\u{2325}", "Drag"]),
+        ShortcutNote(title: "Force text selection", area: .terminal, caps: ["\u{2325}", "Drag"]),
     ]
 
     /// Every shortcut, grouped by area, in area order.

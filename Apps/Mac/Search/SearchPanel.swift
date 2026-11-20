@@ -41,7 +41,7 @@ struct SearchPanel: View {
                         .foregroundStyle(search.filter == filter ? theme.textPrimary : (enabled ? theme.textSecondary : theme.textTertiary))
                         .padding(.horizontal, theme.z(10))
                         .frame(height: theme.z(24))
-                        .background(Capsule().fill(search.filter == filter ? theme.selection : .clear))
+                        .background(Capsule().fill(search.filter == filter ? theme.raisedSelection : .clear))
                         .overlay(Capsule().strokeBorder(search.filter == filter ? theme.border : theme.border.opacity(0.6)))
                         .contentShape(Capsule())
                 }
@@ -207,7 +207,7 @@ private struct SessionResultRow: View {
         }
         .padding(.horizontal, theme.z(10))
         .frame(height: theme.z(34))
-        .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(selected ? theme.selection : (hovering ? theme.hover : .clear)))
+        .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(selected ? theme.raisedSelection : (hovering ? theme.raisedHover : .clear)))
         .padding(.horizontal, theme.z(8))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -244,7 +244,7 @@ private struct MatchResultRow: View {
         .padding(.leading, theme.z(38))
         .padding(.trailing, theme.z(12))
         .padding(.vertical, theme.z(6))
-        .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(selected ? theme.selection : (hovering ? theme.hover : .clear)))
+        .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(selected ? theme.raisedSelection : (hovering ? theme.raisedHover : .clear)))
         .padding(.horizontal, theme.z(8))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }

@@ -330,12 +330,14 @@ struct UsageCapRow: View {
                 Button("Set", action: apply)
                     .buttonStyle(SecondaryButtonStyle())
                     .disabled(parsed == status.capUSD || (parsed == nil && !currentText.isEmpty))
-                if status.capUSD != nil {
-                    IconButton("xmark", help: "Remove the cap", size: 26) {
-                        text = ""
-                        onSet(nil)
-                    }
+                // The slot stays on rows without a cap, so the "$", field and Set line up from row to row.
+                IconButton("xmark", help: "Remove the cap", size: 26) {
+                    text = ""
+                    onSet(nil)
                 }
+                .opacity(status.capUSD == nil ? 0 : 1)
+                .allowsHitTesting(status.capUSD != nil)
+                .accessibilityHidden(status.capUSD == nil)
             }
             if let cap = status.capUSD {
                 GeometryReader { proxy in

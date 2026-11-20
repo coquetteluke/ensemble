@@ -151,19 +151,23 @@ public struct SecondaryButtonStyle: ButtonStyle {
 public struct RowButtonStyle: ButtonStyle {
     var selected: Bool
     var cornerRadius: CGFloat
-    public init(selected: Bool = false, cornerRadius: CGFloat = 7) {
+    /// True for rows on a popover, menu or card: uses the raised hover and selection fills, which stay visible there in dark mode.
+    var raised: Bool
+    public init(selected: Bool = false, cornerRadius: CGFloat = 7, raised: Bool = false) {
         self.selected = selected
         self.cornerRadius = cornerRadius
+        self.raised = raised
     }
 
     public func makeBody(configuration: Configuration) -> some View {
-        StyledLabel(configuration: configuration, selected: selected, cornerRadius: cornerRadius)
+        StyledLabel(configuration: configuration, selected: selected, cornerRadius: cornerRadius, raised: raised)
     }
 
     private struct StyledLabel: View {
         let configuration: Configuration
         let selected: Bool
         let cornerRadius: CGFloat
+        let raised: Bool
         @Environment(\.theme) private var theme
         @State private var hovering = false
 
@@ -172,7 +176,8 @@ public struct RowButtonStyle: ButtonStyle {
                 .contentShape(Rectangle())
                 .background(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .fill(selected ? theme.selection : (hovering || configuration.isPressed ? theme.hover : .clear))
+                        .fill(selected ? (raised ? theme.raisedSelection : theme.selection)
+                              : (hovering || configuration.isPressed ? (raised ? theme.raisedHover : theme.hover) : .clear))
                 )
                 .onHover { hovering = $0 }
         }

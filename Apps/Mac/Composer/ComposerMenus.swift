@@ -42,11 +42,11 @@ struct ModeMenuContent: View {
                     .padding(.horizontal, theme.z(10))
                     .padding(.vertical, theme.z(7))
                 }
-                .buttonStyle(RowButtonStyle(selected: false, cornerRadius: theme.z(7)))
+                .buttonStyle(RowButtonStyle(selected: false, cornerRadius: theme.z(7), raised: true))
                 .disabled(unavailable != nil)
                 .opacity(unavailable != nil ? 0.55 : 1)
             }
-            HLine()
+            HLine(color: theme.border)
                 .padding(.vertical, theme.z(4))
                 .padding(.horizontal, theme.z(6))
             Text("Shift-Tab switches modes")
@@ -115,7 +115,7 @@ struct EffortMenuContent: View {
                     .padding(.horizontal, theme.z(10))
                     .padding(.vertical, theme.z(6))
                 }
-                .buttonStyle(RowButtonStyle())
+                .buttonStyle(RowButtonStyle(raised: true))
             }
         }
         .padding(theme.z(6))
@@ -197,7 +197,7 @@ struct SlashCommandMenu: View {
         .frame(height: theme.z(30))
         .background(
             RoundedRectangle(cornerRadius: theme.z(7), style: .continuous)
-                .fill(selected ? theme.selection : .clear)
+                .fill(selected ? theme.raisedSelection : .clear)
                 .padding(.horizontal, theme.z(4))
         )
         .opacity(command.disabledReason == nil ? 1 : 0.45)

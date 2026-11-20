@@ -13,7 +13,7 @@ public enum WorkspaceTrustError: Error, LocalizedError, Equatable, Sendable {
     public var errorDescription: String? {
         switch self {
         case .notAFolder(let path): "Not a folder: \(path)"
-        case .tooBroad(let path): "\(path) holds your home folder, so trusting it would trust every project. Trust the project folder instead."
+        case .tooBroad(let path): "Trusting \(path) would trust every project in your home folder. Trust the project folder instead."
         case .saveFailed(let message): "Could not save the trusted folders: \(message)"
         }
     }

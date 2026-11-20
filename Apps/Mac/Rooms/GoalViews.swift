@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import EnsembleKit
 
@@ -72,6 +73,16 @@ struct GoalBarContent: View {
         .accessibilityLabel("\(title): \(goal.condition). \(statusText)")
     }
 
+    /// The goal text's natural width, at most `cap`; nil (no cap) leaves the text's own ideal width.
+    private func conditionIdealWidth(cap: CGFloat?) -> CGFloat? {
+        guard let cap else { return nil }
+        EnsembleFonts.register()
+        let size = 12.5 * theme.scale
+        let font = NSFont(name: EnsembleFonts.interface, size: size) ?? .systemFont(ofSize: size)
+        let width = (goal.condition as NSString).size(withAttributes: [.font: font]).width.rounded(.up)
+        return min(width, cap)
+    }
+
     private func row(progress: Bool, cost showsCost: Bool, conditionWidth: CGFloat?) -> some View {
         HStack(spacing: theme.z(10)) {
             GoalMark(goal: goal)
@@ -84,10 +95,10 @@ struct GoalBarContent: View {
                 .foregroundStyle(theme.textPrimary)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(maxWidth: conditionWidth, alignment: .leading)
+                // Takes all the room the row has; its ideal width (what `ViewThatFits` compares) is held to
+                // `conditionWidth` so a long goal still leaves room for the progress and the spend.
+                .frame(idealWidth: conditionIdealWidth(cap: conditionWidth), maxWidth: .infinity, alignment: .leading)
                 .help(goal.condition)
-                .layoutPriority(-1)
-            Spacer(minLength: theme.z(8))
             HStack(spacing: theme.z(8)) {
                 Text(statusText)
                     .font(theme.font(size: 12).monospacedDigit())

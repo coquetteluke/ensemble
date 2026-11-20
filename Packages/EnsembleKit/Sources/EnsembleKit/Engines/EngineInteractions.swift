@@ -36,7 +36,7 @@ extension EngineRouter: EngineInteractionControl {
             return .unsupported(reason: "This session is not running on any engine.")
         }
         guard let control = registration.engine as? any EngineInteractionControl else {
-            return .unsupported(reason: "\(registration.name) has no plan mode.")
+            return .unsupported(reason: "\(registration.name) has no plan mode")
         }
         return await control.planModeSupport(sessionID: resolvedID)
     }

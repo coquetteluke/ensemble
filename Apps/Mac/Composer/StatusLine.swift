@@ -230,7 +230,7 @@ struct UsagePopover: View {
                     .padding(.vertical, theme.z(4))
                     .background(
                         RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
-                            .fill(showAllHovered ? theme.hover : .clear)
+                            .fill(showAllHovered ? theme.raisedHover : .clear)
                     )
                     .contentShape(Rectangle())
                 }
@@ -249,7 +249,9 @@ struct UsagePopover: View {
 
     private func row(_ label: String, _ value: Int) -> some View {
         GridRow {
+            // The label column takes the spare width, so the numbers sit on the right edge like the "% used" values below.
             Text(label).foregroundStyle(theme.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
             Text(Format.tokens(value))
                 .monospacedDigit()
                 .foregroundStyle(theme.textPrimary)

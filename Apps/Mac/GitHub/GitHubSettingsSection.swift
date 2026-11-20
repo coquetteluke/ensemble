@@ -70,7 +70,7 @@ struct GitHubSettingsSection: View {
             }
             HStack {
                 Spacer()
-                Button(checking ? "Checking\u{2026}" : "Check Again") { Task { await check() } }
+                Button(checking ? "Checking\u{2026}" : "Check again") { Task { await check() } }
                     .disabled(checking || statusOverride != nil)
             }
         } header: {

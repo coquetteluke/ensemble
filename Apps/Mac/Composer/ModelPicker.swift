@@ -245,7 +245,7 @@ struct ModelPickerView: View {
             .padding(.trailing, theme.z(Self.trailingColumn))
             .frame(height: theme.z(30))
         }
-        .buttonStyle(RowButtonStyle())
+        .buttonStyle(RowButtonStyle(raised: true))
         .accessibilityLabel(title)
         .accessibilityValue((isOpen ? "Open, \(count) models" : "Closed, \(count) models") + (holdsCurrent ? ", has the current model" : ""))
     }
@@ -348,7 +348,7 @@ struct ModelPickerView: View {
             .padding(.horizontal, theme.z(8))
             .frame(height: theme.z(26))
         }
-        .buttonStyle(RowButtonStyle())
+        .buttonStyle(RowButtonStyle(raised: true))
         .disabled(!option.available)
     }
 
@@ -546,7 +546,7 @@ struct ModelPickerView: View {
         .foregroundStyle(theme.textSecondary)
         .padding(.horizontal, theme.z(8))
         .frame(height: theme.z(24))
-        .background(RoundedRectangle(cornerRadius: theme.z(6), style: .continuous).fill(theme.hover))
+        .background(RoundedRectangle(cornerRadius: theme.z(6), style: .continuous).fill(theme.raisedFill))
     }
 
     private func fastRow(store: SessionStore, session: SessionModel) -> some View {
@@ -639,7 +639,7 @@ private struct ModelPickerRow: View {
                 .frame(minHeight: theme.z(30))
                 .padding(.vertical, theme.z(note == nil ? 0 : 3))
             }
-            .buttonStyle(RowButtonStyle())
+            .buttonStyle(RowButtonStyle(raised: true))
             .disabled(!usable)
             .modifier(DigitShortcut(digit: digitShortcut))
             .help(help)
@@ -651,7 +651,7 @@ private struct ModelPickerRow: View {
                         .foregroundStyle(payOpen ? theme.textPrimary : theme.textTertiary)
                         .frame(width: theme.z(ModelPickerView.payColumn), height: theme.z(24))
                 }
-                .buttonStyle(RowButtonStyle(selected: payOpen, cornerRadius: theme.z(6)))
+                .buttonStyle(RowButtonStyle(selected: payOpen, cornerRadius: theme.z(6), raised: true))
                 .opacity(hovering || selected || payOpen ? 1 : 0)
                 .help("How to pay for \(name)")
                 .accessibilityLabel("How to pay for \(name)")

@@ -189,7 +189,7 @@ struct PromoteToRoomSheet: View {
                                 .padding(.vertical, theme.z(6))
                                 .contentShape(Rectangle())
                             }
-                            .buttonStyle(RowButtonStyle(selected: checked, cornerRadius: theme.z(6)))
+                            .buttonStyle(RowButtonStyle(selected: checked, cornerRadius: theme.z(6), raised: true))
                         }
                     }
                 }

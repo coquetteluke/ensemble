@@ -541,13 +541,13 @@ struct RoomHeader: View {
                 }
             }
             .padding(.leading, theme.z(20))
-            .padding(.trailing, theme.z(16) + trailingInset)
+            .padding(.trailing, theme.z(20) + trailingInset)
             .frame(height: 52)
             if let goal = engine.state.goal {
                 RoomGoalBar(engine: engine, goal: goal,
                             waitingOnYou: engine.state.needsUser || !controller.pendingPermissions(in: engine).isEmpty)
                     .padding(.leading, theme.z(20))
-                    .padding(.trailing, theme.z(16) + trailingInset)
+                    .padding(.trailing, theme.z(20) + trailingInset)
                     .padding(.bottom, theme.z(8))
             }
         }
@@ -1144,7 +1144,7 @@ private struct RoomTabs: View {
                 .frame(height: theme.z(22))
                 .background(
                     RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
-                        .fill(selected ? theme.selection : (hovered ? theme.hover : .clear))
+                        .fill(selected ? theme.raisedSelection : (hovered ? theme.raisedHover : .clear))
                 )
                 .contentShape(Rectangle())
         }
@@ -1254,7 +1254,7 @@ struct RoomComposer: View {
                     .padding(.horizontal, theme.z(8))
                     .frame(height: theme.z(24))
                     .background(RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
-                        .fill(index == 0 ? theme.selection : theme.hover))
+                        .fill(index == 0 ? theme.raisedSelection : theme.raisedFill))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)

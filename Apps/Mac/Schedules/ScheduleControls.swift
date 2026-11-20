@@ -91,7 +91,7 @@ struct ScheduleChoiceRow: View {
             .padding(.horizontal, theme.z(10))
             .padding(.vertical, theme.z(6))
         }
-        .buttonStyle(RowButtonStyle())
+        .buttonStyle(RowButtonStyle(raised: true))
     }
 }
 

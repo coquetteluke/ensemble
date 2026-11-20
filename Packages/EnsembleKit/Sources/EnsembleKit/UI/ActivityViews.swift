@@ -255,15 +255,18 @@ public struct WorkingRow: View {
             Button {
                 withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
             } label: {
-                HStack(spacing: theme.z(10)) {
+                // Same 16 pt icon column and spacing as `ActivityGroupView`, so the text starts at the same x as the rows above.
+                HStack(spacing: theme.z(8)) {
                     if waitingForPermission {
                         Image(systemName: "hand.raised")
                             .font(theme.font(size: 12))
                             .foregroundStyle(theme.warning)
                             .frame(width: theme.z(16))
                     } else {
-                        // Drawn larger than its 16 pt column, so the row's text stays in line with the rows above it.
-                        ConstellationSpinner(size: 20).frame(width: theme.z(16))
+                        // The spinner is drawn larger than the column, centred over it, without widening it.
+                        Color.clear
+                            .frame(width: theme.z(16), height: theme.z(16))
+                            .overlay { ConstellationSpinner(size: 20) }
                     }
                     Text(Self.currentStep(items, waiting: waitingForPermission, baseDirectory: baseDirectory))
                         .font(theme.font(size: 13))

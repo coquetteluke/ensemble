@@ -244,7 +244,7 @@ struct ScheduleRunRow: View {
             .padding(.horizontal, theme.z(10))
             .padding(.vertical, theme.z(7))
         }
-        .buttonStyle(RowButtonStyle())
+        .buttonStyle(RowButtonStyle(raised: true))
         .disabled(session == nil)
         .help(session.map { "Open \u{201C}\($0.title)\u{201D}" } ?? "")
     }

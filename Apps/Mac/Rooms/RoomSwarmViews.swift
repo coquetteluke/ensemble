@@ -165,7 +165,8 @@ struct RoomGraphView: View {
             path.addQuadCurve(to: end, control: control)
             let weight = theme.z(1) + theme.z(3) * CGFloat(edge.count) / CGFloat(maxCount)
             let tint = color(edge.from)
-            context.stroke(path, with: .color(tint.opacity(latest ? 0.95 : 0.4)),
+            // Older edges: 0.4 is enough on the dark background; light needs more to stay visible.
+            context.stroke(path, with: .color(tint.opacity(latest ? 0.95 : (theme.isDark ? 0.4 : 0.75))),
                            style: StrokeStyle(lineWidth: latest ? weight + theme.z(0.5) : weight, lineCap: .round))
             arrow(&context, tip: end, from: control, size: theme.z(latest ? 6.5 : 5.5), color: tint.opacity(latest ? 0.95 : 0.55))
             if edge.count > 1 {

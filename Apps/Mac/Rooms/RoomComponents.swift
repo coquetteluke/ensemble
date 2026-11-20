@@ -250,7 +250,7 @@ struct ChoiceList<Value: Hashable>: View {
                         .padding(.vertical, theme.z(6))
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .buttonStyle(RowButtonStyle(cornerRadius: theme.z(6)))
+                    .buttonStyle(RowButtonStyle(cornerRadius: theme.z(6), raised: true))
                     .disabled(!option.enabled)
                 }
             }

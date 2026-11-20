@@ -28,7 +28,7 @@ struct PowerMenu: View {
                     set: { power.setLidLock($0, for: holder) }))
             }
             if !lines.isEmpty {
-                HLine()
+                HLine(color: theme.border)
                     .padding(.vertical, theme.z(4))
                     .padding(.horizontal, theme.z(6))
                 VStack(alignment: .leading, spacing: theme.z(8)) {
