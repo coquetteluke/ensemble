@@ -1059,17 +1059,33 @@ public final class RemoteClient {
                 switch openTranscript?.items[i] {
                 case .agentText(let id, let text, let agentID, _)?:
                     openTranscript?.items[i] = .agentText(id: id, text: text + delta, agentID: agentID, streaming: true)
+                    finishOpenReasoning()
                 case .reasoning(let id, let text, _)?:
                     openTranscript?.items[i] = .reasoning(id: id, text: text + delta, streaming: true)
                 default:
                     break
                 }
             } else {
+                finishOpenReasoning()
                 openTranscript?.items.append(.agentText(id: itemID, text: delta, agentID: nil, streaming: true))
             }
         case .activity(let sid, let activity):
             if let i = sessions.firstIndex(where: { $0.id == sid }) { sessions[i].activity = activity }
-            if openTranscript?.sessionID == sid { openTranscript?.activity = activity }
+            if openTranscript?.sessionID == sid {
+                openTranscript?.activity = activity
+                // The Mac never says a thought finished; end it here the way its reducer does.
+                switch activity {
+                case .idle, .failed:
+                    if var items = openTranscript?.items {
+                        TranscriptReducer.finishStreaming(&items)
+                        openTranscript?.items = items
+                    }
+                case .waitingForPermission:
+                    finishOpenReasoning()
+                case .working:
+                    break
+                }
+            }
             for r in rooms.indices {
                 for a in rooms[r].agents.indices where rooms[r].agents[a].sessionID == sid {
                     rooms[r].agents[a].activity = activity
@@ -1191,13 +1207,22 @@ public final class RemoteClient {
                            title: room?.title ?? session?.title ?? "A session", body: body)
     }
 
+    /// Anything but a thought (text, a tool, a prompt) ends the thought before it, as `TranscriptReducer` does on the Mac.
     private func upsertTranscriptItem(_ item: TranscriptItem) {
         guard openTranscript != nil else { return }
+        if case .reasoning = item {} else { finishOpenReasoning() }
         if let i = openTranscript?.items.firstIndex(where: { $0.id == item.id }) {
             openTranscript?.items[i] = item
         } else {
             openTranscript?.items.append(item)
         }
+    }
+
+    /// Stops streaming reasoning near the end of the open transcript.
+    private func finishOpenReasoning() {
+        guard var items = openTranscript?.items else { return }
+        TranscriptReducer.finishReasoning(&items)
+        openTranscript?.items = items
     }
 
     // MARK: - Coding
