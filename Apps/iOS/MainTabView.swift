@@ -82,7 +82,7 @@ private struct CompactChatDestination: View {
 /// A NavigationSplitView cannot do this. Asked for a list as wide as half the screen (the book fold) it shows its
 /// overlay mode for most of a second, the chat full width and dimmed under the list, before it settles. Here the
 /// panes are plain views in a row (or a column for the laptop fold), so a fold or a button moves them in one step
-/// and `WindowCrossfade` dissolves the old layout into the new one.
+/// and `LayoutTransition` dissolves the old layout into the new one.
 struct SplitRootView: View {
     let client: RemoteClient
     @Environment(RemoteAppModel.self) private var model
@@ -190,24 +190,26 @@ struct SplitRootView: View {
 
     private func toggleSidebar(_ plan: PanePlan) {
         toggleHaptic += 1
-        WindowCrossfade.runInKeyWindow()
-        if plan.showsSidebar {
-            sidebarWanted = false
-        } else {
-            sidebarWanted = true
-            if !plan.fitsBoth { detailsWanted = false }
+        LayoutTransition.runInKeyWindow {
+            if plan.showsSidebar {
+                sidebarWanted = false
+            } else {
+                sidebarWanted = true
+                if !plan.fitsBoth { detailsWanted = false }
+            }
         }
     }
 
     private func toggleDetails(_ plan: PanePlan) {
         toggleHaptic += 1
-        WindowCrossfade.runInKeyWindow()
-        if plan.showsDetails {
-            detailsWanted = false
-            // The book fold always has two pages: without the details, the list is the other one.
-            if case .book = plan.shape { sidebarWanted = true }
-        } else {
-            detailsWanted = true
+        LayoutTransition.runInKeyWindow {
+            if plan.showsDetails {
+                detailsWanted = false
+                // The book fold always has two pages: without the details, the list is the other one.
+                if case .book = plan.shape { sidebarWanted = true }
+            } else {
+                detailsWanted = true
+            }
         }
     }
 
