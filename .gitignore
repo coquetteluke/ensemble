@@ -41,3 +41,6 @@ Config/Local.xcconfig
 
 # Agent worktrees made by Claude Code
 .claude/worktrees/
+
+# Local agent scratch
+.superpowers/

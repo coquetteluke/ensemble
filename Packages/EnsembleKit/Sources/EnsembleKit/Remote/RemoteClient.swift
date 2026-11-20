@@ -86,6 +86,8 @@ public final class RemoteClient {
     /// Told about everything new that needs the user, as it arrives over the live connection (never for what was
     /// already waiting when the phone connected). The app shows these as local notifications.
     @ObservationIgnored public var onAlert: (@MainActor (RemoteAlert) -> Void)?
+    /// Called when the Mac replaces a session with a new one (for example after a cross-engine restart).
+    @ObservationIgnored public var onSessionReplaced: (@MainActor (String, SessionSummary) -> Void)?
     /// How long a new prompt waits before its alert, so the session or room it belongs to has arrived too.
     @ObservationIgnored public var alertDelay: Duration = .milliseconds(400)
     @ObservationIgnored private var alertedIDs: Set<String> = []
@@ -1020,14 +1022,18 @@ public final class RemoteClient {
             guard openTranscript?.sessionID == sid else { return }
             upsertTranscriptItem(item)
         case .textDelta(let sid, let itemID, let delta):
-            guard openTranscript?.sessionID == sid, let i = openTranscript?.items.firstIndex(where: { $0.id == itemID }) else { return }
-            switch openTranscript?.items[i] {
-            case .agentText(let id, let text, let agentID, _)?:
-                openTranscript?.items[i] = .agentText(id: id, text: text + delta, agentID: agentID, streaming: true)
-            case .reasoning(let id, let text, _)?:
-                openTranscript?.items[i] = .reasoning(id: id, text: text + delta, streaming: true)
-            default:
-                break
+            guard openTranscript?.sessionID == sid else { return }
+            if let i = openTranscript?.items.firstIndex(where: { $0.id == itemID }) {
+                switch openTranscript?.items[i] {
+                case .agentText(let id, let text, let agentID, _)?:
+                    openTranscript?.items[i] = .agentText(id: id, text: text + delta, agentID: agentID, streaming: true)
+                case .reasoning(let id, let text, _)?:
+                    openTranscript?.items[i] = .reasoning(id: id, text: text + delta, streaming: true)
+                default:
+                    break
+                }
+            } else {
+                openTranscript?.items.append(.agentText(id: itemID, text: delta, agentID: nil, streaming: true))
             }
         case .activity(let sid, let activity):
             if let i = sessions.firstIndex(where: { $0.id == sid }) { sessions[i].activity = activity }
@@ -1089,18 +1095,22 @@ public final class RemoteClient {
                 sessions.insert(newSession, at: 0)
             }
             if openSessionID == oldSessionID {
-                openSessionID = newSession.id
-                if var t = openTranscript, t.sessionID == oldSessionID {
-                    t.sessionID = newSession.id
-                    t.modelProviderID = newSession.modelProviderID
-                    t.modelID = newSession.modelID
-                    t.pendingModelName = newSession.pendingModelName
-                    openTranscript = t
-                }
                 Task { @MainActor [weak self] in
-                    _ = try? await self?.open(sessionID: newSession.id)
+                    guard let self, self.openSessionID == oldSessionID else { return }
+                    _ = try? await self.request(.closeSession(sessionID: oldSessionID))
+                    guard self.openSessionID == oldSessionID else { return }
+                    self.openSessionID = newSession.id
+                    if var t = self.openTranscript, t.sessionID == oldSessionID {
+                        t.sessionID = newSession.id
+                        t.modelProviderID = newSession.modelProviderID
+                        t.modelID = newSession.modelID
+                        t.pendingModelName = newSession.pendingModelName
+                        self.openTranscript = t
+                    }
+                    _ = try? await self.open(sessionID: newSession.id)
                 }
             }
+            onSessionReplaced?(oldSessionID, newSession)
         }
     }
 

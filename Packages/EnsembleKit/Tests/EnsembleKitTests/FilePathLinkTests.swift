@@ -167,4 +167,18 @@ import Testing
         #expect(!FileLinkCache.diskCheck("/etc/hosts", base: base))
         #expect(!FileLinkCache.diskCheck(base + "/docs", base: base), "folders are not files")
     }
+
+    @Test func clickTimeCheckCatchesSymlinkSwapAfterLinkCreation() throws {
+        let box = try Sandbox()
+        let base = (box.project as NSString).standardizingPath
+        let targetPath = base + "/docs/PLAN.md"
+        let link = try #require(FilePathDetector.matches(in: "See docs/PLAN.md", base: base, isFileInside: box.check).first?.link)
+        #expect(FileLinkCache.diskCheck(link.path, base: base))
+
+        // Replace the regular file with a symlink pointing outside the project folder.
+        let fm = FileManager.default
+        try fm.removeItem(atPath: targetPath)
+        try fm.createSymbolicLink(atPath: targetPath, withDestinationPath: box.outside + "/secret.txt")
+        #expect(!FileLinkCache.diskCheck(link.path, base: base))
+    }
 }

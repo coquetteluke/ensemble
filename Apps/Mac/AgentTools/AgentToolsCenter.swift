@@ -24,8 +24,16 @@ final class AgentToolsCenter {
     @ObservationIgnored weak var rooms: RoomsController?
     @ObservationIgnored private weak var store: SessionStore?
     @ObservationIgnored private var quitObserver: (any NSObjectProtocol)?
+    private struct SecondOpinionRun {
+        let runID: UUID
+        let sessionID: String
+        let task: Task<Void, Never>
+    }
+
+    private static let maxConcurrentSecondOpinions = 3
+
     @ObservationIgnored private var activeHelperSessionIDs: Set<String> = []
-    @ObservationIgnored private var secondOpinionTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var secondOpinionTasks: [UUID: SecondOpinionRun] = [:]
 
     init(server: AgentToolsServer = .shared) {
         self.server = server
@@ -61,6 +69,16 @@ final class AgentToolsCenter {
 
     /// Sessions that were archived or deleted: their keys stop working and their cards go.
     func close(sessions: [String]) {
+        var closed = Set(sessions)
+        if let store {
+            for id in sessions {
+                closed.insert(store.primarySessionID(for: id))
+            }
+        }
+        for (opinionID, run) in secondOpinionTasks where closed.contains(run.sessionID) {
+            run.task.cancel()
+            secondOpinionTasks[opinionID] = nil
+        }
         for id in sessions {
             coordinator?.forget(id)
             server.revoke(.session(id))
@@ -70,9 +88,12 @@ final class AgentToolsCenter {
 
     /// Opens the session in the window (a started proposal's Open button or an exchange card's Open button).
     func open(_ sessionID: String) {
-        if let store, store.session(sessionID) != nil {
-            store.select(sessionID)
-            return
+        if let store {
+            let primaryID = store.primarySessionID(for: sessionID)
+            if store.session(primaryID) != nil {
+                store.select(primaryID)
+                return
+            }
         }
         if let roomID = UUID(uuidString: sessionID), let rooms {
             rooms.select(roomID)
@@ -106,19 +127,37 @@ final class AgentToolsCenter {
     }
 
     func dismissSecondOpinion(_ opinion: SecondOpinion) {
-        secondOpinionTasks[opinion.id]?.cancel()
-        secondOpinionTasks[opinion.id] = nil
+        secondOpinionTasks.removeValue(forKey: opinion.id)?.task.cancel()
         secondOpinions.dismiss(id: opinion.id, sessionID: opinion.sessionID, itemID: opinion.itemID)
     }
 
     private func runSecondOpinion(_ opinion: SecondOpinion, directory: String, fallbackChanges: [FileChange]) {
-        secondOpinionTasks[opinion.id]?.cancel()
-        secondOpinionTasks[opinion.id] = Task { @MainActor [weak self] in
+        secondOpinionTasks.removeValue(forKey: opinion.id)?.task.cancel()
+        guard secondOpinionTasks.count < Self.maxConcurrentSecondOpinions else {
+            secondOpinions.markFailed(
+                id: opinion.id,
+                sessionID: opinion.sessionID,
+                itemID: opinion.itemID,
+                error: "At most \(Self.maxConcurrentSecondOpinions) second opinions can run at once. Wait for one to finish or dismiss it."
+            )
+            return
+        }
+        let runID = UUID()
+        let task = Task { @MainActor [weak self] in
             guard let self, let store = self.store else { return }
-            defer { self.secondOpinionTasks[opinion.id] = nil }
+            defer {
+                if self.secondOpinionTasks[opinion.id]?.runID == runID {
+                    self.secondOpinionTasks[opinion.id] = nil
+                }
+            }
 
             let isTrusted = WorkspaceTrust.shared.isTrusted(directory)
-            if let refusal = ModelTrustPolicy.refusal(for: opinion.model, directory: directory, isTrusted: isTrusted) {
+            if let refusal = ModelTrustPolicy.refusal(
+                for: opinion.model,
+                directory: directory,
+                isTrusted: isTrusted,
+                providersNeedingTrust: Self.providersNeedingTrust(store: store)
+            ) {
                 self.secondOpinions.markFailed(id: opinion.id, sessionID: opinion.sessionID, itemID: opinion.itemID, error: refusal)
                 return
             }
@@ -140,13 +179,15 @@ final class AgentToolsCenter {
                 directory: directory,
                 model: opinion.model,
                 prompt: prompt,
-                onSessionCreated: { [weak self] helperID in
-                    _ = await MainActor.run {
+                onSessionCreated: { [weak self, weak store] helperID in
+                    await MainActor.run {
+                        store?.registerHiddenHelperSession(helperID)
                         self?.activeHelperSessionIDs.insert(helperID)
                     }
                 },
-                onSessionFinished: { [weak self] helperID in
-                    _ = await MainActor.run {
+                onSessionFinished: { [weak self, weak store] helperID in
+                    await MainActor.run {
+                        store?.unregisterHiddenHelperSession(helperID)
                         self?.activeHelperSessionIDs.remove(helperID)
                     }
                 }
@@ -159,6 +200,11 @@ final class AgentToolsCenter {
                 self.secondOpinions.markFailed(id: opinion.id, sessionID: opinion.sessionID, itemID: opinion.itemID, error: message)
             }
         }
+        secondOpinionTasks[opinion.id] = SecondOpinionRun(runID: runID, sessionID: opinion.sessionID, task: task)
+    }
+
+    private static func providersNeedingTrust(store: SessionStore) -> Set<String> {
+        (store.engine as? EngineRouter)?.providersNeedingTrustedFolders ?? []
     }
 
     // MARK: The app's side
@@ -166,11 +212,15 @@ final class AgentToolsCenter {
     static func environment(store: SessionStore, center: AgentToolsCenter) -> AgentToolsEnvironment {
         AgentToolsEnvironment(
             session: { [weak store] id in
-                guard let store, let model = store.session(id) else { return nil }
+                guard let store else { return nil }
+                let primaryID = store.primarySessionID(for: id)
+                guard let model = store.session(primaryID) else { return nil }
                 return info(model, store: store)
             },
             browser: { [weak store] id in
-                guard let session = store?.session(id) else { return nil }
+                guard let store else { return nil }
+                let primaryID = store.primarySessionID(for: id)
+                guard let session = store.session(primaryID) else { return nil }
                 return BrowserCenter.shared.page(for: session)
             },
             isTrusted: { WorkspaceTrust.shared.isTrusted($0) },
@@ -179,8 +229,15 @@ final class AgentToolsCenter {
                 guard let store else { return (session.model, "Default model", false) }
                 return resolveModel(asked, session: session, store: store)
             },
-            showBrowser: { [weak center] id in center?.onShowBrowser?(id) },
-            log: { [weak store] id, text in store?.addNotice(text, to: id) },
+            showBrowser: { [weak store, weak center] id in
+                let primaryID = store?.primarySessionID(for: id) ?? id
+                center?.onShowBrowser?(primaryID)
+            },
+            log: { [weak store] id, text in
+                guard let store else { return }
+                let primaryID = store.primarySessionID(for: id)
+                store.addNotice(text, to: primaryID)
+            },
             startSession: { [weak store] proposal, session in
                 guard let store else { throw AgentToolsCenterError.noStore }
                 // The user stays where they are; the card's Open button goes to the new session. The folder (resolved,
@@ -192,25 +249,34 @@ final class AgentToolsCenter {
                 await store.send(proposal.brief, to: created.id)
                 return created.id
             },
-            send: { [weak store] id, text in await store?.send(text, to: id) },
+            send: { [weak store] id, text in
+                guard let store else { return }
+                let primaryID = store.primarySessionID(for: id)
+                await store.send(text, to: primaryID)
+            },
             // Ensemble has no per-folder default mode yet, so proposed sessions start in Ask (`ProposalMode`).
             folderMode: { _ in nil },
             availableModels: { [weak store] in store?.models ?? [] },
             listAgents: { [weak store, weak center] excludeID, ownRoomID in
                 guard let store else { return [] }
+                let primaryExcludeID = store.primarySessionID(for: excludeID)
                 return directoryEntries(
-                    excluding: excludeID,
+                    excluding: primaryExcludeID,
                     ownRoomID: ownRoomID,
                     store: store,
                     rooms: center?.rooms,
                     helpers: center?.activeHelperSessionIDs ?? []
                 )
             },
-            ownRoomID: { [weak center] sessionID in
-                ownRoom(for: sessionID, rooms: center?.rooms)
+            ownRoomID: { [weak store, weak center] sessionID in
+                let primaryID = store?.primarySessionID(for: sessionID) ?? sessionID
+                return ownRoom(for: primaryID, rooms: center?.rooms)
+                    ?? ownRoom(for: sessionID, rooms: center?.rooms)
             },
             latestItemID: { [weak store] sessionID in
-                store?.session(sessionID)?.items.last?.id
+                guard let store else { return nil }
+                let primaryID = store.primarySessionID(for: sessionID)
+                return store.session(primaryID)?.items.last?.id
             },
             deliverAgentMessage: { [weak store, weak center] targetID, formatted in
                 guard let store else { return .refused("The app is not ready.") }
@@ -229,6 +295,40 @@ final class AgentToolsCenter {
                 let isTrusted = WorkspaceTrust.shared.isTrusted(directory)
                 let fallback = store?.sessions.first { $0.directory == directory }?.changedFiles ?? []
                 return await GitDiffSummaryLoader.diffSummary(in: directory, isTrusted: isTrusted, fallbackChanges: fallback)
+            },
+            providersNeedingTrust: { [weak store] in
+                guard let store else { return [] }
+                return providersNeedingTrust(store: store)
+            },
+            targetPermissionMode: { [weak store, weak center] targetID in
+                if let store {
+                    let primaryID = store.primarySessionID(for: targetID)
+                    if let session = store.session(primaryID) { return session.permissionMode }
+                }
+                if let roomID = UUID(uuidString: targetID), let state = center?.rooms?.state(roomID) {
+                    return state.spec.permissionMode
+                }
+                return nil
+            },
+            targetDirectory: { [weak store, weak center] targetID in
+                if let store {
+                    let primaryID = store.primarySessionID(for: targetID)
+                    if let session = store.session(primaryID) { return session.directory }
+                }
+                if let roomID = UUID(uuidString: targetID), let state = center?.rooms?.state(roomID) {
+                    return state.spec.directory
+                }
+                return nil
+            },
+            roomMemberSessionIDs: { [weak center] targetID in
+                guard let roomID = UUID(uuidString: targetID), let rooms = center?.rooms else { return [] }
+                if let engine = rooms.engines[roomID] {
+                    return Array(engine.state.sessions.values)
+                }
+                if let state = rooms.state(roomID) {
+                    return Array(state.sessions.values)
+                }
+                return []
             }
         )
     }
@@ -238,7 +338,9 @@ final class AgentToolsCenter {
     static func info(_ model: SessionModel, store: SessionStore) -> AgentToolsEnvironment.Session {
         var root = model
         var hops = 0
-        while let parentID = root.info.parentID, let parent = store.session(parentID), hops < 16 {
+        while let parentID = root.info.parentID,
+              let parent = store.session(store.primarySessionID(for: parentID)),
+              hops < 16 {
             root = parent
             hops += 1
         }
@@ -318,6 +420,8 @@ final class AgentToolsCenter {
                   !session.info.archived,
                   session.id != excludeID,
                   !helpers.contains(session.id),
+                  !store.hiddenSessionIDs.contains(session.id),
+                  !store.hiddenLinkedSessionIDs.contains(session.id),
                   !roomSessionIDs.contains(session.id) else { continue }
             entries.append(
                 AgentDirectoryEntry(
@@ -357,10 +461,15 @@ final class AgentToolsCenter {
         store: SessionStore,
         rooms: RoomsController?
     ) async -> AgentDeliveryResult {
-        if let target = store.session(targetID) {
+        let payload = AgentToolText.isUntrustedPeerFrame(formattedMessage)
+            ? formattedMessage
+            : AgentToolText.untrusted(formattedMessage, source: "Message from another Ensemble agent")
+
+        let primaryTargetID = store.primarySessionID(for: targetID)
+        if let target = store.session(primaryTargetID) {
             guard !target.info.archived else { return .refused("The target session is archived.") }
             let queued = target.isWorking
-            await store.send(formattedMessage, to: target.id)
+            await store.send(payload, to: target.id)
             return .delivered(
                 targetSessionID: target.id,
                 targetTitle: sessionTitle(target),
@@ -372,7 +481,7 @@ final class AgentToolsCenter {
 
         if let roomID = UUID(uuidString: targetID), let rooms, let engine = rooms.engine(for: roomID) {
             let queued = rooms.isRunning(roomID)
-            await engine.send(formattedMessage)
+            await engine.send(payload)
             let names = engine.state.spec.agents.map(\.name).joined(separator: ", ")
             return .delivered(
                 targetSessionID: roomID.uuidString,
@@ -392,7 +501,12 @@ final class AgentToolsCenter {
         center: AgentToolsCenter
     ) async -> AskAgentResult {
         let isTrusted = WorkspaceTrust.shared.isTrusted(request.directory)
-        if let refusal = ModelTrustPolicy.refusal(for: request.model, directory: request.directory, isTrusted: isTrusted) {
+        if let refusal = ModelTrustPolicy.refusal(
+            for: request.model,
+            directory: request.directory,
+            isTrusted: isTrusted,
+            providersNeedingTrust: providersNeedingTrust(store: store)
+        ) {
             return .refused(refusal)
         }
 
@@ -413,15 +527,17 @@ final class AgentToolsCenter {
             directory: request.directory,
             model: request.model,
             prompt: promptParts.joined(separator: "\n"),
-            onSessionCreated: { helperID in
+            onSessionCreated: { [weak store, weak center] helperID in
                 await MainActor.run {
-                    center.activeHelperSessionIDs.insert(helperID)
-                    center.coordinator?.registerHelperLease(sessionID: helperID, lease: request.hopLease)
+                    store?.registerHiddenHelperSession(helperID)
+                    center?.activeHelperSessionIDs.insert(helperID)
+                    center?.coordinator?.registerHelperLease(sessionID: helperID, lease: request.hopLease)
                 }
             },
-            onSessionFinished: { helperID in
-                _ = await MainActor.run {
-                    center.activeHelperSessionIDs.remove(helperID)
+            onSessionFinished: { [weak store, weak center] helperID in
+                await MainActor.run {
+                    store?.unregisterHiddenHelperSession(helperID)
+                    center?.activeHelperSessionIDs.remove(helperID)
                 }
             }
         )

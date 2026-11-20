@@ -137,6 +137,7 @@ import Testing
             "ensemble_browser_scroll",
             "ensemble_message_agent",
         ]
+        #expect(Set(readOrPropose + mutating) == Set(PermissionRules.ensembleToolActions))
         for mode in [PermissionMode.ask, .acceptEdits, .auto, .bypass] {
             for tool in readOrPropose + mutating {
                 #expect(effect(tool, "*", mode) == "allow", "\(tool) should not ask OpenCode in \(mode)")
@@ -148,9 +149,17 @@ import Testing
         for tool in mutating {
             #expect(effect(tool, "*", .plan) == "deny", "\(tool) should stay denied in Plan")
         }
-        // Unrelated MCP tools still ask or deny as before.
-        #expect(effect("github_create_issue", "*", .plan) == "deny")
-        #expect(effect("ensemble_other_future", "*", .ask) == "allow")
+        // Unrelated MCP tools, including third-party servers with an `ensemble_` prefix, must never auto-allow.
+        for unknown in ["github_create_issue", "ensemble_evil_tool", "ensemble_other_future", "ensemble_shell"] {
+            for mode in [PermissionMode.ask, .acceptEdits, .auto] {
+                #expect(effect(unknown, "*", mode) == "ask", "\(unknown) must ask in \(mode)")
+            }
+            #expect(effect(unknown, "*", .plan) == "deny", "\(unknown) must be denied in Plan")
+        }
+        // No mode outside Bypass contains an `ensemble_*` wildcard rule.
+        for mode in [PermissionMode.ask, .acceptEdits, .auto, .plan] {
+            #expect(!PermissionRules.ruleset(for: mode).contains { $0.action == "ensemble_*" })
+        }
     }
 
     @Test func autoAsksForCommandsOutsideTheSafeList() {
@@ -335,10 +344,11 @@ import Testing
             + ["make", "npm test *", "swift build *", "git diff *"].map { PermissionRule("shell", $0, "allow") }
         let oldAsk = PermissionRules.ruleset(for: .ask) + [PermissionRule("edit", "Makefile", "ask")]
         let withoutEnsembleAsk = PermissionRules.ruleset(for: .ask).filter { !$0.action.hasPrefix("ensemble_") }
+        let legacyWildcardAsk = withoutEnsembleAsk + [PermissionRule("ensemble_*", "*", "allow")]
         let withoutEnsemblePlan = PermissionRules.ruleset(for: .plan).filter { !$0.action.hasPrefix("ensemble_") }
         for (rules, mode) in [(previousAuto, PermissionMode.auto), (firstAuto, .auto), (previousAcceptEdits, .acceptEdits),
                               (firstAcceptEdits, .acceptEdits), (oldAsk, .ask),
-                              (withoutEnsembleAsk, .ask), (withoutEnsemblePlan, .plan)] {
+                              (withoutEnsembleAsk, .ask), (legacyWildcardAsk, .ask), (withoutEnsemblePlan, .plan)] {
             #expect(PermissionRules.mode(for: rules) == nil)
             #expect(PermissionRules.outdatedMode(for: rules) == mode)
         }

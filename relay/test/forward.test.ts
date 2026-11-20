@@ -84,14 +84,14 @@ describe("phone pairing and forwarding", () => {
   it("a data socket for an unknown conn is refused", async () => {
     const mac = await setup();
     const data = await dataSocket(mac, b64url(crypto.getRandomValues(new Uint8Array(16))), b64url(new Uint8Array(32)));
-    expect(await data.closeCode()).toBe(4001);
+    expect(await data.closeCode()).toBe(4004);
   });
 
   it("the token is single use", async () => {
     const mac = await setup();
     const { phone, conn, token, data } = await paired(mac);
     const second = await dataSocket(mac, conn, token);
-    expect(await second.closeCode()).toBe(4001);
+    expect(await second.closeCode()).toBe(4004);
     await pairStillWorks(phone, data);
   });
 

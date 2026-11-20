@@ -328,8 +328,18 @@ private struct FileLinkHitAreas: View {
                     .contentShape(Rectangle())
                     .frame(width: area.rect.width, height: area.rect.height)
                     .position(x: area.rect.midX, y: area.rect.midY)
-                    .onTapGesture { actions.open(area.link) }
-                    .contextMenu { FileLinkMenuContent(items: actions.menu(area.link)) }
+                    .onTapGesture {
+                        guard !base.isEmpty, FileLinkCache.diskCheck(area.link.path, base: base) else { return }
+                        actions.open(area.link)
+                    }
+                    .contextMenu {
+                        if !base.isEmpty, FileLinkCache.diskCheck(area.link.path, base: base) {
+                            FileLinkMenuContent(
+                                items: actions.menu(area.link),
+                                canRun: { !base.isEmpty && FileLinkCache.diskCheck(area.link.path, base: base) }
+                            )
+                        }
+                    }
                     .help("Open \(area.link.display(base: base))")
                     .accessibilityElement()
                     .accessibilityLabel("Open \(area.link.display(base: base))")
@@ -358,11 +368,13 @@ private struct FileLinkHitAreas: View {
 /// The right-click menu of a file link.
 struct FileLinkMenuContent: View {
     let items: [FileLinkMenuItem]
+    var canRun: (@MainActor () -> Bool)? = nil
 
     var body: some View {
         ForEach(items) { item in
             if item.children.isEmpty {
                 Button {
+                    guard canRun?() ?? true else { return }
                     item.action?()
                 } label: {
                     if let symbol = item.symbol { Label(item.title, systemImage: symbol) } else { Text(item.title) }
@@ -370,7 +382,7 @@ struct FileLinkMenuContent: View {
                 .disabled(item.action == nil)
             } else {
                 Menu {
-                    FileLinkMenuContent(items: item.children)
+                    FileLinkMenuContent(items: item.children, canRun: canRun)
                 } label: {
                     if let symbol = item.symbol { Label(item.title, systemImage: symbol) } else { Text(item.title) }
                 }

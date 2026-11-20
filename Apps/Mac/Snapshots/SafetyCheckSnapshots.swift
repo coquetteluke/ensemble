@@ -10,7 +10,7 @@ import EnsembleKit
 /// Call from the `--render-snapshots` flow: `SafetyCheckSnapshots.render(to: outputDirectory, zoom: zoom)`.
 @MainActor
 enum SafetyCheckSnapshots {
-    static let folder = "/Users/luke/Projects/widgets"
+    static let folder = "/Users/sam/Projects/widgets"
 
     @discardableResult
     static func render(to directory: URL, zoom: CGFloat = 1) -> [String] {

@@ -21,10 +21,9 @@ Newest first. One line per finished piece; details in commits.
 
 ## 2026-11-18 (later)
 
-- GitHub reports the `coquetteluke` account as suspended (push refused, repo page 404). Keep committing locally; push when Luke has it restored. Do not create another account or push anywhere else.
 - Remote security fixes committed (protocol v2, mutual HMAC, pre-pairing limits). Mac side of the remote wired: Window > Pair iPhone.
 - Icon: Luke picked option 2, Constellation.
-- Luke paired his real iPhone Duo with the Mac over home Wi-Fi (protocol v2), confirmed 2026-11-18.
+- Paired physical iPhone Duo over home Wi-Fi (protocol v2), confirmed 2026-11-18.
 - Auto mode hardened: dot paths ask in any case, Auto runs only read-only commands (committed). Remote protocol 3 (encrypted frames) committed. Zoom, Auto default, keep awake and lid lock committed and installed. Planned: AI safety check for Auto (like Claude Code's auto mode) so safe builds and tests run without asking.
 
 ## 2026-11-18 (evening and night)
@@ -41,7 +40,7 @@ Newest first. One line per finished piece; details in commits.
 
 - Wave 2 finished: plan mode and question cards on all three engines (Ensemble enforces read-only Plan on Claude, whose own plan mode let a shell write through), background work list, plan limit ring and auto-continue, workspace trust card with a private OpenCode server for untrusted folders, GitHub pull request bar (pushes only to the branch's own repository or the user's own fork).
 - Wave 3 so far: Session Hub (Needs you, Running, Finished, Old, with actions in place), split view (2 to 4 panes, narrow-pane layouts), scheduled tasks on every engine with catch-up after sleep, usage view and API-key spending caps, rewind with choices and redo, per-session worktrees, Customizations (what each agent loads per folder), browser pane with dev-server preview, rooms on the iPhone, phone alerts (local, and optional ntfy).
-- Claude session import: 416 sessions in 91 folders found on Luke's Mac; sessions the desktop app does not list come in archived by default, starred ones pinned.
+- Claude session import: 416 sessions in 91 folders found locally; sessions the desktop app does not list come in archived by default, starred ones pinned.
 - Every piece went through a security review; fixes included Gemini fail-closed modes and exact Always rules, Claude settings pinning, git with repository programs switched off and only in trusted folders, agent-written links limited to web and mail, no default-app opening of files.
 - Model picker rework (Luke's request): folders by maker with the newest of each tier and Older models, keys 1 to 9, Effort and Fast mode in the picker, subscription or API key per model (remembered, key entered in place), and a model of another engine no longer fails: an empty session starts over on that engine, a session with history offers a new session. Claude models are listed once each with their real 1M windows (checked with the CLI's own `get_context_usage`, notes in docs/reference/claude-code-engine-notes.md); Fable 5.2 is listed by its full id because the `fable` alias still means 5.1.
 - Auto on Gemini is decided by Ensemble: agy's own `auto` sent no prompts at all (rm -rf, curl, a BypassSandbox retry), so Auto now runs agy in `default` and Ensemble answers each prompt with the same rules and model as the OpenCode safety check. Edits inside the project and read-only commands run, risky commands, sandbox escapes and anything unknown ask. Notes in docs/reference/antigravity-engine-notes.md.

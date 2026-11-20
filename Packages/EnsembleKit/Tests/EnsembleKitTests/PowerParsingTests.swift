@@ -31,11 +31,11 @@ import Testing
 
     @Test func lidlockRuleIsAccepted() {
         let listing = """
-        Matching Defaults entries for luke on Lukes-MacBook-Air:
+        Matching Defaults entries for sam on Sams-MacBook-Air:
             env_reset, env_keep+=BLOCKSIZE, env_keep+="COLORFGBG COLORTERM",
             lecture_file=/etc/sudo_lecture, !log_allowed
 
-        User luke may run the following commands on Lukes-MacBook-Air:
+        User sam may run the following commands on Sams-MacBook-Air:
             (ALL) ALL
             (root) NOPASSWD: /usr/bin/pmset disablesleep *
         """
@@ -76,12 +76,12 @@ import Testing
     // MARK: Setup script
 
     @Test func userNamesAreValidated() {
-        #expect(PowerSudoers.isValidUserName("lukegarito"))
+        #expect(PowerSudoers.isValidUserName("alexsmith"))
         #expect(PowerSudoers.isValidUserName("first.last-2"))
         #expect(!PowerSudoers.isValidUserName(""))
-        #expect(!PowerSudoers.isValidUserName("luke'; rm -rf /"))
-        #expect(!PowerSudoers.isValidUserName("luke garito"))
-        #expect(!PowerSudoers.isValidUserName("-luke"))
+        #expect(!PowerSudoers.isValidUserName("alex'; rm -rf /"))
+        #expect(!PowerSudoers.isValidUserName("alex smith"))
+        #expect(!PowerSudoers.isValidUserName("-alex"))
         #expect(PowerSudoers.installScript(user: "bad name") == nil)
         #expect(PowerSudoers.appleScript(user: "a\"b") == nil)
     }

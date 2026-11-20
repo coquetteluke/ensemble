@@ -7,9 +7,10 @@ import Foundation
 // server for untrusted folders has no browser sign-ins).
 extension EngineRouter: EngineSafetyCheckSupport {
     public func safetyCheckApplies(to sessionID: String) -> Bool {
-        guard let owner = ownerID(ofSession: sessionID),
+        let resolvedID = activeBackingOrSelf(sessionID)
+        guard let owner = ownerID(ofSession: resolvedID),
               let engine = registration(id: owner)?.engine as? any EngineSafetyCheckSupport else { return false }
-        return engine.safetyCheckApplies(to: sessionID)
+        return engine.safetyCheckApplies(to: resolvedID)
     }
 
     public func toolCallID(forPermission requestID: String, sessionID: String) async -> String? {

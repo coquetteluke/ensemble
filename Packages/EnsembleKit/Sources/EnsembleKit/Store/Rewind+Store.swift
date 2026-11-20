@@ -30,7 +30,14 @@ extension SessionStore {
     }
 
     func loadRewindPlan(_ requestID: String) async {
-        guard let request = rewinds.request, request.id == requestID, let session = byID[request.sessionID] else { return }
+        guard let request = rewinds.request, request.id == requestID,
+              let session = byID[primarySessionID(for: request.sessionID)] else { return }
+        if threadLinks.hasLinks(for: session.id) {
+            let plan = RewindPlan.unavailable("Rewind is not available after switching engines in a thread.")
+            rewinds.request?.phase = .ready(plan)
+            rewinds.request?.selected = plan.defaultScope
+            return
+        }
         let plan: RewindPlan
         do {
             guard let engineID = try await engineMessageID(for: request.messageID, in: session) else {
@@ -72,7 +79,11 @@ extension SessionStore {
     /// Why the sheet's Rewind button is off, or nil when it can rewind.
     public func rewindConfirmUnavailableReason() -> String? {
         guard let request = rewinds.request else { return "Nothing to rewind" }
-        if let session = byID[request.sessionID], session.isWorking { return RewindReason.working }
+        let primaryID = primarySessionID(for: request.sessionID)
+        if threadLinks.hasLinks(for: primaryID) {
+            return "Rewind is not available after switching engines in a thread."
+        }
+        if let session = byID[primaryID], session.isWorking { return RewindReason.working }
         guard let plan = request.plan else { return nil }
         guard let scope = request.selected else { return "Choose what to rewind" }
         return plan.choice(scope).unavailableReason
@@ -82,9 +93,10 @@ extension SessionStore {
     @discardableResult
     public func confirmRewind() async -> Bool {
         guard let request = rewinds.request, case .ready(let plan) = request.phase, let scope = request.selected,
-              let session = byID[request.sessionID] else { return false }
+              let session = byID[primarySessionID(for: request.sessionID)] else { return false }
         if let reason = rewindConfirmUnavailableReason() {
             rewinds.request?.error = reason
+            if threadLinks.hasLinks(for: session.id) { lastError = reason }
             return false
         }
         rewinds.request?.phase = .working(plan, scope)
@@ -119,7 +131,7 @@ extension SessionStore {
         for (id, notice) in rewinds.notices where notice.sessionID == session.id { rewinds.notices[id]?.superseded = true }
         if outcome.scope.removesMessages {
             if let pending = try? await engine.pendingPermissions() {
-                session.pendingPermissions = pending.filter { $0.sessionID == session.id }
+                session.pendingPermissions = pending.filter { primarySessionID(for: $0.sessionID) == session.id }
             }
             session.transcriptLoaded = false
             await loadSession(session.id)

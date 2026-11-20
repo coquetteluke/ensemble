@@ -31,13 +31,14 @@ public protocol EngineInteractionControl: Sendable {
 // Kept in its own file because the protocol is new; forwards to the engine that owns the session.
 extension EngineRouter: EngineInteractionControl {
     public func planModeSupport(sessionID: String) async -> PlanModeSupport {
-        guard let registration = await registration(forSession: sessionID) else {
+        let resolvedID = activeBackingOrSelf(sessionID)
+        guard let registration = await registration(forSession: resolvedID) else {
             return .unsupported(reason: "This session is not running on any engine.")
         }
         guard let control = registration.engine as? any EngineInteractionControl else {
             return .unsupported(reason: "\(registration.name) has no plan mode.")
         }
-        return await control.planModeSupport(sessionID: sessionID)
+        return await control.planModeSupport(sessionID: resolvedID)
     }
 
     public func answerQuestion(sessionID: String, requestID: String, answers: [AgentQuestionAnswer]) async throws {

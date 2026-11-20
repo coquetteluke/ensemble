@@ -31,8 +31,8 @@ interface Attachment {
   /** Phone and data: the pair is formed and frames pass through. */
   paired: boolean;
   /**
-   * Host and phone only: the hash of the normalized source address (see address.ts). The address itself is never kept.
-   * A phone keeps it so the Mac's badHandshake can be tied to its source.
+   * Hash of the normalized source address (see address.ts). The address itself is never kept.
+   * Stored across host, phone and data sockets for per-address unproven limits and bad-handshake tracking.
    */
   addr?: string;
   /** Paired phone and data sockets: incoming messages and bytes not yet added to the stored budget. */
@@ -76,6 +76,8 @@ function today(): number {
 const MAX_PHONE_FRAME = 1024 * 1024;
 /** Largest frame the Mac may send to a phone. Under the platform's 32 MiB received-message limit. */
 const MAX_MAC_FRAME = 16 * 1024 * 1024;
+/** Maximum unproven sockets across all addresses and roles held in one Durable Object at once. */
+const MAX_UNPROVEN_TOTAL = 24;
 
 const enc = new TextEncoder();
 
@@ -115,26 +117,40 @@ export class Mailbox extends DurableObject<Env> {
     const [client, server] = [pair[0], pair[1]];
     const deadline = Date.now() + CHALLENGE_TIMEOUT_MS;
 
-    if (role === "phone" && addr !== "") {
-      // A blocked address gets no challenge and the Mac hears nothing. An address may also hold only a few
-      // connections that have not yet proved the access key, so none can be opened ahead of time in bulk.
-      const blocked = await this.isBlocked(addr);
-      const unproven = blocked
-        ? 0
-        : this.ctx.getWebSockets().filter((w) => {
-            const a = w.deserializeAttachment() as Attachment | null;
-            return w.readyState === WebSocket.READY_STATE_OPEN && a?.role === "phone" && !a.authed && a.addr === addr;
-          }).length;
-      if (blocked || unproven >= MAX_UNPROVEN_PER_ADDRESS) {
-        server.accept();
-        this.safeClose(server, blocked ? Close.unauthorized : Close.limit, blocked ? "unauthorized" : "busy");
-        return new Response(null, { status: 101, webSocket: client });
+    // A blocked address gets no challenge and the Mac hears nothing. Unproven sockets across all roles are capped
+    // both per address and per Durable Object so connections cannot be opened ahead of time in bulk.
+    const blocked = addr !== "" && (await this.isBlocked(addr));
+    let unprovenForAddr = 0;
+    let unprovenTotal = 0;
+    if (!blocked) {
+      for (const w of this.ctx.getWebSockets()) {
+        if (w.readyState !== WebSocket.READY_STATE_OPEN) continue;
+        const a = w.deserializeAttachment() as Attachment | null;
+        if (!a || a.authed) continue;
+        unprovenTotal++;
+        if (addr !== "" && a.addr === addr) unprovenForAddr++;
       }
+    }
+    if (blocked || unprovenForAddr >= MAX_UNPROVEN_PER_ADDRESS || unprovenTotal >= MAX_UNPROVEN_TOTAL) {
+      server.accept();
+      this.safeClose(server, blocked ? Close.unauthorized : Close.limit, blocked ? "unauthorized" : "busy");
+      return new Response(null, { status: 101, webSocket: client });
     }
 
     if (role === "data") {
-      // A Mac data socket for one phone. It must present the phone's token as its first frame.
+      // A Mac data socket for one phone. Reject immediately if no waiting phone socket exists for this conn,
+      // before accepting into hibernation or arming an alarm.
       const conn = parts[5]!;
+      const waitingPhone = this.ctx.getWebSockets(`phone:${conn}`).find((w) => {
+        if (w.readyState !== WebSocket.READY_STATE_OPEN) return false;
+        const a = w.deserializeAttachment() as Attachment | null;
+        return Boolean(a && a.role === "phone" && a.authed && !a.paired && a.token);
+      });
+      if (!waitingPhone) {
+        server.accept();
+        this.safeClose(server, Close.noMailbox, "no waiting phone");
+        return new Response(null, { status: 101, webSocket: client });
+      }
       this.ctx.acceptWebSocket(server, [`data:${conn}`]);
       server.serializeAttachment({
         role,
@@ -142,6 +158,7 @@ export class Mailbox extends DurableObject<Env> {
         conn,
         authed: false,
         paired: false,
+        addr,
         deadline: Date.now() + PAIR_TIMEOUT_MS,
       } satisfies Attachment);
       await this.rearm();
@@ -230,6 +247,7 @@ export class Mailbox extends DurableObject<Env> {
     if (!accessKey) return this.safeClose(ws, Close.noMailbox, "no such mailbox");
     await this.loadBudget();
     if (!(await verifyPhone(accessKey, frame.proof, att.id, att.nonce!))) {
+      if (att.addr) await this.recordFailureForAddr(att.addr);
       return this.safeClose(ws, Close.unauthorized, "unauthorized");
     }
     // An address can be blocked after it connected, so look again just before the Mac would be told about it.
@@ -420,6 +438,10 @@ export class Mailbox extends DurableObject<Env> {
     const key = (phone?.deserializeAttachment() as Attachment | null | undefined)?.addr || this.recentPhones.get(conn);
     this.recentPhones.delete(conn);
     if (!key) return;
+    await this.recordFailureForAddr(key);
+  }
+
+  private async recordFailureForAddr(key: string) {
     // One at a time, so two reports cannot both read the same stored count.
     const run = this.failLock.then(() => this.addFailure(key));
     this.failLock = run.catch(() => undefined);

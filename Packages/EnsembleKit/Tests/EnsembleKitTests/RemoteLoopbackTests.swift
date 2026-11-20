@@ -1112,6 +1112,86 @@ import Testing
         #expect(phone.openTranscript?.secondOpinions.last?.modelName == "Gemini 3 Pro")
         #expect(phone.openTranscript?.secondOpinions.last?.status == "ready")
     }
+
+    @Test func streamingTextDeltaWithoutPriorUpsertRendersLive() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let phone = client(h)
+        phone.start()
+        defer { phone.stop() }
+        try await waitUntil { phone.state.isConnected && phone.sessions.count == 4 }
+
+        try await phone.open(sessionID: RemoteDemoData.IDs.fixSession)
+        try await waitUntil { phone.openTranscript?.sessionID == RemoteDemoData.IDs.fixSession }
+
+        await h.host.emit(.textDelta(sessionID: RemoteDemoData.IDs.fixSession, itemID: "stream-only-1", delta: "Hello "))
+        await h.host.emit(.textDelta(sessionID: RemoteDemoData.IDs.fixSession, itemID: "stream-only-1", delta: "world"))
+        try await waitUntil {
+            guard let item = phone.openTranscript?.items.first(where: { $0.id == "stream-only-1" }) else { return false }
+            if case .agentText(_, let text, _, let streaming) = item {
+                return text == "Hello world" && streaming
+            }
+            return false
+        }
+    }
+
+    @Test func sessionReplacedCallbackFiresAndUpdatesOpenSession() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let phone = client(h)
+        var replacedPairs: [(String, SessionSummary)] = []
+        phone.onSessionReplaced = { oldID, newSummary in
+            replacedPairs.append((oldID, newSummary))
+        }
+        phone.start()
+        defer { phone.stop() }
+        try await waitUntil { phone.state.isConnected && phone.sessions.count == 4 }
+
+        try await phone.open(sessionID: RemoteDemoData.IDs.fixSession)
+        try await waitUntil { phone.openTranscript?.sessionID == RemoteDemoData.IDs.fixSession }
+
+        let replacement = try #require(phone.sessions.first(where: { $0.id == RemoteDemoData.IDs.docsSession }))
+        await h.host.emit(.sessionReplaced(oldSessionID: RemoteDemoData.IDs.fixSession, newSession: replacement))
+
+        try await waitUntil {
+            phone.openSessionID == RemoteDemoData.IDs.docsSession
+                && phone.openTranscript?.sessionID == RemoteDemoData.IDs.docsSession
+                && replacedPairs.count == 1
+        }
+        #expect(replacedPairs.first?.0 == RemoteDemoData.IDs.fixSession)
+        #expect(replacedPairs.first?.1.id == RemoteDemoData.IDs.docsSession)
+        #expect(!phone.sessions.contains(where: { $0.id == RemoteDemoData.IDs.fixSession }))
+    }
+
+    @Test func pairingCodeRejectsMalformedRelayURLsAndMailboxes() throws {
+        let validMailbox = RelayIdentity.make().mailboxID
+        let badCodes = [
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example?q=1","mailbox":"\#(validMailbox)"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://user:pass@relay.example","mailbox":"\#(validMailbox)"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example#frag","mailbox":"\#(validMailbox)"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example/extra","mailbox":"\#(validMailbox)"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"https://relay.example","mailbox":"\#(validMailbox)"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"ws://relay.example","mailbox":"\#(validMailbox)"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example","mailbox":"too-short"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example","mailbox":"bad/chars+in=mailbox!123456"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example","mailbox":"\#(String(repeating: "a", count: 129))"}}"#,
+        ]
+        for code in badCodes {
+            #expect(throws: RemotePairing.CodeError.badRelay) {
+                try RemotePairing(code: code)
+            }
+        }
+
+        let validWSS = #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example/","mailbox":"\#(validMailbox)"}}"#
+        let decoded = try RemotePairing(code: validWSS)
+        #expect(decoded.relay?.url == "wss://relay.example/")
+        #expect(decoded.relay?.mailbox == validMailbox)
+
+        #if DEBUG
+        let debugLoopback = #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"ws://127.0.0.1:8787","mailbox":"\#(validMailbox)"}}"#
+        #expect(try RemotePairing(code: debugLoopback).relay?.url == "ws://127.0.0.1:8787")
+        #endif
+    }
 }
 /// Counts how many of some TCP connections the server has closed.
 final class ServerClosures: Sendable {

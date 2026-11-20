@@ -178,7 +178,22 @@ final class SearchCenter {
 
     // MARK: Files
 
+    /// The folder on screen for file containment checks: the active room's folder in room view,
+    /// otherwise the selected session's folder.
+    private var activeFileBase: String? {
+        if window?.route == .room, let dir = rooms?.selectedEngine?.state.spec.directory, !dir.isEmpty {
+            return dir
+        }
+        if let dir = store?.selected?.directory, !dir.isEmpty {
+            return dir
+        }
+        return nil
+    }
+
     func openFile(_ link: FileLink) {
+        if store != nil || rooms != nil {
+            guard let base = activeFileBase, FileLinkCache.diskCheck(link.path, base: base) else { return }
+        }
         lastOpened = link
         guard let window else {
             withAnimation(.easeOut(duration: 0.18)) { detachedPreview = link }
@@ -198,6 +213,13 @@ final class SearchCenter {
     /// What file links in agent text do: open the viewer, with the right-click menu from `FileActions`.
     var fileLinkActions: FileLinkActions {
         FileLinkActions(open: { [weak self] link in self?.openFile(link) },
-                        menu: { [weak self] link in FileActions.menu(for: link) { self?.openFile($0) } })
+                        menu: { [weak self] link in
+                            guard let self else { return [] }
+                            if self.store != nil || self.rooms != nil {
+                                guard let base = self.activeFileBase,
+                                      FileLinkCache.diskCheck(link.path, base: base) else { return [] }
+                            }
+                            return FileActions.menu(for: link) { self.openFile($0) }
+                        })
     }
 }

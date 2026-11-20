@@ -200,14 +200,9 @@ public actor RelayHost {
         running && generation == gen && !Task.isCancelled
     }
 
-    /// `wss://` anywhere, plain `ws://` only to this Mac.
+    /// `wss://` anywhere; plain `ws://` only to loopback in Debug builds, with no userinfo, query, fragment, or extra path.
     static func isAllowed(_ url: URL) -> Bool {
-        guard let host = url.host(percentEncoded: false)?.lowercased(), !host.isEmpty else { return false }
-        switch url.scheme?.lowercased() {
-        case "wss": return true
-        case "ws": return host == "127.0.0.1" || host == "localhost"
-        default: return false
-        }
+        RelayDialer.isAllowed(url)
     }
 
     /// The wait before the next attempt after `failures` failed ones in a row: 1, 2, 4, 8, 16, 32 s, then a minute.

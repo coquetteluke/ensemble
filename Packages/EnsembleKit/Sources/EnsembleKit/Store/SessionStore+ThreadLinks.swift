@@ -162,6 +162,22 @@ public final class SessionThreadLinks {
         return threads[primaryID]?.links.first { $0.backingSessionID == backingID }
     }
 
+    public func record(for primaryID: String) -> SessionThreadRecord? {
+        loadIfNeeded()
+        return threads[primaryID]
+    }
+
+    public func restoreRecord(_ record: SessionThreadRecord?, for primaryID: String) {
+        loadIfNeeded()
+        if let record {
+            threads[primaryID] = record
+        } else {
+            threads.removeValue(forKey: primaryID)
+        }
+        rebuildIndexes()
+        save()
+    }
+
     // MARK: Mutations
 
     /// Ensures the primary session itself has a link entry before switching away to another engine.
@@ -335,9 +351,13 @@ public enum CrossEngineHandoff {
     }
 
     /// Removes a handoff preamble from a stored user message so reloaded transcripts stay clean.
+    /// Requires the text to start with `preambleHeader` and matches the neutralized `preambleFooter + promptSeparator`
+    /// boundary so earlier entries cannot spoof the end of context or the user bubble.
     public static func stripHandoff(from userText: String) -> String {
-        guard userText.hasPrefix(preambleHeader),
-              let range = userText.range(of: promptSeparator) else { return userText }
+        guard userText.hasPrefix(preambleHeader) else { return userText }
+        let afterHeader = userText.index(userText.startIndex, offsetBy: preambleHeader.count)
+        let boundary = preambleFooter + promptSeparator
+        guard let range = userText.range(of: boundary, range: afterHeader..<userText.endIndex) else { return userText }
         return String(userText[range.upperBound...])
     }
 
@@ -351,6 +371,15 @@ public enum CrossEngineHandoff {
             withTemplate: CustomizationRedaction.mask
         )
         return CustomizationRedaction.text(stripped)
+    }
+
+    /// Neutralizes handoff delimiter markers inside untrusted entry text so earlier turns cannot forge
+    /// the closing boundary or a spoofed `User message:` separator.
+    static func neutralizeMarkers(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: preambleHeader, with: "(Conversation context from earlier in this thread)", options: .caseInsensitive)
+            .replacingOccurrences(of: preambleFooter, with: "(End context)", options: .caseInsensitive)
+            .replacingOccurrences(of: "User message:", with: "User-message:", options: .caseInsensitive)
     }
 
     private static func collectEntries(from items: [TranscriptItem]) -> [String] {
@@ -367,18 +396,18 @@ public enum CrossEngineHandoff {
             switch item {
             case .user(_, let text, _):
                 flushTools()
-                let clean = redact(stripHandoff(from: text)).trimmingCharacters(in: .whitespacesAndNewlines)
+                let clean = neutralizeMarkers(redact(stripHandoff(from: text))).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !clean.isEmpty { entries.append("User: \(compact(clean, limit: 1_800))") }
             case .agentText(_, let text, _, _):
                 flushTools()
-                let clean = redact(text).trimmingCharacters(in: .whitespacesAndNewlines)
+                let clean = neutralizeMarkers(redact(text)).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !clean.isEmpty { entries.append("Assistant: \(compact(clean, limit: 2_400))") }
             case .tool(let tool):
                 let summary = summarize(tool)
                 if !summary.isEmpty { pendingTools.append(summary) }
             case .board(_, _, _, let text, _):
                 flushTools()
-                let clean = redact(text).trimmingCharacters(in: .whitespacesAndNewlines)
+                let clean = neutralizeMarkers(redact(text)).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !clean.isEmpty { entries.append("Board: \(compact(clean, limit: 800))") }
             case .reasoning, .permission, .error, .notice:
                 break
@@ -389,8 +418,8 @@ public enum CrossEngineHandoff {
     }
 
     private static func summarize(_ tool: ToolCallInfo) -> String {
-        let name = tool.name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = redact(tool.title).trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = neutralizeMarkers(tool.name).trimmingCharacters(in: .whitespacesAndNewlines)
+        let title = neutralizeMarkers(redact(tool.title)).trimmingCharacters(in: .whitespacesAndNewlines)
         let label = title.isEmpty || title == name ? name : "\(name) \(compact(title, limit: 160))"
         return "\(label) (\(tool.status.rawValue))"
     }
@@ -403,7 +432,10 @@ public enum CrossEngineHandoff {
                   editToolNames.contains(tool.name.lowercased()),
                   tool.status == .succeeded || tool.status == .running else { continue }
             let candidate = extractedPath(from: tool) ?? tool.title
-            let clean = redact(candidate).trimmingCharacters(in: .whitespacesAndNewlines)
+            let clean = neutralizeMarkers(redact(candidate))
+                .replacingOccurrences(of: "\n", with: " ")
+                .replacingOccurrences(of: "\r", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !clean.isEmpty, clean != tool.name, seen.insert(clean).inserted else { continue }
             files.append(clean)
         }
@@ -445,10 +477,11 @@ extension SessionStore {
 
     func syncRouterThreadLinks() {
         guard let router = engine as? EngineRouter else { return }
-        for (primaryID, record) in threadLinks.threads {
-            let active = record.activeBackingSessionID == primaryID ? nil : record.activeBackingSessionID
-            router.setActiveBackingSession(active, forPrimary: primaryID)
+        var map: [String: String] = [:]
+        for (primaryID, record) in threadLinks.threads where record.activeBackingSessionID != primaryID {
+            map[primaryID] = record.activeBackingSessionID
         }
+        router.setActiveBackingSessions(map)
     }
 
     /// Reconstructs a unified transcript across `primaryID` and its linked backing sessions in turn order.

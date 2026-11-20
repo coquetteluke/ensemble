@@ -111,7 +111,7 @@ final class RemoteControlController {
     static func snapshot(phase: Phase = .on,
                          listening: [String] = ["127.0.0.1:47823"],
                          failedAddresses: [String: String] = [:],
-                         network: RemoteNetworkInfo = .init(computerName: "Luke's MacBook Air"),
+                         network: RemoteNetworkInfo = .init(computerName: "Alex's MacBook Air"),
                          relayEnabled: Bool = true,
                          relayURL: String = RelayDefaults.url,
                          relayStatus: RelayHostStatus = .connected,

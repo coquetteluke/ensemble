@@ -82,8 +82,10 @@ extension SessionStore {
 
     /// What Send now would do for this session right now.
     public func sendNowBehavior(for sessionID: String) -> SendNowBehavior {
-        guard let session = byID[sessionID], session.isWorking else { return .send }
-        return steeringControl?.canSteer(sessionID) == true ? .steer : .stopAndSend
+        let primaryID = primarySessionID(for: sessionID)
+        guard let session = byID[primaryID], session.isWorking else { return .send }
+        if pendingNextModel[primaryID] != nil { return .stopAndSend }
+        return steeringControl?.canSteer(primaryID) == true ? .steer : .stopAndSend
     }
 
     /// Holds the message when the session is working. Returns true when it was held.
@@ -112,40 +114,48 @@ extension SessionStore {
     /// Sends one held message now. While the agent works it joins the running turn when the engine allows that
     /// (the agent reads it after the tool calls in flight); otherwise the turn is stopped and the message sent.
     public func sendNow(_ messageID: UUID, in sessionID: String) async {
-        guard let session = byID[sessionID], let message = takeQueued(messageID, in: sessionID) else { return }
-        switch sendNowBehavior(for: sessionID) {
+        let primaryID = primarySessionID(for: sessionID)
+        guard let session = byID[primaryID], let message = takeQueued(messageID, in: primaryID) else { return }
+        switch sendNowBehavior(for: primaryID) {
         case .send:
-            await deliver(message.text, files: message.files, to: sessionID)
+            await deliver(message.text, files: message.files, to: primaryID)
 
         case .steer:
             guard let control = steeringControl else { return }
-            let item = TranscriptItem.user(id: "user-\(UUID().uuidString)", text: Self.shownText(message.text, files: message.files), date: Date())
+            let shown = Self.shownText(message.text, files: message.files)
+            if let refusal = spendingCapRefusal(model: effectiveModel(for: session)) {
+                if !shown.isEmpty { session.items.append(.user(id: "user-\(UUID().uuidString)", text: shown, date: Date())) }
+                session.items.append(.error(id: "cap-\(UUID().uuidString)", message: "Not sent. " + refusal.message))
+                session.touch()
+                return
+            }
+            let item = TranscriptItem.user(id: "user-\(UUID().uuidString)", text: shown, date: Date())
             session.items.append(item)
             session.info.updated = Date()
             session.touch()
             do {
-                try await control.steer(sessionID, text: message.text, files: message.files)
+                try await control.steer(primaryID, text: message.text, files: message.files)
             } catch {
                 session.items.removeAll { $0.id == item.id }
                 session.touch()
-                queues[sessionID, default: []].insert(message, at: 0)
+                queues[primaryID, default: []].insert(message, at: 0)
                 lastError = "Could not send: \(error.localizedDescription)"
             }
 
         case .stopAndSend:
-            queueRuntime[sessionID, default: QueueRuntime()].sending = true
-            defer { queueRuntime[sessionID]?.sending = false }
+            queueRuntime[primaryID, default: QueueRuntime()].sending = true
+            defer { queueRuntime[primaryID]?.sending = false }
             do {
-                try await engine.interrupt(sessionID)
+                try await engine.interrupt(backingSessionID(for: primaryID))
             } catch {
-                queues[sessionID, default: []].insert(message, at: 0)
+                queues[primaryID, default: []].insert(message, at: 0)
                 lastError = "Could not stop the agent: \(error.localizedDescription)"
                 return
             }
-            await waitUntilIdle(sessionID, timeout: .seconds(10))
+            await waitUntilIdle(primaryID, timeout: .seconds(10))
             // Let the stopped turn's last events land first, so they cannot mark the new turn idle.
             try? await Task.sleep(for: Self.queueSettleDelay)
-            await deliver(message.text, files: message.files, to: sessionID)
+            await deliver(message.text, files: message.files, to: primaryID)
         }
     }
 

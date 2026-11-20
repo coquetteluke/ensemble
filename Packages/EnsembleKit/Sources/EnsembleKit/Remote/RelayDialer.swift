@@ -6,14 +6,33 @@ import Synchronization
 /// pairing token, and returns the socket once the relay says `paired` (meaning the Mac opened its data socket and every
 /// frame after this goes end to end between the phone and the Mac).
 public enum RelayDialer {
-    /// `wss://` anywhere; plain `ws://` only for loopback (`127.0.0.1` and `localhost`).
+    /// `wss://` anywhere; plain `ws://` only for loopback (`127.0.0.1` and `localhost`) in Debug builds.
+    /// Rejects userinfo, query, fragment, invalid ports, and non-root paths.
     public static func isAllowed(_ url: URL) -> Bool {
-        guard let host = url.host(percentEncoded: false)?.lowercased(), !host.isEmpty else { return false }
-        switch url.scheme?.lowercased() {
-        case "wss": return true
-        case "ws": return host == "127.0.0.1" || host == "localhost"
-        default: return false
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = components.scheme?.lowercased(),
+              let host = components.host?.lowercased(), !host.isEmpty else { return false }
+        switch scheme {
+        case "wss":
+            break
+        case "ws":
+            #if DEBUG
+            guard host == "127.0.0.1" || host == "localhost" else { return false }
+            #else
+            return false
+            #endif
+        default:
+            return false
         }
+        guard components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              components.path.isEmpty || components.path == "/" else {
+            return false
+        }
+        if let port = components.port, !(1...65535).contains(port) {
+            return false
+        }
+        return true
     }
 
     /// Connects to `relay`, proves the access key for `token`, waits for `paired`, and returns the live WebSocket task

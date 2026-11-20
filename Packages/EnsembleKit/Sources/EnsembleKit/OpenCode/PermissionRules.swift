@@ -248,6 +248,12 @@ public enum PermissionRules {
     /// The engine agent that goes with a mode: OpenCode's `plan` agent for Plan, its default `build` agent otherwise.
     public static func agent(for mode: PermissionMode) -> String { mode == .plan ? "plan" : "build" }
 
+    /// The exact MCP action names for Ensemble's own built-in tools (`ensemble_<tool>`). Enumerated explicitly instead
+    /// of using an `ensemble_*` wildcard so a third-party MCP server with an `ensemble_` prefix can never auto-allow.
+    public static let ensembleToolActions: [String] = AgentToolName.allCases.map {
+        "\(AgentToolsMCP.serverName)_\($0.rawValue)"
+    }
+
     private static func base(editsAllowed: Bool) -> [PermissionRule] {
         var rules = [
             // Anything not named below, including third-party MCP tools, asks.
@@ -263,8 +269,10 @@ public enum PermissionRules {
             PermissionRule("question", "*", "allow"),
             PermissionRule("skill", "*", "allow"),
             PermissionRule("subagent", "*", "allow"),
-            // Ensemble's own MCP tools handle confirmation inside Ensemble, so OpenCode does not ask twice.
-            PermissionRule("ensemble_*", "*", "allow"),
+        ]
+        // Ensemble's own MCP tools handle confirmation inside Ensemble, so OpenCode does not ask twice.
+        rules += ensembleToolActions.map { PermissionRule($0, "*", "allow") }
+        rules += [
             // The engine's own defaults deny the desktop browser; keep that.
             PermissionRule("browser", "*", "deny"),
             PermissionRule("skill", "browser", "deny"),

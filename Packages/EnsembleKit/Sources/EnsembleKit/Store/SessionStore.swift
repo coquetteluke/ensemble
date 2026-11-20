@@ -175,14 +175,13 @@ public final class SessionStore {
         let knownBefore = Set(byID.values.map(\.id))
         do {
             let list = try await engine.listSessions()
-            for info in list where !deletedSessionIDs.contains(info.id) {
-                if hiddenLinkedSessionIDs.contains(info.id) {
-                    if let primaryID = threadLinks.primarySessionID(for: info.id), let primary = byID[primaryID] {
-                        byID[info.id] = primary
-                        primary.info.updated = max(primary.info.updated, info.updated)
-                    }
-                    continue
-                }
+            let visible = list.filter { !deletedSessionIDs.contains($0.id) }
+            // Pass 1: primary and regular sessions first so `byID[primaryID]` exists for linked backing sessions.
+            for info in visible where !hiddenLinkedSessionIDs.contains(info.id) {
+                upsertSession(info)
+            }
+            // Pass 2: fold linked backing sessions' timestamps and usage into their primary thread.
+            for info in visible where hiddenLinkedSessionIDs.contains(info.id) {
                 upsertSession(info)
             }
             let listed = Set(list.map(\.id))
@@ -227,6 +226,11 @@ public final class SessionStore {
 
     public func session(_ id: String) -> SessionModel? {
         hiddenLinkedSessionIDs.contains(id) ? nil : byID[id]
+    }
+
+    /// Resolves `id` even when it is a hidden cross-engine backing session, returning its owning primary session.
+    public func sessionIncludingLinked(_ id: String) -> SessionModel? {
+        byID[primarySessionID(for: id)]
     }
 
     public var selected: SessionModel? { selectedSessionID.flatMap { byID[$0] } }
@@ -375,10 +379,13 @@ public final class SessionStore {
     /// Applies one live engine event.
     public func apply(_ event: EngineEvent) {
         let resolvedEvent = resolveLinkedEvent(event)
+        var shouldNotifyHooks = true
         defer {
-            afterApply(resolvedEvent)
-            backgroundDidApply(resolvedEvent)
-            goalDidApply(resolvedEvent)
+            if shouldNotifyHooks {
+                afterApply(resolvedEvent)
+                backgroundDidApply(resolvedEvent)
+                goalDidApply(resolvedEvent)
+            }
         }
         switch event {
         case .sessionCreated(let info), .sessionUpdated(let info):
@@ -395,10 +402,12 @@ public final class SessionStore {
                threadLinks.hasLinks(for: primaryID),
                sourceID != backingSessionID(for: primaryID),
                model.isWorking {
+                shouldNotifyHooks = false
                 return
             }
             if activity == .waitingForPermission, model.pendingPermissions.isEmpty {
                 // Prompts held or already answered by the safety check must not flash the session into waiting state.
+                shouldNotifyHooks = false
                 return
             }
             model.setActivity(activity)
@@ -431,6 +440,10 @@ public final class SessionStore {
             let primaryID = primarySessionID(for: asked.sessionID)
             guard let model = byID[primaryID] else { return }
             permissionBackingSessions[asked.id] = asked.sessionID
+            if hiddenSessionIDs.contains(asked.sessionID) || model.info.parentID.map(hiddenSessionIDs.contains) == true {
+                // Hidden helper sessions (side questions, one-shot drafts) must never flash permission cards or alerts.
+                return
+            }
             // The safety check for Auto may answer it first; it is then shown only if the check leaves it to the user.
             if safetyCheckHolds(asked) { return }
             let request = prepared(asked)
@@ -460,25 +473,17 @@ public final class SessionStore {
         case .usageUpdated(let sourceID, let usage):
             let primaryID = primarySessionID(for: sourceID)
             guard let model = byID[primaryID] else { return }
-            if sourceID == primaryID && !threadLinks.hasLinks(for: primaryID) {
-                backingUsage[primaryID] = [primaryID: usage]
-                model.usage = usage
-                model.info.usage = usage
-            } else {
-                var bySource = backingUsage[primaryID] ?? [:]
-                if sourceID != primaryID, bySource[primaryID] == nil, model.usage != .zero {
-                    bySource[primaryID] = model.usage
-                }
-                bySource[sourceID] = usage
-                backingUsage[primaryID] = bySource
-                let total = bySource.values.reduce(.zero, +)
-                model.usage = total
-                model.info.usage = total
-            }
+            foldUsage(usage, from: sourceID, into: model)
 
         case .executionEnded(let sourceID, let outcome, let error):
             let primaryID = primarySessionID(for: sourceID)
             guard let model = byID[primaryID] else { return }
+            if threadLinks.hasLinks(for: primaryID),
+               sourceID != backingSessionID(for: primaryID),
+               model.isWorking {
+                shouldNotifyHooks = false
+                return
+            }
             TranscriptReducer.finishStreaming(&model.items)
             if let error, !error.isEmpty {
                 model.items.append(.error(id: "error-\(UUID().uuidString)", message: error))
@@ -585,6 +590,7 @@ public final class SessionStore {
 
         var targetBackingID = backingSessionID(for: primaryID)
         var promptText = trimmed
+        var preparedSwitch: PreparedCrossEngineSwitch?
 
         if let staged = pendingNextModel[primaryID] {
             let check = engine as? any EngineModelChangeCheck
@@ -616,6 +622,7 @@ public final class SessionStore {
                         targetModel: staged,
                         userText: trimmed
                     )
+                    preparedSwitch = prepared
                     targetBackingID = prepared.backingSessionID
                     promptText = prepared.promptText
                 } catch {
@@ -638,6 +645,9 @@ public final class SessionStore {
         do {
             try await engine.prompt(targetBackingID, text: promptText, files: files)
         } catch {
+            if let preparedSwitch {
+                await rollbackCrossEngineSwitch(preparedSwitch, for: session)
+            }
             session.items.append(.error(id: "error-\(UUID().uuidString)", message: "Could not send: \(error.localizedDescription)"))
             session.setActivity(.failed)
             session.touch()
@@ -645,81 +655,154 @@ public final class SessionStore {
         }
     }
 
+    private struct PreparedCrossEngineSwitch {
+        let backingSessionID: String
+        let promptText: String
+        let createdNewBackingSession: Bool
+        let previousThreadRecord: SessionThreadRecord?
+        let previousModel: ModelRef?
+        let previousModelEditTime: Date
+        let stagedModel: ModelRef
+        let switchNoticeID: String
+        let previousPlanSupport: PlanModeSupport?
+    }
+
+    /// Reverts a cross-engine switch whose first prompt failed so retrying preserves the full handoff context.
+    private func rollbackCrossEngineSwitch(_ prepared: PreparedCrossEngineSwitch, for session: SessionModel) async {
+        let primaryID = session.id
+        threadLinks.restoreRecord(prepared.previousThreadRecord, for: primaryID)
+        if prepared.createdNewBackingSession {
+            byID.removeValue(forKey: prepared.backingSessionID)
+            sessions.removeAll { $0.id == prepared.backingSessionID }
+            try? await engine.deleteSession(prepared.backingSessionID)
+        }
+        dropLocalEdit(primaryID, .model, at: prepared.previousModelEditTime)
+        session.info.model = prepared.previousModel
+        pendingNextModel[primaryID] = prepared.stagedModel
+        if let previousPlanSupport = prepared.previousPlanSupport {
+            planSupport[primaryID] = previousPlanSupport
+        } else {
+            planSupport.removeValue(forKey: primaryID)
+        }
+        session.items.removeAll { $0.id == prepared.switchNoticeID }
+        syncRouterThreadLinks()
+    }
+
     /// Creates or reuses a backing session on the engine for `targetModel`, builds a compact handoff,
-    /// inserts the inline switch divider, updates thread links, and returns the target backing ID and prompt text.
+    /// inserts the inline switch divider, updates thread links, and returns the prepared switch state.
     private func prepareCrossEngineBackingSession(
         for session: SessionModel,
         currentBackingID: String,
         targetModel: ModelRef,
         userText: String
-    ) async throws -> (backingSessionID: String, promptText: String) {
+    ) async throws -> PreparedCrossEngineSwitch {
         let primaryID = session.id
+        if let router = engine as? EngineRouter {
+            try router.validateTrust(directory: session.directory, model: targetModel)
+        }
+
+        let previousRecord = threadLinks.record(for: primaryID)
+        let previousModel = session.info.model
+        let previousPlanSupport = planSupport[primaryID]
         let itemsBeforeSwitch = session.items
         let currentEngineID = await engineRegistrationID(forSession: currentBackingID, fallbackModel: session.info.model)
 
-        threadLinks.ensurePrimaryLink(
-            primaryID: primaryID,
-            engineID: currentEngineID,
-            model: session.info.model,
-            permissionMode: session.permissionMode,
-            handedOffCount: itemsBeforeSwitch.count
-        )
-        threadLinks.updateHandedOffCount(itemsBeforeSwitch.count, forBackingID: currentBackingID, primaryID: primaryID)
-
-        let targetID: String
-        let handoffPrefix: String
-
-        if let reusable = await findReusableBackingLink(for: primaryID, excluding: currentBackingID, targetModel: targetModel) {
-            targetID = reusable.backingSessionID
-            if reusable.model != targetModel {
-                try await engine.switchModel(targetID, model: targetModel)
-            }
-            if reusable.permissionMode != session.permissionMode {
-                try? await engine.setPermissionMode(targetID, mode: session.permissionMode)
-            }
-            let startIndex = min(max(0, reusable.lastHandedOffItemCount), itemsBeforeSwitch.count)
-            let deltaItems = Array(itemsBeforeSwitch[startIndex...])
-            handoffPrefix = CrossEngineHandoff.build(items: deltaItems, maxChars: CrossEngineHandoff.defaultMaxChars, isDelta: true)
-
-            var updated = reusable
-            updated.model = targetModel
-            updated.permissionMode = session.permissionMode
-            updated.lastHandedOffItemCount = itemsBeforeSwitch.count
-            threadLinks.upsertLink(updated, forPrimary: primaryID, makeActive: true)
-        } else {
-            handoffPrefix = CrossEngineHandoff.build(items: itemsBeforeSwitch, maxChars: CrossEngineHandoff.defaultMaxChars, isDelta: false)
-            let created = try await engine.createSession(
-                directory: session.directory,
-                model: targetModel,
-                agent: nil,
+        var createdBackingID: String?
+        do {
+            threadLinks.ensurePrimaryLink(
+                primaryID: primaryID,
+                engineID: currentEngineID,
+                model: session.info.model,
                 permissionMode: session.permissionMode,
-                parentID: nil
+                handedOffCount: itemsBeforeSwitch.count
             )
-            // Keep the backing session hidden from top-level lists even if `.sessionCreated` raced ahead.
-            sessions.removeAll { $0.id == created.id }
-            byID[created.id] = session
-            targetID = created.id
+            threadLinks.updateHandedOffCount(itemsBeforeSwitch.count, forBackingID: currentBackingID, primaryID: primaryID)
 
-            let targetEngineID = await engineRegistrationID(forSession: targetID, fallbackModel: targetModel)
-            let link = ThreadBackingLink(
-                engineID: targetEngineID,
+            let targetID: String
+            let handoffPrefix: String
+            let createdNewBackingSession: Bool
+
+            if let reusable = await findReusableBackingLink(
+                for: primaryID,
+                excluding: currentBackingID,
+                targetModel: targetModel,
+                directory: session.directory
+            ) {
+                targetID = reusable.backingSessionID
+                createdNewBackingSession = false
+                if reusable.model != targetModel {
+                    try await engine.switchModel(targetID, model: targetModel)
+                }
+                if reusable.permissionMode != session.permissionMode {
+                    try await engine.setPermissionMode(targetID, mode: session.permissionMode)
+                }
+                let startIndex = min(max(0, reusable.lastHandedOffItemCount), itemsBeforeSwitch.count)
+                let deltaItems = Array(itemsBeforeSwitch[startIndex...])
+                handoffPrefix = CrossEngineHandoff.build(items: deltaItems, maxChars: CrossEngineHandoff.defaultMaxChars, isDelta: true)
+
+                var updated = reusable
+                updated.model = targetModel
+                updated.permissionMode = session.permissionMode
+                updated.lastHandedOffItemCount = itemsBeforeSwitch.count
+                threadLinks.upsertLink(updated, forPrimary: primaryID, makeActive: true)
+            } else {
+                handoffPrefix = CrossEngineHandoff.build(items: itemsBeforeSwitch, maxChars: CrossEngineHandoff.defaultMaxChars, isDelta: false)
+                let created = try await engine.createSession(
+                    directory: session.directory,
+                    model: targetModel,
+                    agent: nil,
+                    permissionMode: session.permissionMode,
+                    parentID: nil
+                )
+                createdBackingID = created.id
+                createdNewBackingSession = true
+                // Keep the backing session hidden from top-level lists even if `.sessionCreated` raced ahead.
+                sessions.removeAll { $0.id == created.id }
+                byID[created.id] = session
+                targetID = created.id
+
+                let targetEngineID = await engineRegistrationID(forSession: targetID, fallbackModel: targetModel)
+                let link = ThreadBackingLink(
+                    engineID: targetEngineID,
+                    backingSessionID: targetID,
+                    model: targetModel,
+                    permissionMode: session.permissionMode,
+                    lastHandedOffItemCount: itemsBeforeSwitch.count
+                )
+                threadLinks.upsertLink(link, forPrimary: primaryID, makeActive: true)
+            }
+
+            syncRouterThreadLinks()
+            planSupport.removeValue(forKey: primaryID)
+            let switchNoticeID = "notice-\(UUID().uuidString)"
+            session.items.append(.notice(id: switchNoticeID, text: "Switched to \(modelName(targetModel)) for this message"))
+            session.info.model = targetModel
+            let modelEditTime = noteLocalEdit(primaryID, .model)
+            pendingNextModel[primaryID] = nil
+
+            let body = userText.isEmpty ? "(See attached files)" : userText
+            let promptText = handoffPrefix.isEmpty ? userText : handoffPrefix + CrossEngineHandoff.promptSeparator + body
+            return PreparedCrossEngineSwitch(
                 backingSessionID: targetID,
-                model: targetModel,
-                permissionMode: session.permissionMode,
-                lastHandedOffItemCount: itemsBeforeSwitch.count
+                promptText: promptText,
+                createdNewBackingSession: createdNewBackingSession,
+                previousThreadRecord: previousRecord,
+                previousModel: previousModel,
+                previousModelEditTime: modelEditTime,
+                stagedModel: targetModel,
+                switchNoticeID: switchNoticeID,
+                previousPlanSupport: previousPlanSupport
             )
-            threadLinks.upsertLink(link, forPrimary: primaryID, makeActive: true)
+        } catch {
+            threadLinks.restoreRecord(previousRecord, for: primaryID)
+            if let createdBackingID {
+                byID.removeValue(forKey: createdBackingID)
+                sessions.removeAll { $0.id == createdBackingID }
+                try? await engine.deleteSession(createdBackingID)
+            }
+            syncRouterThreadLinks()
+            throw error
         }
-
-        syncRouterThreadLinks()
-        session.items.append(.notice(id: "notice-\(UUID().uuidString)", text: "Switched to \(modelName(targetModel)) for this message"))
-        session.info.model = targetModel
-        _ = noteLocalEdit(primaryID, .model)
-        pendingNextModel[primaryID] = nil
-
-        let body = userText.isEmpty ? "(See attached files)" : userText
-        let promptText = handoffPrefix.isEmpty ? userText : handoffPrefix + CrossEngineHandoff.promptSeparator + body
-        return (targetID, promptText)
     }
 
     private func engineRegistrationID(forSession sessionID: String, fallbackModel: ModelRef?) async -> String {
@@ -737,12 +820,13 @@ public final class SessionStore {
     private func findReusableBackingLink(
         for primaryID: String,
         excluding currentBackingID: String,
-        targetModel: ModelRef
+        targetModel: ModelRef,
+        directory: String
     ) async -> ThreadBackingLink? {
         let links = threadLinks.links(for: primaryID)
         for link in links where link.backingSessionID != currentBackingID {
             if let router = engine as? EngineRouter {
-                if await router.session(link.backingSessionID, runsModel: targetModel) {
+                if await router.canReuseSession(link.backingSessionID, in: directory, model: targetModel) {
                     return link
                 }
             } else if let check = engine as? any EngineModelChangeCheck {
@@ -757,8 +841,14 @@ public final class SessionStore {
     /// Interrupts the selected session.
     public func stop() async {
         guard let session = selected else { return }
-        holdQueue(session.id)
-        let targetID = backingSessionID(for: session.id)
+        await stop(session.id)
+    }
+
+    /// Interrupts `sessionID` (or its active cross-engine backing session) and holds its queued messages.
+    public func stop(_ sessionID: String) async {
+        let primaryID = primarySessionID(for: sessionID)
+        holdQueue(primaryID)
+        let targetID = backingSessionID(for: primaryID)
         do { try await engine.interrupt(targetID) } catch { lastError = "Could not stop: \(error.localizedDescription)" }
     }
 
@@ -782,7 +872,8 @@ public final class SessionStore {
             permissionBackingSessions.removeValue(forKey: request.id)
         } catch {
             session.resolutions[request.id] = nil
-            if !session.pendingPermissions.contains(where: { $0.id == request.id }) {
+            if !hiddenSessionIDs.contains(request.sessionID),
+               !session.pendingPermissions.contains(where: { $0.id == request.id }) {
                 session.pendingPermissions.append(request)
             }
             lastError = "Could not answer the prompt: \(error.localizedDescription)"
@@ -893,12 +984,34 @@ public final class SessionStore {
 
     // MARK: - Internals
 
+    private func foldUsage(_ usage: Usage, from sourceID: String, into primary: SessionModel) {
+        let primaryID = primary.id
+        if sourceID == primaryID && !threadLinks.hasLinks(for: primaryID) {
+            backingUsage[primaryID] = [primaryID: usage]
+            primary.usage = usage
+            primary.info.usage = usage
+            return
+        }
+        var bySource = backingUsage[primaryID] ?? [:]
+        if sourceID != primaryID, bySource[primaryID] == nil, primary.usage != .zero {
+            bySource[primaryID] = primary.usage
+        }
+        bySource[sourceID] = usage
+        backingUsage[primaryID] = bySource
+        let total = bySource.values.reduce(.zero, +)
+        primary.usage = total
+        primary.info.usage = total
+    }
+
     @discardableResult
     func upsertSession(_ info: EngineSession) -> SessionModel {
         if let primaryID = threadLinks.primarySessionID(for: info.id) {
             if let primary = byID[primaryID] {
                 byID[info.id] = primary
                 primary.info.updated = max(primary.info.updated, info.updated)
+                if info.usage != .zero {
+                    foldUsage(info.usage, from: info.id, into: primary)
+                }
                 return primary
             }
             // Primary session has not arrived yet; keep the backing session out of `sessions`.
@@ -916,14 +1029,7 @@ public final class SessionStore {
         if let existing = byID[incoming.id] {
             existing.info = merge(incoming, over: existing.info)
             if incoming.usage != .zero {
-                if threadLinks.hasLinks(for: incoming.id) {
-                    var bySource = backingUsage[incoming.id] ?? [:]
-                    bySource[incoming.id] = incoming.usage
-                    backingUsage[incoming.id] = bySource
-                    existing.usage = bySource.values.reduce(.zero, +)
-                } else {
-                    existing.usage = incoming.usage
-                }
+                foldUsage(incoming.usage, from: incoming.id, into: existing)
             }
             for backingID in threadLinks.allBackingIDs(for: incoming.id) where backingID != incoming.id {
                 byID[backingID] = existing
@@ -932,6 +1038,9 @@ public final class SessionStore {
         }
         let model = SessionModel(info: incoming, permissionMode: defaultPermissionMode)
         insert(model)
+        if incoming.usage != .zero {
+            foldUsage(incoming.usage, from: incoming.id, into: model)
+        }
         for backingID in threadLinks.allBackingIDs(for: incoming.id) where backingID != incoming.id {
             byID[backingID] = model
         }
@@ -982,9 +1091,18 @@ public final class SessionStore {
     private func removeSession(_ sessionID: String, remember: Bool = true) {
         if remember { deletedSessionIDs.insert(sessionID) }
         localEdits[sessionID] = nil
-        if threadLinks.isLinkedBackingSession(sessionID) {
+        if let primaryID = threadLinks.primarySessionID(for: sessionID) {
+            let wasActive = threadLinks.activeBackingID(for: primaryID) == sessionID
+            let primaryLinkModel = threadLinks.link(forBackingID: primaryID, primaryID: primaryID)?.model
             byID.removeValue(forKey: sessionID)
             threadLinks.unlinkBackingSession(sessionID)
+            if wasActive, let primary = byID[primaryID] {
+                if let fallbackModel = threadLinks.activeModel(for: primaryID) ?? primaryLinkModel {
+                    primary.info.model = fallbackModel
+                    localEdits[primaryID]?[.model] = nil
+                }
+                planSupport.removeValue(forKey: primaryID)
+            }
             syncRouterThreadLinks()
             return
         }

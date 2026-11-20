@@ -1,4 +1,4 @@
-import { env, evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { env, evictDurableObject, runDurableObjectAlarm, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { addressKey } from "../src/address";
 import { BLOCK_MS, DAILY_BYTES, DAILY_MESSAGES, IDLE_DELETE_MS, MAX_TRACKED_ADDRESSES } from "../src/limits";
@@ -78,7 +78,8 @@ describe("timeouts close with 4008", () => {
 
   it.concurrent("a data socket that never sends its token", { timeout: 30_000 }, async () => {
     const mac = await setup();
-    const data = await connect(mac.id, `data/${b64url(crypto.getRandomValues(new Uint8Array(16)))}`);
+    const { conn } = await phoneWaiting(mac);
+    const data = await connect(mac.id, `data/${conn}`);
     expect(await data.closeCode(25_000)).toBe(4008);
   });
 
@@ -605,5 +606,95 @@ describe("claims by IPv6 prefix", () => {
     }
     const eleventh = await claim(randomID(), await newKey());
     expect(await eleventh.closeCode()).toBe(4029);
+  });
+});
+
+describe("hardening limits", () => {
+  it("rejects browser requests carrying an Origin header with 403", async () => {
+    const id = randomID();
+    for (const path of [`/v1/mailbox/${id}/host`, `/v1/mailbox/${id}/phone`, "/v1/nope"]) {
+      const res = await SELF.fetch(`https://relay.test${path}`, {
+        headers: { Upgrade: "websocket", Origin: "https://evil.example" },
+      });
+      expect(res.status).toBe(403);
+    }
+  });
+
+  it("rate-limits unproven host and data sockets per IP and across the Durable Object", async () => {
+    const mac = await setup();
+    const hostIP = "198.51.100.80";
+    const heldHosts: Client[] = [];
+    for (let i = 0; i < 3; i++) {
+      const c = await connect(mac.id, "host", hostIP);
+      expect((await c.next()).t).toBe("challenge");
+      heldHosts.push(c);
+    }
+    const fourthHost = await connect(mac.id, "host", hostIP);
+    expect(await fourthHost.closeCode()).toBe(4029);
+    await Promise.all(heldHosts.map((c) => { c.ws.close(1000); return c.closeCode(); }));
+
+    const { conn } = await phoneWaiting(mac);
+    const dataIP = "198.51.100.81";
+    const heldData: Client[] = [];
+    for (let i = 0; i < 3; i++) {
+      const d = await connect(mac.id, `data/${conn}`, dataIP);
+      heldData.push(d);
+    }
+    const fourthData = await connect(mac.id, `data/${conn}`, dataIP);
+    expect(await fourthData.closeCode()).toBe(4029);
+    await Promise.all(heldData.map((d) => { d.ws.close(1000); return d.closeCode(); }));
+
+    // Total unproven cap across distinct IPs in one Durable Object (24).
+    const capMac = await setup();
+    const totalHeld: Client[] = [];
+    for (let i = 0; i < 24; i++) {
+      const c = await connect(capMac.id, "phone", `203.0.113.${i + 1}`);
+      expect((await c.next()).t).toBe("challenge");
+      totalHeld.push(c);
+    }
+    const overTotal = await connect(capMac.id, "phone", "203.0.113.200");
+    expect(await overTotal.closeCode()).toBe(4029);
+    await Promise.all(totalHeld.map((c) => { c.ws.close(1000); return c.closeCode(); }));
+  });
+
+  it("rejects orphan data sockets immediately with 4004 without arming an alarm", async () => {
+    const mac = await setup();
+    const unknownConn = b64url(crypto.getRandomValues(new Uint8Array(16)));
+    const orphan = await connect(mac.id, `data/${unknownConn}`, "198.51.100.82");
+    expect(await orphan.closeCode()).toBe(4004);
+
+    // A conn whose phone already paired is also rejected immediately with 4004.
+    const { conn, phone, data } = await paired(mac);
+    const duplicate = await connect(mac.id, `data/${conn}`, "198.51.100.83");
+    expect(await duplicate.closeCode()).toBe(4004);
+    phone.ws.close(1000);
+    await data.closeCode();
+  });
+
+  it("blocks an IP after five wrong phone access proofs", async () => {
+    const mac = await setup();
+    const attackerIP = "198.51.100.90";
+    const wrongAccessKey = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    for (let i = 0; i < 5; i++) {
+      const p = await connect(mac.id, "phone", attackerIP);
+      const ch = await p.next();
+      expect(ch.t).toBe("challenge");
+      p.send({ t: "access", proof: await proof(wrongAccessKey, mac.id, ch.nonce) });
+      expect(await p.closeCode()).toBe(4001);
+    }
+    expect(await mac.host.quiet()).toBe(true);
+
+    // Blocked IP is turned away immediately with no challenge on both phone and host sockets.
+    const blockedPhone = await connect(mac.id, "phone", attackerIP);
+    expect(await blockedPhone.closeCode()).toBe(4001);
+    expect(blockedPhone.messages).toEqual([]);
+
+    const blockedHost = await connect(mac.id, "host", attackerIP);
+    expect(await blockedHost.closeCode()).toBe(4001);
+    expect(blockedHost.messages).toEqual([]);
+
+    // Another IP is unaffected.
+    const good = await phoneFrom(mac, "198.51.100.91");
+    expect(await good.next()).toEqual({ t: "waiting" });
   });
 });

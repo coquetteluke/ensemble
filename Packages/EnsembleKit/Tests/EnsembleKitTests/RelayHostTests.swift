@@ -324,7 +324,8 @@ import Testing
     // MARK: Addresses and retries
 
     @Test func plainWebSocketsOnlyForLoopback() async throws {
-        for (text, allowed) in [("wss://relay.coquettemc.com", true), ("wss://relay.example:8443/base", true),
+        for (text, allowed) in [("wss://relay.coquettemc.com", true), ("wss://relay.example:8443", true),
+                                ("wss://relay.example:8443/base", false), ("wss://relay.example/?q=1", false),
                                 ("ws://127.0.0.1:8787", true), ("ws://localhost:8787", true),
                                 ("ws://relay.coquettemc.com", false), ("ws://192.168.1.2:8787", false),
                                 ("https://relay.coquettemc.com", false), ("wss://", false)] {

@@ -233,6 +233,12 @@ public struct AgentToolsEnvironment {
     public var gitDiff: (String) async -> String?
     /// Providers whose browser sign-in requires a trusted folder.
     public var providersNeedingTrust: () -> Set<String>
+    /// Permission mode of a target session or room id, for privilege-escalation checks.
+    public var targetPermissionMode: (String) -> PermissionMode?
+    /// Full directory path of a target session or room id, for trust and cross-folder checks.
+    public var targetDirectory: (String) -> String?
+    /// Active member session ids belonging to a room id, for hop-limit propagation.
+    public var roomMemberSessionIDs: (String) -> [String]
 
     public init(session: @escaping (String) -> Session?, browser: @escaping (String) -> (any AgentBrowserSurface)?,
                 isTrusted: @escaping (String) -> Bool, knownFolders: @escaping () -> [String],
@@ -251,7 +257,10 @@ public struct AgentToolsEnvironment {
                     .failed("Cross-model ask is not configured.")
                 },
                 gitDiff: @escaping (String) async -> String? = { _ in nil },
-                providersNeedingTrust: @escaping () -> Set<String> = { [] }) {
+                providersNeedingTrust: @escaping () -> Set<String> = { [] },
+                targetPermissionMode: @escaping (String) -> PermissionMode? = { _ in nil },
+                targetDirectory: @escaping (String) -> String? = { _ in nil },
+                roomMemberSessionIDs: @escaping (String) -> [String] = { _ in [] }) {
         self.session = session
         self.browser = browser
         self.isTrusted = isTrusted
@@ -270,6 +279,9 @@ public struct AgentToolsEnvironment {
         self.askAgent = askAgent
         self.gitDiff = gitDiff
         self.providersNeedingTrust = providersNeedingTrust
+        self.targetPermissionMode = targetPermissionMode
+        self.targetDirectory = targetDirectory
+        self.roomMemberSessionIDs = roomMemberSessionIDs
     }
 }
 
@@ -410,6 +422,9 @@ public final class AgentToolsCoordinator: AgentToolsHost {
 
     public func noteUserTurn(in sessionID: String) {
         exchangeLimiter.reset(session: sessionID)
+        for memberID in environment.roomMemberSessionIDs(sessionID) {
+            exchangeLimiter.reset(session: memberID)
+        }
     }
 
     public func registerHelperLease(sessionID: String, lease: AgentExchangeLimiter.HopLease, turn: String = "0") {
@@ -417,12 +432,20 @@ public final class AgentToolsCoordinator: AgentToolsHost {
     }
 
     func listAgents(session: AgentToolsEnvironment.Session, own: AgentToolsEnvironment.Session) -> AgentToolResult {
+        guard environment.isTrusted(session.directory) else {
+            return .refused("list_agents is disabled in untrusted folders. Trust this folder first.")
+        }
         let ownRoom = environment.ownRoomID(session.id)
         let excluded: Set<String> = [session.id, own.id]
         let entries = environment.listAgents(session.id, ownRoom).filter { entry in
             if excluded.contains(entry.id) { return false }
             if let ownRoom, entry.kind == .room,
                entry.id.caseInsensitiveCompare(ownRoom.uuidString) == .orderedSame {
+                return false
+            }
+            if let targetDir = environment.targetDirectory(entry.id) ?? environment.session(entry.id)?.directory {
+                if !targetDir.isEmpty && !environment.isTrusted(targetDir) { return false }
+            } else if !entry.folder.isEmpty && !environment.isTrusted(entry.folder) {
                 return false
             }
             return true
@@ -435,6 +458,9 @@ public final class AgentToolsCoordinator: AgentToolsHost {
         session: AgentToolsEnvironment.Session,
         own: AgentToolsEnvironment.Session
     ) async -> AgentToolResult {
+        guard environment.isTrusted(session.directory) else {
+            return .refused("message_agent is disabled in untrusted folders. Trust this folder first.")
+        }
         let requestedTarget = input.targetSessionID
         let ownRoom = environment.ownRoomID(session.id)
         if requestedTarget == session.id || requestedTarget == own.id {
@@ -463,19 +489,53 @@ public final class AgentToolsCoordinator: AgentToolsHost {
 
         let canonicalTargetID = directSession?.rootID ?? matchedRoom?.id ?? requestedTarget
         let targetSessionForLimiter = directSession.map { environment.session($0.rootID) ?? $0 }
+
+        let targetFolder = environment.targetDirectory(canonicalTargetID)
+            ?? targetSessionForLimiter?.directory
+            ?? directSession?.directory
+            ?? ""
+        guard !targetFolder.isEmpty else {
+            return .refused("Blocked: could not verify the target folder. Use propose_session or ask the user.")
+        }
+        guard environment.isTrusted(targetFolder) else {
+            return .refused("Blocked: target session or room is in an untrusted folder.")
+        }
+        let callerResolved = WorkspaceTrust.resolvedPath(session.directory)
+        let targetResolved = WorkspaceTrust.resolvedPath(targetFolder)
+        guard let callerResolved, let targetResolved, callerResolved == targetResolved else {
+            let callerName = AgentDirectoryEntry.folderBasename(session.directory)
+            return .refused("Blocked: an agent in \(callerName) cannot message a session in another folder directly. Use propose_session or ask the user.")
+        }
+
+        let callerMode = own.permissionMode.autonomyRank <= session.permissionMode.autonomyRank
+            ? own.permissionMode
+            : session.permissionMode
+        let targetMode = environment.targetPermissionMode(canonicalTargetID)
+            ?? targetSessionForLimiter?.permissionMode
+            ?? directSession?.permissionMode
+        guard let targetMode else {
+            return .refused("Blocked: could not verify the target's permission mode. Use propose_session or ask the user.")
+        }
+        if targetMode.autonomyRank > callerMode.autonomyRank {
+            return .refused("Blocked: an agent in \(callerMode.shortLabel) mode cannot message a target in looser \(targetMode.shortLabel) mode directly. Use propose_session or ask the user.")
+        }
+
+        let sourceAliases = ownRoom.map { [$0.uuidString] } ?? []
+        let targetAliases = matchedRoom != nil ? environment.roomMemberSessionIDs(canonicalTargetID) : []
         let lease: AgentExchangeLimiter.HopLease
         switch exchangeLimiter.beginHop(
             from: session.id,
             sourceTurn: session.turn,
             to: canonicalTargetID,
-            targetTurn: targetSessionForLimiter?.turn
+            targetTurn: targetSessionForLimiter?.turn,
+            sourceAliases: sourceAliases,
+            targetAliases: targetAliases
         ) {
         case .success(let granted):
             lease = granted
         case .failure(let refusal):
             return .refused(refusal.message)
         }
-        _ = lease
 
         let fromTitle = session.title.isEmpty ? "Session" : session.title
         let fromModel = session.modelName.isEmpty ? (session.model?.description ?? "Agent") : session.modelName
@@ -504,10 +564,17 @@ public final class AgentToolsCoordinator: AgentToolsHost {
         )
         exchanges.append(exchange)
 
-        let formatted = "[From \(fromModel) (\(fromTitle))] \(input.message)"
+        let senderLabel = AgentToolText.clean("\(fromModel) (\(fromTitle))", limit: 160)
+        let formatted = AgentToolText.untrusted(input.message, source: "Message from \(senderLabel)")
         let outcome = await environment.deliverAgentMessage(canonicalTargetID, formatted)
         switch outcome {
         case .delivered(let targetSessionID, let deliveredTitle, let deliveredModel, _, let queued):
+            if matchedRoom != nil {
+                let postMembers = environment.roomMemberSessionIDs(canonicalTargetID)
+                if !postMembers.isEmpty {
+                    exchangeLimiter.propagate(lease: lease, to: postMembers)
+                }
+            }
             let resolvedTarget = targetSessionID ?? canonicalTargetID
             updateExchange(exchange.id) { item in
                 item.toSessionID = resolvedTarget
@@ -563,8 +630,9 @@ public final class AgentToolsCoordinator: AgentToolsHost {
             return .refused(trustRefusal)
         }
 
+        let sourceAliases = environment.ownRoomID(session.id).map { [$0.uuidString] } ?? []
         let lease: AgentExchangeLimiter.HopLease
-        switch exchangeLimiter.beginHop(from: session.id, sourceTurn: session.turn) {
+        switch exchangeLimiter.beginHop(from: session.id, sourceTurn: session.turn, sourceAliases: sourceAliases) {
         case .success(let granted):
             lease = granted
         case .failure(let refusal):
@@ -897,7 +965,7 @@ public enum OneShotPromptRunner {
                 directory: directory,
                 model: model,
                 agent: nil,
-                permissionMode: .ask,
+                permissionMode: .plan,
                 parentID: nil
             )
         } catch {
@@ -1016,6 +1084,18 @@ public enum GitDiffSummaryLoader {
         guard text.count > limit else { return text }
         guard limit > 24 else { return String(text.prefix(limit)) }
         return String(text.prefix(limit - 18)) + "\n...(truncated)"
+    }
+}
+
+public extension SessionStore {
+    /// Marks a temporary helper session as hidden so it never flashes in the sidebar, Hub, or iPhone remote.
+    func registerHiddenHelperSession(_ sessionID: String) {
+        hiddenSessionIDs.insert(sessionID)
+    }
+
+    /// Removes a finished temporary helper session from the hidden set.
+    func unregisterHiddenHelperSession(_ sessionID: String) {
+        hiddenSessionIDs.remove(sessionID)
     }
 }
 #endif

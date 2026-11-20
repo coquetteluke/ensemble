@@ -6,6 +6,7 @@ export { Mailbox } from "./mailbox";
 /** Routes a request to the Durable Object for its mailbox. Anything else is a 404, a non-upgrade is a 426. */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (request.headers.has("Origin")) return new Response("forbidden", { status: 403 });
     const route = parseRoute(new URL(request.url).pathname);
     if (!route || request.method !== "GET") return new Response("not found", { status: 404 });
     if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {

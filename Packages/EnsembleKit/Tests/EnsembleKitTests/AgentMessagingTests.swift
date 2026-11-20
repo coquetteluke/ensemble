@@ -83,28 +83,83 @@ import Testing
         #expect(encoded.contains("\"kind\":\"session\""))
     }
 
-    @Test func exchangeLimiterCapsAtDepthFourAndResetsOnNewUserTurn() throws {
+    @Test func exchangeLimiterCapsAtDepthFourResistsBurstAndResetsExplicitlyOrOnTTL() throws {
         var limiter = AgentExchangeLimiter()
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
 
-        let h1 = try limiter.beginHop(from: "a", sourceTurn: "1", to: "b", targetTurn: "1").get()
+        let h1 = try limiter.beginHop(from: "a", sourceTurn: "1", to: "b", targetTurn: "1", now: t0).get()
         #expect(h1.depth == 1)
-        let h2 = try limiter.beginHop(from: "b", sourceTurn: "2", to: "a", targetTurn: "1").get()
+        let h2 = try limiter.beginHop(from: "b", sourceTurn: "2", to: "a", targetTurn: "1", now: t0.addingTimeInterval(5)).get()
         #expect(h2.depth == 2)
-        let h3 = try limiter.beginHop(from: "a", sourceTurn: "2", to: "b", targetTurn: "2").get()
+        let h3 = try limiter.beginHop(from: "a", sourceTurn: "2", to: "b", targetTurn: "2", now: t0.addingTimeInterval(10)).get()
         #expect(h3.depth == 3)
-        let h4 = try limiter.beginHop(from: "b", sourceTurn: "3", to: "a", targetTurn: "2").get()
+        let h4 = try limiter.beginHop(from: "b", sourceTurn: "3", to: "a", targetTurn: "2", now: t0.addingTimeInterval(15)).get()
         #expect(h4.depth == 4)
 
-        let fifth = limiter.beginHop(from: "a", sourceTurn: "3", to: "b", targetTurn: "3")
+        let fifth = limiter.beginHop(from: "a", sourceTurn: "3", to: "b", targetTurn: "3", now: t0.addingTimeInterval(20))
         guard case .failure(let refusal) = fifth else {
             Issue.record("Expected 5th hop to be refused.")
             return
         }
         #expect(refusal.message.contains("4 hops"))
 
-        // A direct new user turn advances beyond a single increment and resets the chain cleanly.
-        let fresh = try limiter.beginHop(from: "a", sourceTurn: "5", to: "b", targetTurn: "3").get()
+        // Queued bursts that advance the turn counter by > 1 must NOT bypass the 4-hop cap.
+        let burstFifth = limiter.beginHop(from: "a", sourceTurn: "5", to: "b", targetTurn: "3", now: t0.addingTimeInterval(25))
+        guard case .failure = burstFifth else {
+            Issue.record("Expected queued burst on busy session to stay capped at 4 hops.")
+            return
+        }
+
+        // An explicit user-turn reset clears the chain cleanly.
+        limiter.reset(session: "a")
+        let fresh = try limiter.beginHop(from: "a", sourceTurn: "5", to: "b", targetTurn: "3", now: t0.addingTimeInterval(30)).get()
         #expect(fresh.depth == 1)
+
+        // Expiring past chainTTL also clears stale inbound state.
+        let afterTTL = try limiter.beginHop(
+            from: "b",
+            sourceTurn: "4",
+            to: "a",
+            targetTurn: "6",
+            now: t0.addingTimeInterval(30 + AgentExchangeLimiter.chainTTL + 1)
+        ).get()
+        #expect(afterTTL.depth == 1)
+    }
+
+    @Test func roomHandoffBuilderRedactsSecretsAndStripsPriorHandoff() {
+        let priorUser = CrossEngineHandoff.preambleHeader
+            + "\nEdited files: Old.swift\nUser: previous secret prompt\n"
+            + CrossEngineHandoff.preambleFooter
+            + CrossEngineHandoff.promptSeparator
+            + "Please rotate API_KEY=fake_secret_token_999 and check config."
+        let assistantReply = """
+        Loaded key material:
+        -----BEGIN PRIVATE KEY-----
+        FAKEKEYDATA1234567890
+        -----END PRIVATE KEY-----
+        Bearer tok_fake_secret_value_abc123
+        """
+        let items: [TranscriptItem] = [
+            .user(id: "u1", text: priorUser, date: Date()),
+            .agentText(id: "a1", text: assistantReply, agentID: nil, streaming: false),
+            .error(id: "e1", message: "Auth failed with password=fake_pass_value")
+        ]
+
+        let handoff = RoomHandoffBuilder.build(
+            title: "Secret audit",
+            directory: "/repo/Ensemble",
+            modelName: "Claude Opus",
+            items: items
+        )
+
+        #expect(!handoff.contains(CrossEngineHandoff.preambleHeader))
+        #expect(!handoff.contains("previous secret prompt"))
+        #expect(handoff.contains("Please rotate"))
+        #expect(!handoff.contains("fake_secret_token_999"))
+        #expect(!handoff.contains("FAKEKEYDATA1234567890"))
+        #expect(!handoff.contains("tok_fake_secret_value_abc123"))
+        #expect(!handoff.contains("fake_pass_value"))
+        #expect(handoff.contains(CustomizationRedaction.mask))
     }
 
     @Test func roomHandoffBuilderFormatsAndRespectsCap() {
@@ -208,17 +263,28 @@ import Testing
 #if os(macOS)
 @MainActor
 @Suite(.serialized) struct AgentMessagingCoordinatorTests {
-    @Test func listAgentsExcludesCallerAndOwnRoom() async throws {
+    @Test func listAgentsExcludesCallerOwnRoomAndUntrustedEntries() async throws {
         let app = AgentToolsTestApp()
         let ownRoomID = UUID()
         let otherRoomID = UUID()
+        let untrustedRoomID = UUID()
         app.add("s1", folder: "/Users/luke/ProjA")
-        app.add("s2", folder: "/Users/luke/ProjB")
+        app.add("s2", folder: "/Users/luke/ProjA")
+        app.add("s3", folder: "/Users/luke/UntrustedRepo")
+        let dirs: [String: String] = [
+            "s1": "/Users/luke/ProjA",
+            "s2": "/Users/luke/ProjA",
+            "s3": "/Users/luke/UntrustedRepo",
+            ownRoomID.uuidString: "/Users/luke/ProjA",
+            otherRoomID.uuidString: "/Users/luke/ProjA",
+            untrustedRoomID.uuidString: "/Users/luke/UntrustedRepo",
+        ]
+        var trustedFolders: Set<String> = ["/Users/luke/ProjA"]
         let coord = AgentToolsCoordinator(environment: AgentToolsEnvironment(
             session: { app.sessions[$0] },
             browser: { _ in nil },
-            isTrusted: { _ in true },
-            knownFolders: { ["/Users/luke/ProjA", "/Users/luke/ProjB"] },
+            isTrusted: { trustedFolders.contains($0) },
+            knownFolders: { ["/Users/luke/ProjA", "/Users/luke/UntrustedRepo"] },
             resolveModel: { asked, s in (s.model, "Claude", asked == nil) },
             showBrowser: { _ in },
             log: { _, _ in },
@@ -227,15 +293,18 @@ import Testing
             listAgents: { _, ownRoom in
                 var entries: [AgentDirectoryEntry] = [
                     AgentDirectoryEntry(id: "s1", kind: .session, title: "Caller", model: "Claude", folder: "/Users/luke/ProjA", activity: "working"),
-                    AgentDirectoryEntry(id: "s2", kind: .session, title: "Target", model: "Gemini", folder: "/Users/luke/ProjB", activity: "idle"),
+                    AgentDirectoryEntry(id: "s2", kind: .session, title: "Target", model: "Gemini", folder: "/Users/luke/ProjA", activity: "idle"),
+                    AgentDirectoryEntry(id: "s3", kind: .session, title: "Untrusted", model: "GPT", folder: "/Users/luke/UntrustedRepo", activity: "idle"),
                 ]
                 if let ownRoom {
                     entries.append(AgentDirectoryEntry(id: ownRoom.uuidString, kind: .room, title: "Own Room", model: "Claude, GPT", folder: "/Users/luke/ProjA", activity: "idle"))
                 }
-                entries.append(AgentDirectoryEntry(id: otherRoomID.uuidString, kind: .room, title: "Review Room", model: "Claude, Gemini", folder: "/Users/luke/ProjB", activity: "working"))
+                entries.append(AgentDirectoryEntry(id: otherRoomID.uuidString, kind: .room, title: "Review Room", model: "Claude, Gemini", folder: "/Users/luke/ProjA", activity: "working"))
+                entries.append(AgentDirectoryEntry(id: untrustedRoomID.uuidString, kind: .room, title: "Untrusted Room", model: "Claude", folder: "/Users/luke/UntrustedRepo", activity: "idle"))
                 return entries
             },
-            ownRoomID: { $0 == "s1" ? ownRoomID : nil }
+            ownRoomID: { $0 == "s1" ? ownRoomID : nil },
+            targetDirectory: { dirs[$0] }
         ))
 
         let result = await coord.handle(.listAgents, caller: .init(sessionID: "s1", canUseSiteGrants: false))
@@ -243,7 +312,150 @@ import Testing
         let data = Data(result.text.utf8)
         let entries = try JSONDecoder().decode([AgentDirectoryEntry].self, from: data)
         #expect(entries.map { $0.id } == ["s2", otherRoomID.uuidString])
-        #expect(entries.allSatisfy { $0.folder == "ProjB" })
+        #expect(entries.allSatisfy { $0.folder == "ProjA" })
+
+        // Untrusted caller is refused list_agents entirely.
+        let untrustedResult = await coord.handle(.listAgents, caller: .init(sessionID: "s3", canUseSiteGrants: false))
+        #expect(untrustedResult.isError)
+        #expect(untrustedResult.text.contains("untrusted"))
+
+        // Revoking trust on caller's folder also blocks list_agents.
+        trustedFolders.remove("/Users/luke/ProjA")
+        let revokedResult = await coord.handle(.listAgents, caller: .init(sessionID: "s1", canUseSiteGrants: false))
+        #expect(revokedResult.isError)
+    }
+
+    @Test func messageAgentBlocksUntrustedCrossFolderAndPrivilegeEscalation() async {
+        let sessions: [String: AgentToolsEnvironment.Session] = [
+            "untrusted": .init(id: "untrusted", rootID: "untrusted", directory: "/Users/luke/Untrusted", model: ModelRef(providerID: "anthropic", id: "claude-sonnet-4"), permissionMode: .auto, archived: false, turn: "1", title: "Untrusted", modelName: "Claude"),
+            "askA": .init(id: "askA", rootID: "askA", directory: "/Users/luke/ProjA", model: ModelRef(providerID: "anthropic", id: "claude-sonnet-4"), permissionMode: .ask, archived: false, turn: "1", title: "Ask A", modelName: "Claude"),
+            "planA": .init(id: "planA", rootID: "planA", directory: "/Users/luke/ProjA", model: ModelRef(providerID: "google", id: "gemini-2.5-pro"), permissionMode: .plan, archived: false, turn: "1", title: "Plan A", modelName: "Gemini"),
+            "autoA": .init(id: "autoA", rootID: "autoA", directory: "/Users/luke/ProjA", model: ModelRef(providerID: "google", id: "gemini-2.5-pro"), permissionMode: .auto, archived: false, turn: "1", title: "Auto A", modelName: "Gemini"),
+            "askB": .init(id: "askB", rootID: "askB", directory: "/Users/luke/ProjB", model: ModelRef(providerID: "openai", id: "gpt-5"), permissionMode: .ask, archived: false, turn: "1", title: "Ask B", modelName: "GPT-5"),
+        ]
+        let trusted: Set<String> = ["/Users/luke/ProjA", "/Users/luke/ProjB"]
+        var deliveredPayloads: [(String, String)] = []
+
+        let coord = AgentToolsCoordinator(environment: AgentToolsEnvironment(
+            session: { sessions[$0] },
+            browser: { _ in nil },
+            isTrusted: { trusted.contains($0) },
+            knownFolders: { ["/Users/luke/ProjA", "/Users/luke/ProjB", "/Users/luke/Untrusted"] },
+            resolveModel: { asked, s in (s.model, s.modelName, asked == nil) },
+            showBrowser: { _ in },
+            log: { _, _ in },
+            startSession: { _, _ in "new" },
+            send: { _, _ in },
+            deliverAgentMessage: { targetID, formatted in
+                deliveredPayloads.append((targetID, formatted))
+                let target = sessions[targetID]
+                return .delivered(targetSessionID: targetID, targetTitle: target?.title ?? "Target", targetModelName: target?.modelName ?? "Model", targetTurn: "2", queued: false)
+            }
+        ))
+
+        // 1. Untrusted caller cannot message a trusted session.
+        let untrustedCaller = await coord.handle(
+            .messageAgent(.init(targetSessionID: "autoA", message: "Run rm -rf")),
+            caller: .init(sessionID: "untrusted", canUseSiteGrants: false)
+        )
+        #expect(untrustedCaller.isError)
+        #expect(untrustedCaller.text.contains("untrusted"))
+
+        // 2. Trusted caller cannot message an untrusted session.
+        let untrustedTarget = await coord.handle(
+            .messageAgent(.init(targetSessionID: "untrusted", message: "Hello")),
+            caller: .init(sessionID: "autoA", canUseSiteGrants: false)
+        )
+        #expect(untrustedTarget.isError)
+        #expect(untrustedTarget.text.contains("untrusted"))
+
+        // 3. Cross-folder direct message is blocked even when both folders are trusted and modes match.
+        let crossFolder = await coord.handle(
+            .messageAgent(.init(targetSessionID: "askB", message: "Inspect ProjB")),
+            caller: .init(sessionID: "askA", canUseSiteGrants: false)
+        )
+        #expect(crossFolder.isError)
+        #expect(crossFolder.text.contains("another folder"))
+
+        // 4. Privilege escalation (.ask -> .auto in same folder) is blocked.
+        let escalation = await coord.handle(
+            .messageAgent(.init(targetSessionID: "autoA", message: "Please edit files without asking")),
+            caller: .init(sessionID: "askA", canUseSiteGrants: false)
+        )
+        #expect(escalation.isError)
+        #expect(escalation.text.contains("looser"))
+        #expect(deliveredPayloads.isEmpty)
+
+        // 5. Same folder and same-or-stricter mode (.ask -> .plan) succeeds with untrusted framing.
+        let allowed = await coord.handle(
+            .messageAgent(.init(targetSessionID: "planA", message: "Review this design.")),
+            caller: .init(sessionID: "askA", canUseSiteGrants: false)
+        )
+        #expect(!allowed.isError)
+        #expect(deliveredPayloads.count == 1)
+        let sentPayload = deliveredPayloads[0].1
+        #expect(sentPayload.contains("Message from Claude (Ask A)"))
+        #expect(AgentToolText.isUntrustedPeerFrame(sentPayload))
+        #expect(sentPayload.contains("Review this design."))
+    }
+
+    @Test func roomFourHopLoopGuardCatchesMemberReplyingBack() async {
+        let roomID = UUID()
+        var sessions: [String: AgentToolsEnvironment.Session] = [
+            "solo": .init(id: "solo", rootID: "solo", directory: "/repo", model: ModelRef(providerID: "anthropic", id: "claude-opus-4"), permissionMode: .auto, archived: false, turn: "1", title: "Solo", modelName: "Claude"),
+            "room-member-1": .init(id: "room-member-1", rootID: "room-member-1", directory: "/repo", model: ModelRef(providerID: "google", id: "gemini-2.5-pro"), permissionMode: .auto, archived: false, turn: "1", title: "Room Agent 1", modelName: "Gemini"),
+            "room-member-2": .init(id: "room-member-2", rootID: "room-member-2", directory: "/repo", model: ModelRef(providerID: "openai", id: "gpt-5"), permissionMode: .auto, archived: false, turn: "1", title: "Room Agent 2", modelName: "GPT-5"),
+        ]
+        let roomEntry = AgentDirectoryEntry(
+            id: roomID.uuidString,
+            kind: .room,
+            title: "Design Room",
+            model: "Gemini, GPT-5",
+            folder: "/repo",
+            activity: "idle"
+        )
+
+        let coord = AgentToolsCoordinator(environment: AgentToolsEnvironment(
+            session: { sessions[$0] },
+            browser: { _ in nil },
+            isTrusted: { _ in true },
+            knownFolders: { ["/repo"] },
+            resolveModel: { asked, s in (s.model, s.modelName, asked == nil) },
+            showBrowser: { _ in },
+            log: { _, _ in },
+            startSession: { _, _ in "new" },
+            send: { _, _ in },
+            listAgents: { _, ownRoom in
+                ownRoom == roomID ? [] : [roomEntry]
+            },
+            ownRoomID: { ($0 == "room-member-1" || $0 == "room-member-2") ? roomID : nil },
+            deliverAgentMessage: { targetID, _ in
+                if targetID == roomID.uuidString {
+                    return .delivered(targetSessionID: roomID.uuidString, targetTitle: "Design Room", targetModelName: "Gemini, GPT-5", targetTurn: "room", queued: false)
+                }
+                let nextTurn = String((Int(sessions[targetID]?.turn ?? "1") ?? 1) + 1)
+                sessions[targetID]?.turn = nextTurn
+                return .delivered(targetSessionID: targetID, targetTitle: sessions[targetID]?.title ?? "Solo", targetModelName: sessions[targetID]?.modelName ?? "Claude", targetTurn: nextTurn, queued: false)
+            },
+            targetPermissionMode: { $0 == roomID.uuidString ? .auto : sessions[$0]?.permissionMode },
+            targetDirectory: { $0 == roomID.uuidString ? "/repo" : sessions[$0]?.directory },
+            roomMemberSessionIDs: { $0 == roomID.uuidString ? ["room-member-1", "room-member-2"] : [] }
+        ))
+
+        // Hop 1: solo -> room
+        let h1 = await coord.handle(.messageAgent(.init(targetSessionID: roomID.uuidString, message: "Ping room 1")), caller: .init(sessionID: "solo", canUseSiteGrants: false))
+        // Hop 2: room-member-1 -> solo (must inherit depth 1 from room delivery)
+        let h2 = await coord.handle(.messageAgent(.init(targetSessionID: "solo", message: "Reply 2")), caller: .init(sessionID: "room-member-1", canUseSiteGrants: false))
+        // Hop 3: solo -> room
+        let h3 = await coord.handle(.messageAgent(.init(targetSessionID: roomID.uuidString, message: "Ping room 3")), caller: .init(sessionID: "solo", canUseSiteGrants: false))
+        // Hop 4: room-member-2 (a different member in the same room) -> solo
+        let h4 = await coord.handle(.messageAgent(.init(targetSessionID: "solo", message: "Reply 4")), caller: .init(sessionID: "room-member-2", canUseSiteGrants: false))
+        #expect(!h1.isError && !h2.isError && !h3.isError && !h4.isError)
+
+        // Hop 5: solo -> room must be refused.
+        let h5 = await coord.handle(.messageAgent(.init(targetSessionID: roomID.uuidString, message: "Ping room 5")), caller: .init(sessionID: "solo", canUseSiteGrants: false))
+        #expect(h5.isError)
+        #expect(h5.text.contains("4 hops"))
     }
 
     @Test func messageAgentDeliversVisibleInBothTranscriptsAndRefusesFifthHop() async {
@@ -285,7 +497,10 @@ import Testing
         let r3 = await coord.handle(.messageAgent(.init(targetSessionID: "b", message: "Hop 3")), caller: .init(sessionID: "a", canUseSiteGrants: false))
         let r4 = await coord.handle(.messageAgent(.init(targetSessionID: "a", message: "Hop 4")), caller: .init(sessionID: "b", canUseSiteGrants: false))
         #expect(!r1.isError && !r2.isError && !r3.isError && !r4.isError)
-        #expect(deliveredPayloads.first?.1 == "[From Claude Opus (Session A)] Hop 1")
+        let firstPayload = deliveredPayloads.first?.1 ?? ""
+        #expect(firstPayload.contains("Message from Claude Opus (Session A)"))
+        #expect(AgentToolText.isUntrustedPeerFrame(firstPayload))
+        #expect(firstPayload.contains("Hop 1"))
 
         // Visible in BOTH caller and target transcripts.
         #expect(coord.exchanges(for: "a").count == 4)
@@ -340,7 +555,8 @@ import Testing
                 seenDiffs.append(request.diffSummary)
                 return .answered("Checked by \(request.modelName).")
             },
-            gitDiff: { _ in "diff --git a/A.swift b/A.swift" }
+            gitDiff: { _ in "diff --git a/A.swift b/A.swift" },
+            providersNeedingTrust: { ["openai"] }
         ))
 
         // Untrusted folder must refuse ACP Gemini (`antigravity`) before executing.
@@ -350,6 +566,15 @@ import Testing
         )
         #expect(blocked.isError)
         #expect(blocked.text.contains("trusted"))
+        #expect(requestedModels.isEmpty)
+
+        // Untrusted folder must also refuse providers listed in providersNeedingTrust.
+        let blockedProvider = await coord.handle(
+            .askAgent(AskAgentInput(model: "gpt", question: "Audit this?", includeDiff: false)),
+            caller: .init(sessionID: "s1", canUseSiteGrants: false)
+        )
+        #expect(blockedProvider.isError)
+        #expect(blockedProvider.text.contains("trusted"))
         #expect(requestedModels.isEmpty)
 
         // Trust folder now and ask with include_diff: true.

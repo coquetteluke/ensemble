@@ -40,11 +40,16 @@ struct ClaudeKeychain: Sendable {
 
     func save(_ key: String) throws {
         let data = Data(key.utf8)
-        let status = SecItemUpdate(baseQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        let status = SecItemUpdate(
+            baseQuery as CFDictionary,
+            [kSecValueData as String: data,
+             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly] as CFDictionary
+        )
         if status == errSecItemNotFound {
             var add = baseQuery
             add[kSecValueData as String] = data
             add[kSecAttrLabel as String] = service
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             let added = SecItemAdd(add as CFDictionary, nil)
             guard added == errSecSuccess else { throw ClaudeCodeError.keychain(Self.message(added)) }
         } else if status != errSecSuccess {

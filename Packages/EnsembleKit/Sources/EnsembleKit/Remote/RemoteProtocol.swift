@@ -72,6 +72,7 @@ public struct RemotePairing: Codable, Hashable, Sendable {
         case missingHosts
         case badPort
         case missingToken
+        case badRelay
 
         public var errorDescription: String? {
             switch self {
@@ -79,6 +80,7 @@ public struct RemotePairing: Codable, Hashable, Sendable {
             case .missingHosts: "The pairing code has no address for the Mac."
             case .badPort: "The pairing code has an invalid port."
             case .missingToken: "The pairing code has no token."
+            case .badRelay: "The pairing code has an invalid relay address or mailbox."
             }
         }
     }
@@ -102,12 +104,27 @@ public struct RemotePairing: Codable, Hashable, Sendable {
         guard let pairing = try? JSONDecoder().decode(RemotePairing.self, from: data) else { throw CodeError.unreadable }
         let hosts = pairing.hosts.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         // A code may have no direct hosts when it has a relay.
-        let hasRelay = pairing.relay.map { !$0.url.isEmpty && !$0.mailbox.isEmpty } ?? false
-        guard !hosts.isEmpty || hasRelay else { throw CodeError.missingHosts }
+        let relayEmpty = pairing.relay.map { $0.url.isEmpty && $0.mailbox.isEmpty } ?? true
+        guard !hosts.isEmpty || !relayEmpty else { throw CodeError.missingHosts }
+        if let relay = pairing.relay {
+            guard Self.isValidRelay(relay) else { throw CodeError.badRelay }
+        }
+        if let previousRelay = pairing.previousRelay {
+            guard Self.isValidRelay(previousRelay) else { throw CodeError.badRelay }
+        }
         guard (1...65535).contains(pairing.port) else { throw CodeError.badPort }
         guard !pairing.token.isEmpty else { throw CodeError.missingToken }
         self = pairing
         self.hosts = hosts
+    }
+
+    private static func isValidRelay(_ relay: Relay) -> Bool {
+        guard let url = URL(string: relay.url), RelayDialer.isAllowed(url) else { return false }
+        let count = relay.mailbox.utf8.count
+        guard (16...128).contains(count) else { return false }
+        return relay.mailbox.utf8.allSatisfy { c in
+            (c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) || (c >= 0x30 && c <= 0x39) || c == 0x2D || c == 0x5F
+        }
     }
 
     private static func base64Data(_ text: String) -> Data? {

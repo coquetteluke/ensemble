@@ -265,6 +265,23 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
         throw EngineRouterError.signInNeedsTrustedFolder(providerID: model.providerID)
     }
 
+    /// Re-checks folder trust and sign-in requirements for `directory` and `model` (same checks as `createSession`).
+    public func validateTrust(directory: String, model: ModelRef?) throws {
+        let target = registration(forNewSessionIn: directory, model: model)
+        try checkSignIn(target, model: model)
+        if let acp = target.engine as? ACPEngine, acp.agent.requiresTrustedFolder, !trust.isTrusted(directory) {
+            throw ACPEngineError.folderNotTrusted(directory)
+        }
+    }
+
+    /// True when `sessionID` belongs to the exact engine allowed for `directory` and `model` right now, so a session
+    /// created on a trusted-only engine is never reused after folder trust is revoked.
+    public func canReuseSession(_ sessionID: String, in directory: String, model: ModelRef) async -> Bool {
+        guard let current = await registration(forSession: sessionID) else { return false }
+        let target = registration(forNewSessionIn: directory, model: model)
+        return current.id == target.id
+    }
+
     /// Registers or clears the active cross-engine backing session for `primaryID` so turn-scoped controls follow it.
     public func setActiveBackingSession(_ backingID: String?, forPrimary primaryID: String) {
         state.withLock { state in
@@ -276,7 +293,14 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
         }
     }
 
-    private func activeBackingOrSelf(_ sessionID: String) -> String {
+    /// Replaces the full primary-to-active-backing map so unlinked or rolled-back entries cannot remain stale.
+    public func setActiveBackingSessions(_ map: [String: String]) {
+        state.withLock { state in
+            state.activeBackingSessions = map.filter { $0.key != $0.value }
+        }
+    }
+
+    func activeBackingOrSelf(_ sessionID: String) -> String {
         state.withLock { $0.activeBackingSessions[sessionID] ?? sessionID }
     }
 
@@ -488,6 +512,7 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
         guard Self.sameEngine(current: current, target: target, untrustedID: untrustedFolderRegistration?.id) else {
             throw EngineRouterError.engineMismatch(sessionEngine: current.name, modelEngine: target.name, model: model.description)
         }
+        try checkSignIn(current, model: model)
         try await current.engine.switchModel(sessionID, model: model)
     }
 

@@ -208,13 +208,14 @@ public enum BrowserAgentDriver {
             if Task.isCancelled { break }
             try? await Task.sleep(for: .milliseconds(50))
         }
-        let now = surface.agentURL ?? url
+        let now = Self.liveURL(of: surface) ?? url
         if let refusal = BrowserAgentOrigin.refusal(for: now) {
             // A redirect left this computer: stop and say so.
             webView.stopLoading()
             return BrowserAgentOutcome(result: .refused("The page went to \(now.absoluteString). \(refusal)"))
         }
-        let signIn = (try? await run(BrowserAgentScripts.signIn, on: surface, arguments: ["expectedOrigin": NSNull()])) == .bool(true)
+        let expectedOrigin: Any = BrowserAgentOrigin.origin(of: now) ?? NSNull()
+        let signIn = (try? await run(BrowserAgentScripts.signIn, on: surface, arguments: ["expectedOrigin": expectedOrigin])) == .bool(true)
         let title = AgentToolText.clean(webView.title ?? "", limit: 120)
         var text = "Opened \(now.absoluteString)"
         if webView.isLoading { text += " (still loading)" }

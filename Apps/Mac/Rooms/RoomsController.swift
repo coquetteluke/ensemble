@@ -275,7 +275,7 @@ final class RoomsController {
         let roomTitle = cleanTitle.isEmpty
             ? (fallbackTitle.isEmpty ? Format.folderName(folder) : fallbackTitle)
             : cleanTitle
-        let permMode: PermissionMode = session.permissionMode == .plan ? .auto : session.permissionMode
+        let permMode: PermissionMode = session.permissionMode == .plan ? .ask : session.permissionMode
         let spec = RoomSpec(
             title: roomTitle,
             directory: folder,
