@@ -34,7 +34,48 @@ enum FoldMetrics {
     static let creaseGutter: CGFloat = 14
 }
 
-/// Whether the hinge is partly open, from a `UIHingeInteraction` on an invisible view.
+/// Decides when the phone counts as folded, from the hinge's status and angle.
+///
+/// Folding is a continuous motion, so the layout switches once, with a dead zone: it folds below 160 degrees and
+/// unfolds above 170 degrees (or when the hinge reports fully open or closed), and in between it keeps what it has.
+/// A change only lands after the hinge has held it for a moment, so a hand that wobbles near the edge does not make
+/// the screen flip back and forth.
+@available(iOS 27.1, *)
+@MainActor
+final class FoldDecider {
+    static let foldBelow: CGFloat = 160 * .pi / 180
+    static let unfoldAbove: CGFloat = 170 * .pi / 180
+    static let settle: Duration = .milliseconds(140)
+
+    private(set) var folded = false
+    private var pending: Task<Void, Never>?
+
+    /// The folded state this reading points to, given the current one.
+    static func wantsFolded(status: UIHinge.Status, angle: CGFloat, current: Bool) -> Bool {
+        switch status {
+        case .partiallyOpen:
+            if angle < foldBelow { return true }
+            if angle > unfoldAbove { return false }
+            return current
+        default:
+            return false
+        }
+    }
+
+    func update(status: UIHinge.Status, angle: CGFloat, apply: @escaping @MainActor (Bool) -> Void) {
+        let wanted = Self.wantsFolded(status: status, angle: angle, current: folded)
+        pending?.cancel()
+        guard wanted != folded else { return }
+        pending = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.settle)
+            guard let self, !Task.isCancelled, wanted != self.folded else { return }
+            self.folded = wanted
+            apply(wanted)
+        }
+    }
+}
+
+/// Whether the phone is folded, from a `UIHingeInteraction` on an invisible view.
 private struct HingeReader: UIViewRepresentable {
     @Binding var partlyOpen: Bool
 
@@ -43,10 +84,14 @@ private struct HingeReader: UIViewRepresentable {
         view.isUserInteractionEnabled = false
         if #available(iOS 27.1, *) {
             let binding = $partlyOpen
+            let decider = FoldDecider()
             let interaction = UIHingeInteraction { _, update in
-                let partly = update.hinge?.status == .partiallyOpen
-                if binding.wrappedValue != partly {
-                    withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) { binding.wrappedValue = partly }
+                guard let hinge = update.hinge else {
+                    decider.update(status: .unknown, angle: .pi) { folded in binding.wrappedValue = folded }
+                    return
+                }
+                decider.update(status: hinge.status, angle: hinge.angle) { folded in
+                    withAnimation(.smooth(duration: 0.38)) { binding.wrappedValue = folded }
                 }
             }
             view.addInteraction(interaction)

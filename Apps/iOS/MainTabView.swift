@@ -93,37 +93,20 @@ struct SplitRootView: View {
     /// Where this view sits on screen, to put the book layout's page break on the crease.
     @State private var globalMinX: CGFloat = 0
 
-    var body: some View {
-        Group {
-            if case .book(let creaseX) = fold {
-                bookLayout(leftWidth: max(240, creaseX - globalMinX))
-                    .transition(.opacity)
-            } else {
-                splitLayout
-                    .transition(.opacity)
-            }
-        }
-        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minX } action: { globalMinX = $0 }
+    /// Sidebar width that puts the page break on the crease while partly folded like a book, nil otherwise.
+    private var bookSidebarWidth: CGFloat? {
+        guard case .book(let creaseX) = fold else { return nil }
+        return max(240, creaseX - globalMinX)
     }
 
-    /// Partly folded like a book: the list on the left page, the chat on the right, the page break on the crease.
-    private func bookLayout(leftWidth: CGFloat) -> some View {
-        HStack(spacing: 0) {
-            SplitSidebarView(client: client, onOpenRoute: open, onSelectUtilityTab: selectUtilityTab)
-                .padding(.trailing, FoldMetrics.creaseGutter)
-                .frame(width: leftWidth)
-                .background(RemoteTheme.sidebar.ignoresSafeArea())
-            NavigationStack {
-                SplitDetailView(
-                    client: client,
-                    isSideBySide: true,
-                    showStatusInToolbar: false,
-                    onShowSidebar: {}
-                )
+    var body: some View {
+        // One split view in every posture: folding animates the sidebar out to the crease instead of swapping
+        // the whole screen, so the lists and the chat never redraw mid-fold.
+        splitLayout
+            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minX } action: { globalMinX = $0 }
+            .onChange(of: bookSidebarWidth != nil) { _, folded in
+                if folded { columns = .all }
             }
-            .padding(.leading, FoldMetrics.creaseGutter)
-            .background(RemoteTheme.background.ignoresSafeArea())
-        }
     }
 
     private var splitLayout: some View {
@@ -133,7 +116,10 @@ struct SplitRootView: View {
                 onOpenRoute: open,
                 onSelectUtilityTab: selectUtilityTab
             )
-            .navigationSplitViewColumnWidth(min: 310, ideal: 340, max: 380)
+            .padding(.trailing, bookSidebarWidth == nil ? 0 : FoldMetrics.creaseGutter)
+            .background(RemoteTheme.sidebar.ignoresSafeArea())
+            .navigationSplitViewColumnWidth(min: bookSidebarWidth ?? 310, ideal: bookSidebarWidth ?? 340,
+                                            max: bookSidebarWidth ?? 380)
             .toolbar(.hidden, for: .navigationBar)
         } detail: {
             NavigationStack {
@@ -144,6 +130,8 @@ struct SplitRootView: View {
                     onShowSidebar: { columns = .doubleColumn }
                 )
             }
+            .padding(.leading, bookSidebarWidth == nil ? 0 : FoldMetrics.creaseGutter)
+            .background(RemoteTheme.background.ignoresSafeArea())
         }
         .navigationSplitViewStyle(.balanced)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { newWidth in
