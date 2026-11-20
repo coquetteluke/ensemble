@@ -64,6 +64,8 @@ struct NewSessionPage: View {
             await store.checkWorktreeAvailability(directory)
         }
         .task(id: store.models.count) {
+            // Models can arrive after the page opens (right after launch): pick the default then.
+            if ModelRef(string: modelID) == nil { seedModel() }
             guard !isSnapshot, let billing = store.engine as? any EngineModelBilling else { return }
             modelBilling = try? await billing.modelBilling()
             let folders = ModelCatalog.folders(store.models, billing: modelBilling)
@@ -295,13 +297,18 @@ struct NewSessionPage: View {
         if !initialDraft.isEmpty { draft = initialDraft }
         directory = !initialDirectory.isEmpty ? initialDirectory
             : (window.newSessionDirectory ?? store.selected?.directory ?? store.projects.first?.directory ?? "")
+        seedModel()
+        mode = store.defaultPermissionMode
+        if !isSnapshot { draftFocused = true }
+    }
+
+    /// The default model, or the first available one.
+    private func seedModel() {
         let folders = ModelCatalog.folders(store.models, billing: modelBilling)
         let fallback = folders.lazy.flatMap(\.all).first(where: \.available)?.primary?.ref
             ?? store.models.first(where: \.available)?.ref
         let seed = store.defaultModel ?? fallback
         modelID = ModelCatalog.resolvedRef(for: seed, in: folders)?.description ?? ""
-        mode = store.defaultPermissionMode
-        if !isSnapshot { draftFocused = true }
     }
 
     private func send() {
