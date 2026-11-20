@@ -1,0 +1,192 @@
+#!/bin/bash
+# Builds the installer for the Mac app: dist/Ensemble-<version>.dmg and dist/SHA256SUMS.
+# Usage: scripts/make-installer.sh [--universal] [--keep]
+#
+#   --universal   also build for Intel Macs (arm64 + x86_64). The default is Apple silicon only.
+#   --keep        keep the build folder afterwards (its path is printed).
+#
+# What it does:
+#   1. Exports the last commit (not the working folder) to a folder under /private/tmp, so nothing uncommitted,
+#      no Config/Local.xcconfig and no path with your user name can end up in the app.
+#   2. Builds the Release configuration with no signing team.
+#   3. Strips debug information and signs the app ad hoc. There is no Developer ID certificate, so the app is not
+#      notarized and macOS warns on first launch. docs/INSTALL.md explains that to the people who install it.
+#   4. Checks that the app holds no home path, user name, team id, email address or key.
+#   5. Makes the disk image (app, Applications shortcut, first launch help) and its SHA-256.
+#
+# Needs: Xcode (the full app, not only the command line tools), XcodeGen (`brew install xcodegen`), git.
+set -euo pipefail
+
+universal=0
+keep=0
+for argument in "$@"; do
+  case "$argument" in
+    --universal) universal=1 ;;
+    --keep) keep=1 ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "error: unknown option $argument (see --help)" >&2; exit 2 ;;
+  esac
+done
+
+fail() { echo "error: $*" >&2; exit 1; }
+step() { printf '\n== %s\n' "$*"; }
+
+repo="$(cd "$(dirname "$0")/.." && pwd)"
+dist="$repo/dist"
+
+# ---- What this needs ----
+command -v git >/dev/null || fail "git is missing. Install the Xcode command line tools: xcode-select --install"
+command -v xcodegen >/dev/null || fail "XcodeGen is missing. Install it: brew install xcodegen"
+xcodebuild -version >/dev/null 2>&1 \
+  || fail "xcodebuild needs the full Xcode app. Install Xcode, then: sudo xcode-select -s /Applications/Xcode.app"
+for tool in hdiutil diskutil codesign ditto shasum plutil; do
+  command -v "$tool" >/dev/null || fail "$tool is missing (it ships with macOS)"
+done
+git -C "$repo" rev-parse --verify -q HEAD >/dev/null || fail "$repo has no commit to build"
+if git -C "$repo" ls-files --error-unmatch Config/Local.xcconfig >/dev/null 2>&1; then
+  fail "Config/Local.xcconfig is committed. It holds a personal signing team and must stay out of the repository."
+fi
+
+commit="$(git -C "$repo" rev-parse --short HEAD)"
+if [ -n "$(git -C "$repo" status --porcelain)" ]; then
+  echo "note: uncommitted changes are not part of this build. It is built from commit $commit."
+fi
+
+# ---- A clean copy of the last commit, outside the home folder ----
+work="$(mktemp -d /private/tmp/ensemble-installer.XXXXXX)"
+mount="$work/volume"
+cleanup() {
+  [ -d "$mount/Ensemble.app" ] && diskutil eject "$mount" >/dev/null 2>&1 || true
+  if [ "$keep" = 1 ]; then echo "Build folder kept: $work"; else rm -rf "$work"; fi
+}
+trap cleanup EXIT
+
+step "Exporting commit $commit"
+mkdir -p "$work/src"
+git -C "$repo" archive --format=tar HEAD | tar -x -C "$work/src"
+[ ! -e "$work/src/Config/Local.xcconfig" ] || fail "Config/Local.xcconfig reached the export"
+layout="$work/src/scripts/installer"
+for file in DS_Store "First launch.txt"; do
+  [ -f "$layout/$file" ] || fail "scripts/installer/$file is not in commit $commit"
+done
+
+cd "$work/src"
+xcodegen -q || fail "xcodegen could not generate the project"
+
+# ---- Build ----
+if [ "$universal" = 1 ]; then archs="arm64 x86_64"; else archs="arm64"; fi
+step "Building Release for $archs (a few minutes)"
+log="$work/build.log"
+if ! xcodebuild -project Ensemble.xcodeproj -scheme Ensemble -configuration Release \
+    -destination 'generic/platform=macOS' -derivedDataPath "$work/dd" \
+    ARCHS="$archs" ONLY_ACTIVE_ARCH=NO \
+    CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
+    build >"$log" 2>&1; then
+  mkdir -p "$dist"
+  cp "$log" "$dist/make-installer.log"
+  grep -E "error:|BUILD FAILED" "$log" | head -40 >&2 || true
+  fail "the build failed. Full log: dist/make-installer.log"
+fi
+built="$work/dd/Build/Products/Release/Ensemble.app"
+[ -d "$built" ] || fail "the build finished without $built"
+
+stage="$work/stage"
+mkdir -p "$stage"
+app="$stage/Ensemble.app"
+ditto "$built" "$app"
+version="$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")"
+[ -n "$version" ] || fail "the app has no version (CFBundleShortVersionString)"
+
+# ---- Strip and sign ----
+step "Stripping debug information and signing ad hoc"
+# Every program in the bundle, the helpers before the app itself.
+programs=()
+while IFS= read -r file; do
+  if file -b "$file" | grep -q "Mach-O"; then programs+=("$file"); fi
+done < <(find "$app/Contents" -type f -perm +111 ! -path "$app/Contents/MacOS/Ensemble")
+programs+=("$app/Contents/MacOS/Ensemble")
+
+sign() {
+  # Keeps what Xcode gave the program (its identifier and entitlements) and the hardened runtime.
+  local target="$1" entitlements="$work/entitlements.plist"
+  local options=(--force --sign - --options runtime --timestamp=none --preserve-metadata=identifier)
+  if codesign -d --entitlements - --xml "$target" >"$entitlements" 2>/dev/null && [ -s "$entitlements" ]; then
+    options+=(--entitlements "$entitlements")
+  fi
+  codesign "${options[@]}" "$target" 2>/dev/null || fail "codesign failed for $target"
+}
+for program in "${programs[@]}"; do
+  xcrun strip -S -x "$program" 2>/dev/null || fail "strip failed for $program"
+  [ "$program" = "$app/Contents/MacOS/Ensemble" ] || sign "$program"
+done
+sign "$app"
+codesign --verify --deep --strict "$app" || fail "the signed app does not verify"
+signature="$(codesign -dvv "$app" 2>&1)"
+echo "$signature" | grep -q "^Signature=adhoc" || fail "the app is not signed ad hoc"
+echo "$signature" | grep -q "^TeamIdentifier=not set" || fail "the signature names a team"
+if codesign -d --entitlements - --xml "$app" 2>/dev/null | grep -q "get-task-allow"; then
+  fail "the app carries the debugging entitlement (get-task-allow)"
+fi
+lipo -archs "$app/Contents/MacOS/Ensemble"
+
+# ---- Nothing personal in the bundle ----
+step "Checking the app for personal details and keys"
+needles=("$HOME")
+login="$(id -un)"
+[ "${#login}" -ge 6 ] && needles+=("$login")
+email="$(git -C "$repo" config user.email || true)"
+case "$email" in ""|*noreply*) ;; *) needles+=("$email") ;; esac
+team="$(sed -n 's/^[[:space:]]*DEVELOPMENT_TEAM[[:space:]]*=[[:space:]]*//p' "$repo/Config/Local.xcconfig" 2>/dev/null | tr -d '[:space:]' || true)"
+[ -n "$team" ] && needles+=("$team")
+for needle in "${needles[@]}"; do
+  if found="$(grep -rlF -- "$needle" "$app" | head -5)" && [ -n "$found" ]; then
+    echo "$found" >&2
+    fail "the app contains \"$needle\" (files above)"
+  fi
+done
+# Shapes of real keys: Anthropic, OpenAI, GitHub, AWS, Slack, Google, private key blocks.
+keys='sk-ant-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{20,}|AIza[0-9A-Za-z_-]{35}|BEGIN [A-Z ]*PRIVATE KEY'
+if found="$(grep -rlaE -- "$keys" "$app" | head -5)" && [ -n "$found" ]; then
+  echo "$found" >&2
+  fail "the app contains something shaped like a key (files above)"
+fi
+[ ! -e "$app/Contents/embedded.provisionprofile" ] || fail "the app holds a provisioning profile"
+echo "Clean: no home path, user name, team id, email address or key."
+
+# ---- Disk image ----
+step "Making the disk image"
+cp "$layout/First launch.txt" "$stage/"
+ln -s /Applications "$stage/Applications"
+cp "$layout/DS_Store" "$stage/.DS_Store"
+mkdir -p "$dist" "$mount"
+dmg="$dist/Ensemble-$version.dmg"
+rm -f "$dmg"
+# macOS 27 replaces `hdiutil create` and `hdiutil attach` with `diskutil image`. Use it where it exists.
+if diskutil image create from --help >/dev/null 2>&1; then
+  diskutil image create from --format ULMO --volumeName "Ensemble $version" "$stage" "$dmg" >/dev/null \
+    || fail "diskutil could not make $dmg"
+  diskutil image attach --readOnly --nobrowse --mountPoint "$mount" "$dmg" >/dev/null \
+    || fail "the disk image does not mount"
+else
+  hdiutil create -quiet -volname "Ensemble $version" -srcfolder "$stage" -fs HFS+ -format ULMO "$dmg" \
+    || fail "hdiutil could not make $dmg"
+  hdiutil attach "$dmg" -quiet -readonly -nobrowse -noautoopen -mountpoint "$mount" \
+    || fail "the disk image does not mount"
+fi
+
+# The image must hold what was staged, and the app inside must still verify.
+[ -d "$mount/Ensemble.app" ] || fail "the disk image has no Ensemble.app"
+[ -L "$mount/Applications" ] || fail "the disk image has no Applications shortcut"
+[ -f "$mount/First launch.txt" ] || fail "the disk image has no First launch.txt"
+codesign --verify --deep --strict "$mount/Ensemble.app" || fail "the app inside the disk image does not verify"
+diskutil eject "$mount" >/dev/null || fail "the disk image did not eject"
+hdiutil verify -quiet "$dmg" || fail "the disk image does not verify"
+
+(cd "$dist" && shasum -a 256 "Ensemble-$version.dmg" >SHA256SUMS)
+rm -f "$dist/make-installer.log"
+
+step "Done"
+echo "Disk image: $dmg"
+echo "Size:       $(du -h "$dmg" | cut -f1 | tr -d ' ')"
+echo "Built from: commit $commit, version $version, $archs"
+echo "SHA-256:    $(cut -d' ' -f1 "$dist/SHA256SUMS")"

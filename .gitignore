@@ -44,3 +44,6 @@ Config/Local.xcconfig
 
 # Local agent scratch
 .superpowers/
+
+# Installer output (scripts/make-installer.sh)
+dist/
