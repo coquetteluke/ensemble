@@ -50,6 +50,8 @@ struct HubView: View {
 struct HubBoardContent: View {
     let client: RemoteClient
     var selectedSessionID: String?
+    /// False in the lower half of the laptop fold: the keyboard would cover the very field it types into.
+    var showsFilter = true
     var open: (ChatRoute) -> Void
 
     @State private var showOld = false
@@ -66,7 +68,7 @@ struct HubBoardContent: View {
         let grouped = groups
         return [HubBucket.needsYou, .running, .finished].filter { !(grouped[$0] ?? []).isEmpty }
     }
-    private var showFilterBar: Bool { client.sessions.count >= 3 || filter.isActive }
+    private var showFilterBar: Bool { showsFilter && (client.sessions.count >= 3 || filter.isActive) }
     private var hasNoMatches: Bool {
         filter.isActive && !client.sessions.isEmpty && visibleBuckets.isEmpty && (groups[.old]?.isEmpty ?? true)
     }

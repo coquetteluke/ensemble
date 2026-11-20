@@ -138,39 +138,58 @@ struct ChatView: View {
     /// Next to an open side pane the bar has room for the title and two buttons, so Changes moves into the menu.
     private var isNarrow: Bool { paneControls.isActive && chatWidth > 0 && chatWidth < 430 }
 
-    /// Height of the lower half when the phone is partly folded like a laptop (nil otherwise).
+    /// Height of the lower half when the phone is partly folded like a laptop. Nil when it is flat, and nil when
+    /// the keyboard has taken the lower half: the message box then sits on top of the keyboard as it does flat.
     private var laptopDeckHeight: CGFloat? {
-        guard case .laptop(let creaseY) = fold, globalMaxY > creaseY else { return nil }
-        return globalMaxY - creaseY
+        guard case .laptop(let creaseY) = fold else { return nil }
+        let height = globalMaxY - creaseY
+        return height >= Self.deckMinHeight ? height : nil
     }
 
     /// The message box. Partly folded like a laptop, it sits right under the crease with the session list (or
-    /// the details) below it, so the lower half is a deck and the chat keeps the upper half. With the keyboard up
-    /// the deck is short and holds the message box alone.
-    @ViewBuilder private var composerDeck: some View {
-        if let deck = laptopDeckHeight {
-            VStack(spacing: 0) {
-                composerCard(minLines: laptopDeck == nil || deck < Self.deckWithPaneMinHeight ? 4 : 1)
-                    .padding(.top, FoldMetrics.creaseGutter)
-                if let laptopDeck, deck >= Self.deckWithPaneMinHeight {
-                    laptopDeck
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .overlay(alignment: .top) { Rectangle().fill(RemoteTheme.separator).frame(height: 1) }
-                        .padding(.top, 6)
-                } else {
-                    Spacer(minLength: 0)
-                }
+    /// the details) below it, so the lower half is a deck and the chat keeps the upper half.
+    ///
+    /// The message box is one view in one place in every layout. In separate branches it would be a new view each
+    /// time the layout changed, and the keyboard coming up changes the layout: the new view had no cursor, so the
+    /// keyboard went straight back down.
+    private var composerDeck: some View {
+        let deck = laptopDeckHeight
+        let pane = deck.flatMap { $0 >= Self.deckWithPaneMinHeight ? laptopDeck : nil }
+        return VStack(spacing: 0) {
+            composerCard(minLines: deck != nil && pane == nil ? 4 : 1)
+                .padding(.top, deck == nil ? 0 : FoldMetrics.creaseGutter)
+            if let pane {
+                pane
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay(alignment: .top) { Rectangle().fill(RemoteTheme.separator).frame(height: 1) }
+                    .padding(.top, 8)
+            } else if deck != nil {
+                Spacer(minLength: 0)
             }
-            .frame(height: deck, alignment: .top)
-            .frame(maxWidth: .infinity)
-            .background(RemoteTheme.sidebar.ignoresSafeArea(edges: .bottom))
-            .overlay(alignment: .top) { Rectangle().fill(RemoteTheme.separator).frame(height: 1) }
-        } else {
-            composerCard(minLines: 1)
+        }
+        .frame(height: deck, alignment: .top)
+        .frame(maxWidth: .infinity)
+        // Keyboard up while part folded: the keyboard has the lower half, and the message box sits wholly above
+        // the crease instead of bending over it.
+        .padding(.bottom, liftOverCrease)
+        .background {
+            if deck != nil { RemoteTheme.sidebar.ignoresSafeArea(edges: .bottom) }
+        }
+        .overlay(alignment: .top) {
+            if deck != nil { Rectangle().fill(RemoteTheme.separator).frame(height: 1) }
         }
     }
 
-    /// Below this height (the keyboard is up) the deck has no room for a pane under the message box.
+    /// How far the message box is raised so it clears the crease when the keyboard has taken the lower half.
+    private var liftOverCrease: CGFloat {
+        guard case .laptop(let creaseY) = fold, laptopDeckHeight == nil else { return 0 }
+        let below = globalMaxY - creaseY
+        return below > -FoldMetrics.creaseGutter && below < Self.deckMinHeight ? below + FoldMetrics.creaseGutter : 0
+    }
+
+    /// Below this height the lower half is not a deck at all (the keyboard is up).
+    private static let deckMinHeight: CGFloat = 190
+    /// Below this height the deck has no room for a pane under the message box.
     private static let deckWithPaneMinHeight: CGFloat = 300
 
     private func composerCard(minLines: Int) -> some View {

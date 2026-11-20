@@ -119,22 +119,28 @@ struct SessionDetailsPanel: View {
 
     private var contextSection: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let breakdown = details?.context, breakdown.limitTokens > 0 {
+            if let breakdown = details?.context, breakdown.limitTokens > 0 || breakdown.usedTokens > 0 {
+                let known = breakdown.limitTokens > 0
                 let main = breakdown.categories.filter { $0.key != "buffer" && $0.key != "free" }
                 let reserve = breakdown.categories.filter { $0.key == "buffer" || $0.key == "free" }
                 HStack(spacing: 8) {
                     sectionTitle("Context")
                     Spacer(minLength: 8)
-                    Text("\(Format.wholePercent(breakdown.fractionUsed)) used")
+                    // A model whose window is not known has no share to show: say how much is used.
+                    Text(known ? "\(Format.wholePercent(breakdown.fractionUsed)) used" : "\(Format.tokens(breakdown.usedTokens)) used")
                         .foregroundStyle(RemoteTheme.primaryText)
-                    Text("\(Format.tokens(breakdown.usedTokens)) / \(Format.tokens(breakdown.limitTokens))")
-                        .foregroundStyle(RemoteTheme.secondaryText)
+                    if known {
+                        Text("\(Format.tokens(breakdown.usedTokens)) / \(Format.tokens(breakdown.limitTokens))")
+                            .foregroundStyle(RemoteTheme.secondaryText)
+                    }
                 }
                 .font(RemoteTheme.font(size: 13, relativeTo: .footnote).monospacedDigit())
                 .lineLimit(1)
-                DetailsContextBar(breakdown: breakdown)
-                    .padding(.top, 2)
-                    .padding(.bottom, 8)
+                if known {
+                    DetailsContextBar(breakdown: breakdown)
+                        .padding(.top, 2)
+                        .padding(.bottom, 8)
+                }
                 ForEach(main) { breakdownRow($0, limit: breakdown.limitTokens) }
                 if !reserve.isEmpty {
                     Color.clear.frame(height: main.isEmpty ? 0 : 8)
@@ -167,10 +173,12 @@ struct SessionDetailsPanel: View {
             Text(Format.tokens(category.tokens))
                 .foregroundStyle(RemoteTheme.secondaryText)
                 .fixedSize()
-            Text(Format.percent(category.tokens, of: limit))
-                .foregroundStyle(RemoteTheme.primaryText)
-                .fixedSize()
-                .frame(minWidth: 52, alignment: .trailing)
+            if limit > 0 {
+                Text(Format.percent(category.tokens, of: limit))
+                    .foregroundStyle(RemoteTheme.primaryText)
+                    .fixedSize()
+                    .frame(minWidth: 52, alignment: .trailing)
+            }
         }
         .font(RemoteTheme.font(size: 13, relativeTo: .footnote).monospacedDigit())
         .frame(height: 26)

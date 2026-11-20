@@ -82,7 +82,7 @@ private struct CompactChatDestination: View {
 /// A NavigationSplitView cannot do this. Asked for a list as wide as half the screen (the book fold) it shows its
 /// overlay mode for most of a second, the chat full width and dimmed under the list, before it settles. Here the
 /// panes are plain views in a row (or a column for the laptop fold), so a fold or a button moves them in one step
-/// and `LayoutTransition` dissolves the old layout into the new one.
+/// and `PaneGlide` moves each pane from its old place to its new one.
 struct SplitRootView: View {
     let client: RemoteClient
     @Environment(RemoteAppModel.self) private var model
@@ -92,19 +92,28 @@ struct SplitRootView: View {
     /// Where the panes sit on screen, to turn the crease's screen position into a pane width.
     @State private var frame: CGRect = .zero
     @State private var toggleHaptic = 0
+    /// When the window last changed size (the phone was opened, shut or turned). A glide is skipped right after,
+    /// since iOS is moving the whole window then.
+    @State private var lastResize = Date.distantPast
+
+    /// The top safe area is tall enough to be the upright screen's status band.
+    private var liftsSidebar: Bool { frame.minY > 44 }
+    private static let liftedHeaderInset: CGFloat = 16
 
     private var chat: ChatRoute? {
         model.tab == .hub || model.tab == .rooms ? model.selectedChat : nil
     }
 
-    private var plan: PanePlan {
+    private var plan: PanePlan { plan(fold: fold, sidebar: sidebarWanted, details: detailsWanted) }
+
+    private func plan(fold: FoldLayout, sidebar: Bool, details: Bool) -> PanePlan {
         let local: FoldLayout = switch fold {
         case .flat: .flat
         case .book(let creaseX): .book(creaseX: creaseX - frame.minX)
         case .laptop(let creaseY): .laptop(creaseY: creaseY - frame.minY)
         }
-        return PanePlan.resolve(size: frame.size, fold: local, sidebarWanted: sidebarWanted,
-                                detailsWanted: detailsWanted, hasChat: chat != nil)
+        return PanePlan.resolve(size: frame.size, fold: local, sidebarWanted: sidebar,
+                                detailsWanted: details, hasChat: chat != nil)
     }
 
     var body: some View {
@@ -120,6 +129,11 @@ struct SplitRootView: View {
             if let width = plan.sidebarWidth {
                 sidebarPane()
                     .safeAreaPadding(.trailing, isBook ? gutter : 0)
+                    // Upright, the top of the screen is a tall band that holds the clock on the right and the
+                    // chat's bar. The list's header moves up into the band's free left side, level with that bar,
+                    // instead of starting under an empty strip.
+                    .padding(.top, liftsSidebar ? Self.liftedHeaderInset : 0)
+                    .ignoresSafeArea(.container, edges: liftsSidebar ? .top : [])
                     .frame(width: width)
                     .overlay(alignment: .trailing) { paneEdge }
             }
@@ -149,7 +163,22 @@ struct SplitRootView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
+        // Measured without the keyboard: the keyboard coming up must not change which layout this is, or the
+        // panes would jump around the moment you tap a text field while the phone is part folded.
+        .background {
+            Color.clear
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { newFrame in
+                    if newFrame.size != frame.size { lastResize = Date() }
+                    frame = newFrame
+                }
+                // Outside the reader: a reader outside this modifier would still see the keyboard-shortened size.
+                .ignoresSafeArea(.keyboard)
+        }
+        // The hinge changed the layout: glide the panes to their new places. The new layout is not on screen yet.
+        .onChange(of: fold) { old, new in
+            glide(from: self.plan(fold: old, sidebar: sidebarWanted, details: detailsWanted),
+                  to: self.plan(fold: new, sidebar: sidebarWanted, details: detailsWanted))
+        }
         .environment(\.paneControls, PaneControls(
             isActive: true,
             sidebarShown: plan.showsSidebar || stackedCrease != nil,
@@ -190,27 +219,75 @@ struct SplitRootView: View {
 
     private func toggleSidebar(_ plan: PanePlan) {
         toggleHaptic += 1
-        LayoutTransition.runInKeyWindow {
-            if plan.showsSidebar {
-                sidebarWanted = false
-            } else {
-                sidebarWanted = true
-                if !plan.fitsBoth { detailsWanted = false }
-            }
+        var sidebar = sidebarWanted, details = detailsWanted
+        if plan.showsSidebar {
+            sidebar = false
+        } else {
+            sidebar = true
+            if !plan.fitsBoth { details = false }
         }
+        glide(from: plan, to: self.plan(fold: fold, sidebar: sidebar, details: details))
+        sidebarWanted = sidebar
+        detailsWanted = details
     }
 
     private func toggleDetails(_ plan: PanePlan) {
         toggleHaptic += 1
-        LayoutTransition.runInKeyWindow {
-            if plan.showsDetails {
-                detailsWanted = false
-                // The book fold always has two pages: without the details, the list is the other one.
-                if case .book = plan.shape { sidebarWanted = true }
-            } else {
-                detailsWanted = true
+        var sidebar = sidebarWanted, details = detailsWanted
+        if plan.showsDetails {
+            details = false
+            // The book fold always has two pages: without the details, the list is the other one.
+            if case .book = plan.shape { sidebar = true }
+        } else {
+            details = true
+        }
+        glide(from: plan, to: self.plan(fold: fold, sidebar: sidebar, details: details))
+        sidebarWanted = sidebar
+        detailsWanted = details
+    }
+
+    /// Starts the panes gliding from one plan's places to another's. Call it before the new layout is on screen.
+    private func glide(from old: PanePlan, to new: PanePlan) {
+        guard old != new, frame.width > 0, Date().timeIntervalSince(lastResize) > 0.7 else { return }
+        PaneGlide.run(from: paneRects(old), to: paneRects(new), colors: [
+            .chat: UIColor(RemoteTheme.background), .sidebar: UIColor(RemoteTheme.sidebar), .details: UIColor(RemoteTheme.sidebar),
+        ])
+    }
+
+    /// Where each pane sits for a plan, in window coordinates, edge to edge (the panes' backgrounds run under the
+    /// safe areas). Together the rectangles cover the window, which is what lets the glide end exactly on the real
+    /// layout.
+    private func paneRects(_ plan: PanePlan) -> [PaneRole: CGRect] {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes.flatMap(\.windows).first(where: \.isKeyWindow)?.bounds ?? frame
+        var rects: [PaneRole: CGRect] = [:]
+        switch plan.shape {
+        case .row, .book:
+            var left = window.minX, right = window.maxX
+            if let width = plan.sidebarWidth {
+                let edge = frame.minX + width
+                rects[.sidebar] = CGRect(x: left, y: window.minY, width: edge - left, height: window.height)
+                left = edge
+            }
+            if let width = plan.detailsWidth {
+                let edge = frame.maxX - width
+                rects[.details] = CGRect(x: edge, y: window.minY, width: right - edge, height: window.height)
+                right = edge
+            }
+            rects[.chat] = CGRect(x: left, y: window.minY, width: right - left, height: window.height)
+        case .laptop(let creaseY):
+            let crease = frame.minY + creaseY
+            // With a chat open the deck's pane starts under the message box, which is about this tall.
+            let top = chat == nil ? crease : crease + 132
+            let lower = CGRect(x: window.minX, y: top, width: window.width, height: window.maxY - top)
+            let upper = CGRect(x: window.minX, y: window.minY, width: window.width, height: top - window.minY)
+            switch chat == nil ? PanePlan.Deck.sidebar : plan.deck {
+            case .none: rects[.chat] = window
+            case .sidebar: rects[.chat] = upper; rects[.sidebar] = lower
+            case .details: rects[.chat] = upper; rects[.details] = lower
             }
         }
+        return rects
     }
 
     private func selectUtilityTab(_ tab: RemoteTab) {
@@ -250,6 +327,7 @@ private struct SplitSidebarView: View {
                     HubBoardContent(
                         client: client,
                         selectedSessionID: activeSessionID,
+                        showsFilter: !compact,
                         open: { onOpenRoute($0, .hub) }
                     )
                 }
@@ -293,7 +371,7 @@ private struct SplitSidebarHeader: View {
                 HStack(alignment: .center, spacing: 8) {
                     if controls.isActive {
                         SidebarToggleButton()
-                            .padding(.leading, -8)
+                            .padding(.leading, -4)
                     }
                     segments
                     utilityButton("Usage", systemImage: "chart.bar", target: .usage)
@@ -307,7 +385,7 @@ private struct SplitSidebarHeader: View {
                     HStack(alignment: .center, spacing: 8) {
                         if controls.isActive {
                             SidebarToggleButton()
-                                .padding(.leading, -8)
+                                .padding(.leading, -4)
                         }
                         Text("Ensemble")
                             .font(RemoteTheme.font(size: 18, weight: .semibold, relativeTo: .headline))
@@ -320,8 +398,8 @@ private struct SplitSidebarHeader: View {
                     }
                     segments
                 }
-                .padding(.horizontal, 14)
-                .padding(.top, 10)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
                 .padding(.bottom, 12)
             }
         }

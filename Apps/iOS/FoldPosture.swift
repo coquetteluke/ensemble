@@ -37,9 +37,8 @@ enum FoldMetrics {
 /// Watches the hinge and works out the fold layout, with the crease where it is on the glass.
 ///
 /// iOS reports "partly open" as soon as the hinge leaves flat, and "open" again only once it is flat. The layout
-/// changes at that moment in one step, under a soft blur (`LayoutTransition`), so the change reads as one move in
-/// time with the blur iOS puts on the moving half of the screen. The crease is the middle of the physical screen,
-/// mapped into the window.
+/// follows at that moment, and `SplitRootView` glides the panes to their new places (`PaneGlide`). The crease is the
+/// middle of the physical screen, mapped into the window.
 private final class HingeView: UIView {
     var onChange: ((FoldLayout) -> Void)?
     private var partlyOpen = false
@@ -65,7 +64,7 @@ private final class HingeView: UIView {
     override func didMoveToWindow() {
         super.didMoveToWindow()
         guard window != nil else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in LayoutTransition.warmUp(self?.window) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in PaneGlide.warmUp(self?.window) }
     }
 
     override func layoutSubviews() {
@@ -92,7 +91,7 @@ private final class HingeView: UIView {
         let layout = computeLayout()
         guard layout != last else { return }
         last = layout
-        LayoutTransition.run(in: window) { [weak self] in self?.onChange?(layout) }
+        onChange?(layout)
     }
 
     private func computeLayout() -> FoldLayout {
@@ -104,113 +103,157 @@ private final class HingeView: UIView {
     }
 }
 
-/// How the inner screen moves from one layout to another, for the hinge and for the pane buttons.
+/// One of the inner screen's three panes.
+enum PaneRole: Hashable, CaseIterable {
+    case chat, sidebar, details
+}
+
+/// Moves the inner screen from one layout to another by gliding each pane from its old place to its new one.
 ///
-/// Working out a chat at a new width takes the main thread a few frames. A transition that only starts after that
-/// work reads as a freeze and then a jump, and a plain crossfade shows both layouts doubled halfway through. So:
-/// - a soft blur starts to build at once. It is handed to the system's renderer before the layout work begins, so
-///   it keeps building through that work;
-/// - a picture of the old layout sits under the blur and the new layout lands beneath it in one step;
-/// - once the blur is strong enough to hide the swap, the picture is let go and the blur eases off the new layout.
-/// The blur never gets far: the text goes soft, the screen does not go blank. iOS blurs the moving half of the
-/// screen for about as long, so the two read as one move.
+/// Laying a chat out at a new width takes the main thread several frames, too long to animate the real views
+/// frame by frame without stutter. So the panes on screen during the move are pictures:
+/// - a picture of each pane in the old layout is put where the pane is, and starts to move and resize toward
+///   where that pane will be. The move is handed to the system's renderer at once, so it runs at full speed while
+///   the main thread works out the real new layout underneath;
+/// - when the new layout is ready, a picture of each pane in it fades in over the old one, inside the moving frame;
+/// - when the frames arrive, the pictures are removed and the real layout is exactly where they were.
+/// A pane that is new slides in from the edge it belongs to, and one that goes slides out to it.
 @MainActor
-enum LayoutTransition {
-    enum Pace {
-        /// The hinge: unhurried, in time with the system's own blur.
-        case fold
-        /// A button: quicker.
-        case button
-
-        /// How long the blur builds before the layouts are swapped.
-        var build: TimeInterval { self == .fold ? 0.26 : 0.15 }
-        var settle: TimeInterval { self == .fold ? 0.36 : 0.26 }
-    }
-
-    /// How long the blur would take to build fully. It is turned around long before that.
-    private static let fullBuild: TimeInterval = 0.7
-    private static let swap: TimeInterval = 0.12
-    /// The transition in flight, so a second change (a quick fold and unfold) ends the first cleanly.
+enum PaneGlide {
+    private static let travel: TimeInterval = 0.62
+    private static let contentFade: TimeInterval = 0.15
+    /// The glide in flight, so a second change (a quick fold and unfold) ends the first cleanly.
     private static var cleanup: (() -> Void)?
 
-    static func run(in window: UIWindow?, pace: Pace = .fold, change: @escaping @MainActor () -> Void) {
-        guard let window else { change(); return }
+    /// Call right before the layout changes (or while it has changed but is not on screen yet).
+    /// - Parameters:
+    ///   - old: where each pane is now, in window coordinates. Together they cover the window.
+    ///   - new: where each pane will be.
+    ///   - colors: each pane's background, shown where its picture does not reach during the move.
+    static func run(from old: [PaneRole: CGRect], to new: [PaneRole: CGRect], colors: [PaneRole: UIColor]) {
+        guard old != new, let window = keyWindow, let root = window.rootViewController?.view else { return }
         cleanup?()
         cleanup = nil
+        if UIAccessibility.isReduceMotionEnabled {
+            dissolve(window)
+            return
+        }
 
-        let picture = window.snapshotView(afterScreenUpdates: false)
-        if let picture {
-            picture.isUserInteractionEnabled = false
-            picture.frame = window.bounds
-            window.addSubview(picture)
+        let stage = UIView(frame: window.bounds)
+        stage.isUserInteractionEnabled = false
+        stage.backgroundColor = colors[.chat]
+        struct Piece {
+            let role: PaneRole
+            let frame: UIView
+            let before: UIView?
+            let target: CGRect?
+            let end: CGRect
         }
-        // No blur with Reduce Transparency: the picture alone dissolves.
-        let veil: UIVisualEffectView? = UIAccessibility.isReduceTransparencyEnabled ? nil : UIVisualEffectView(effect: nil)
-        var build: UIViewPropertyAnimator?
-        if let veil {
-            veil.isUserInteractionEnabled = false
-            veil.frame = window.bounds
-            veil.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-            window.addSubview(veil)
-            let animator = UIViewPropertyAnimator(duration: fullBuild, curve: .linear) {
-                veil.effect = UIBlurEffect(style: .systemUltraThinMaterial)
+        var pieces: [Piece] = []
+        // The chat first: the side panes slide over it.
+        for role in PaneRole.allCases {
+            let from = old[role], to = new[role]
+            guard from != nil || to != nil else { continue }
+            let start = from ?? offstage(role, like: to ?? .zero, in: window.bounds)
+            let end = to ?? offstage(role, like: from ?? .zero, in: window.bounds)
+            let frame = UIView(frame: start)
+            frame.clipsToBounds = true
+            frame.backgroundColor = colors[role]
+            var before: UIView?
+            if let from, let picture = root.resizableSnapshotView(from: from, afterScreenUpdates: false, withCapInsets: .zero) {
+                picture.frame.origin = .zero
+                frame.addSubview(picture)
+                before = picture
             }
-            animator.startAnimation()
-            build = animator
+            stage.addSubview(frame)
+            pieces.append(Piece(role: role, frame: frame, before: before, target: to, end: end))
         }
+        window.addSubview(stage)
+
+        var arrived = false, filled = false, finished = false
+        let end = {
+            guard !finished else { return }
+            finished = true
+            stage.removeFromSuperview()
+        }
+        cleanup = end
+        let finishIfReady = { if arrived && filled { end() } }
+
+        UIView.animate(withDuration: travel, delay: 0, usingSpringWithDamping: 1, initialSpringVelocity: 0,
+                       options: [.allowUserInteraction]) {
+            for piece in pieces { piece.frame.frame = piece.end }
+        } completion: { _ in
+            arrived = true
+            finishIfReady()
+        }
+        // Hand the move to the renderer now. It then runs on its own while the main thread lays out.
+        CATransaction.flush()
+
+        // The main queue gets to this only once the new layout has been worked out.
+        DispatchQueue.main.async {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+                guard !finished else { return }
+                var after: [UIView] = []
+                for piece in pieces {
+                    guard let target = piece.target,
+                          let picture = root.resizableSnapshotView(from: target, afterScreenUpdates: true, withCapInsets: .zero)
+                    else { continue }
+                    picture.frame.origin = .zero
+                    picture.alpha = 0
+                    piece.frame.addSubview(picture)
+                    after.append(picture)
+                }
+                UIView.animate(withDuration: contentFade, delay: 0, options: [.curveEaseInOut, .allowUserInteraction]) {
+                    for picture in after { picture.alpha = 1 }
+                    for piece in pieces where piece.target != nil { piece.before?.alpha = 0 }
+                } completion: { _ in
+                    filled = true
+                    finishIfReady()
+                }
+            }
+        }
+    }
+
+    /// Where a pane waits before it slides in, or goes when it slides out: just past the edge it belongs to.
+    private static func offstage(_ role: PaneRole, like rect: CGRect, in bounds: CGRect) -> CGRect {
+        let isColumn = rect.height >= bounds.height * 0.8
+        switch role {
+        case .sidebar where isColumn: return rect.offsetBy(dx: -rect.maxX, dy: 0)
+        case .details where isColumn: return rect.offsetBy(dx: bounds.maxX - rect.minX, dy: 0)
+        default: return rect.offsetBy(dx: 0, dy: bounds.maxY - rect.minY)
+        }
+    }
+
+    /// Reduce Motion: no travel, a picture of the old layout fades into the new one.
+    private static func dissolve(_ window: UIWindow) {
+        guard let picture = window.snapshotView(afterScreenUpdates: false) else { return }
+        picture.isUserInteractionEnabled = false
+        window.addSubview(picture)
         var finished = false
         let end = {
             guard !finished else { return }
             finished = true
-            if build?.state == .active { build?.stopAnimation(true) }
-            picture?.removeFromSuperview()
-            veil?.removeFromSuperview()
+            picture.removeFromSuperview()
         }
         cleanup = end
-        // Hand the picture and the blur to the renderer now. They then run on their own while the main thread lays out.
-        CATransaction.flush()
-        let started = CACurrentMediaTime()
-
         DispatchQueue.main.async {
-            change()
-            // The main queue gets to this only once the layout pass has finished. With a blur, give it time to build.
-            let wait = veil == nil ? 0.03 : max(0.03, pace.build - (CACurrentMediaTime() - started))
-            DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
-                guard !finished else { return }
-                guard let veil else {
-                    UIView.animate(withDuration: 0.3, delay: 0, options: [.curveEaseInOut, .allowUserInteraction]) {
-                        picture?.alpha = 0
-                    } completion: { _ in end() }
-                    return
-                }
-                UIView.animate(withDuration: swap, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
-                    picture?.alpha = 0
-                }
-                if let build, build.isRunning {
-                    // Turn the blur around from wherever it has got to.
-                    build.pauseAnimation()
-                    build.isReversed = true
-                    build.addCompletion { _ in end() }
-                    build.continueAnimation(withTimingParameters: UICubicTimingParameters(animationCurve: .easeInOut),
-                                            durationFactor: pace.settle / fullBuild)
-                } else {
-                    let clear = UIViewPropertyAnimator(duration: pace.settle, curve: .easeInOut) { veil.effect = nil }
-                    clear.addCompletion { _ in end() }
-                    clear.startAnimation()
-                }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+                UIView.animate(withDuration: 0.28, delay: 0, options: [.curveEaseInOut, .allowUserInteraction]) {
+                    picture.alpha = 0
+                } completion: { _ in end() }
             }
         }
     }
 
-    /// For layout changes that start from a button instead of the hinge.
-    static func runInKeyWindow(change: @escaping @MainActor () -> Void) {
+    private static var keyWindow: UIWindow? {
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        run(in: scenes.flatMap(\.windows).first(where: \.isKeyWindow), pace: .button, change: change)
+        return scenes.flatMap(\.windows).first(where: \.isKeyWindow)
     }
 
     /// The first picture of a window costs several frames. Taking one ahead of time moves that cost to launch.
     static func warmUp(_ window: UIWindow?) {
-        _ = window?.snapshotView(afterScreenUpdates: false)
+        guard let root = window?.rootViewController?.view else { return }
+        _ = root.resizableSnapshotView(from: CGRect(x: 0, y: 0, width: 40, height: 40), afterScreenUpdates: false, withCapInsets: .zero)
     }
 }
 
@@ -221,7 +264,7 @@ private struct HingeReader: UIViewRepresentable {
         let view = HingeView()
         let binding = $layout
         view.onChange = { layout in
-            // No SwiftUI animation: the new layout lands in one step under the fading picture of the old one.
+            // No SwiftUI animation: the real layout lands in one step under the gliding pictures of the panes.
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) { binding.wrappedValue = layout }
