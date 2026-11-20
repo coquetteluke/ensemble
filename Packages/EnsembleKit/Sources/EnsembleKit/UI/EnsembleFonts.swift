@@ -8,7 +8,7 @@ public enum EnsembleFonts {
     /// Interface text: Inter by Rasmus Andersson (SIL Open Font License 1.1).
     public static let interface = "Inter Variable"
 
-    /// What agents write: Ensemble Serif, built from Source Serif 4 (SIL Open Font License 1.1).
+    /// What agents write: Ensemble Serif, built from Roboto Serif (SIL Open Font License 1.1).
     public static let message = "Ensemble Serif"
 
     /// Registers the bundled fonts once. Cheap to call again; safe from any thread.

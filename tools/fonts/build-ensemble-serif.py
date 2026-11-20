@@ -1,15 +1,16 @@
-"""Builds Ensemble Serif from Source Serif 4 (SIL OFL 1.1), Option C3.
+"""Builds Ensemble Serif from Roboto Serif (SIL OFL 1.1), Option C2.
 
-Changes from Source Serif 4:
-- Optical size pinned to opsz = 20.0.
-- Weight axis spans user weights 300..900 (default 400), remapped through a composed avar curve
-  onto Source Serif 4 design weights tuned for dark-mode clarity:
-  300 -> 300, 400 -> 430, 500 -> 520, 600 -> 630, 700 -> 740, 800 -> 820, 900 -> 900.
-- Builds either Regular (from SourceSerif4[opsz,wght].ttf) or Italic (from
-  SourceSerif4-Italic[opsz,wght].ttf), with matching STAT, OS/2, head, and name records so
+Changes from Roboto Serif:
+- Optical size pinned to opsz = 14, width to wdth = 100 and grade to GRAD = 0 (the cut Luke picked from
+  rendered samples on 2026-11-20).
+- Weight axis spans user weights 300..900 (default 400), remapped through an avar curve so bold stays calm:
+  300 -> 300, 400 -> 400, 500 -> 470, 600 -> 520, 700 -> 570, 800 -> 680, 900 -> 800. Bold (700) is design
+  weight 570; Roboto Serif's own 700 looked "too boldy" next to the regular text.
+- Builds either Regular (from RobotoSerif[GRAD,opsz,wdth,wght].ttf) or Italic (from
+  RobotoSerif-Italic[GRAD,opsz,wdth,wght].ttf), with matching STAT, OS/2, head, and name records so
   CoreText and SwiftUI resolve bold, italic, and bold-italic without synthetic fallback.
-- Renamed to "Ensemble Serif" throughout (except the required copyright notice in nameID 0),
-  since "Source" is a Reserved Font Name under the SIL Open Font License 1.1.
+- Renamed to "Ensemble Serif" throughout (except the copyright notice in nameID 0). Roboto Serif has no
+  Reserved Font Name; the rename keeps the font Ensemble's own and avoids clashing with an installed copy.
 """
 import sys
 from fontTools.ttLib import TTFont
@@ -28,18 +29,18 @@ WEIGHTS = {
     900: "Black",
 }
 
-OPTICAL_SIZE = 20.0
-MIN_WEIGHT, DEFAULT_DESIGN_WEIGHT, MAX_WEIGHT = 300.0, 430.0, 900.0
+PINNED_AXES = {"opsz": 14.0, "wdth": 100.0, "GRAD": 0.0}
+MIN_WEIGHT, DEFAULT_DESIGN_WEIGHT, MAX_WEIGHT = 300.0, 400.0, 900.0
 
-# User weight -> Source Serif 4 design weight at opsz = 20 (Option C3).
+# User weight -> Roboto Serif design weight (Option C2).
 WEIGHT_CURVE = [
     (300.0, 300.0),
-    (400.0, 430.0),
-    (500.0, 520.0),
-    (600.0, 630.0),
-    (700.0, 740.0),
-    (800.0, 820.0),
-    (900.0, 900.0),
+    (400.0, 400.0),
+    (500.0, 470.0),
+    (600.0, 520.0),
+    (700.0, 570.0),
+    (800.0, 680.0),
+    (900.0, 800.0),
 ]
 
 
@@ -53,7 +54,7 @@ def interp_linear(pairs, x):
 
 
 def build_composed_avar(existing_seg):
-    """Compose user->design WEIGHT_CURVE with Source Serif 4's internal avar segment."""
+    """Compose user->design WEIGHT_CURVE with the source's own avar segment (identity when it has none)."""
     def u_to_xu(u):
         return (u - 400.0) / (400.0 - MIN_WEIGHT) if u <= 400.0 else (u - 400.0) / (MAX_WEIGHT - 400.0)
 
@@ -147,11 +148,11 @@ def build(src, out, style):
     font = TTFont(src)
     font = instancer.instantiateVariableFont(
         font,
-        {"opsz": OPTICAL_SIZE, "wght": (MIN_WEIGHT, DEFAULT_DESIGN_WEIGHT, MAX_WEIGHT)},
+        {**PINNED_AXES, "wght": (MIN_WEIGHT, DEFAULT_DESIGN_WEIGHT, MAX_WEIGHT)},
         updateFontNames=False,
     )
 
-    existing_seg = dict(font["avar"].segments.get("wght", {-1.0: -1.0, 0.0: 0.0, 1.0: 1.0}))
+    existing_seg = dict(font["avar"].segments.get("wght", {-1.0: -1.0, 0.0: 0.0, 1.0: 1.0})) if "avar" in font else {-1.0: -1.0, 0.0: 0.0, 1.0: 1.0}
 
     fvar = font["fvar"]
     wght = next(a for a in fvar.axes if a.axisTag == "wght")
@@ -175,7 +176,7 @@ def build(src, out, style):
         2: sub,
         3: f"2026;ENSEMBLE;{ps}",
         4: f"{family} {sub}",
-        5: "Version 1.000; optical size 20, dark-mode weight curve",
+        5: "Version 2.000; Roboto Serif at optical size 14 with a calmer bold",
         6: ps,
         16: family,
         17: sub,
@@ -199,10 +200,10 @@ def build(src, out, style):
             continue
         text = rec.toUnicode()
         for old, new in [
-            ("Source Serif 4", "Ensemble Serif"),
-            ("SourceSerif4Roman", "EnsembleSerifRoman"),
-            ("SourceSerif4Italic", "EnsembleSerifItalic"),
-            ("SourceSerif4", "EnsembleSerif"),
+            ("Roboto Serif", "Ensemble Serif"),
+            ("RobotoSerifRoman", "EnsembleSerifRoman"),
+            ("RobotoSerifItalic", "EnsembleSerifItalic"),
+            ("RobotoSerif", "EnsembleSerif"),
         ]:
             if old in text:
                 text = text.replace(old, new)
@@ -222,10 +223,10 @@ def build(src, out, style):
     leftover = [
         (r.nameID, r.toUnicode())
         for r in font["name"].names
-        if r.nameID != 0 and any(w in r.toUnicode().lower() for w in ("source", "adobe", "merriweather"))
+        if r.nameID != 0 and any(w in r.toUnicode().lower() for w in ("roboto", "source", "adobe", "merriweather"))
     ]
     if leftover:
-        raise RuntimeError(f"Reserved font name remains in name table: {leftover}")
+        raise RuntimeError(f"Source font name remains in name table: {leftover}")
     print("saved", out, "axes", [(a.axisTag, a.minValue, a.defaultValue, a.maxValue) for a in font["fvar"].axes], "leftover", leftover)
 
 

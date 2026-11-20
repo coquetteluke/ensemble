@@ -192,8 +192,8 @@ public struct Theme: Sendable {
 
 /// How agent text is set. Agents write in Ensemble Serif (see `EnsembleFonts` and
 /// tools/fonts/README.md); everything else uses Inter. It is drawn at the interface size with
-/// normal letter spacing (built from Source Serif 4 at optical size 20 with dark-mode weight
-/// tuning and true calligraphic italic) and lines about 1.6 times the type size apart. Shared by
+/// normal letter spacing (built from Roboto Serif at optical size 14 with a calmer bold and a
+/// true italic) and lines about 1.6 times the type size apart. Shared by
 /// the Mac app and the iPhone remote so both read the same.
 public enum MessageType {
     public static let scale: CGFloat = 1.0

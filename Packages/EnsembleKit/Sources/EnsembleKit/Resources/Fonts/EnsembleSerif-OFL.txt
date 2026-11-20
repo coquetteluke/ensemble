@@ -1,15 +1,8 @@
-Ensemble Serif is built from Adobe Source Serif 4, made for Ensemble in 2026 (Option C3:
-optical size pinned to 20, weight axis remapped for dark-mode clarity, true calligraphic italic,
-and renamed throughout). It is licensed under the SIL Open Font License 1.1 below. "Source" is a
-Reserved Font Name, so the modified font has the name "Ensemble Serif".
-Build script: tools/fonts/build-ensemble-serif.py
-
-Copyright 2014 - 2021 Adobe Systems Incorporated (http://www.adobe.com/), with Reserved Font Name 'Source'.
-Copyright 2014 The Source Serif 4 Project Authors (https://github.com/adobe-fonts/source-serif)
+Copyright 2020 The Roboto Serif Project Authors (https://github.com/googlefonts/RobotoSerif)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
-https://openfontlicense.org
+http://scripts.sil.org/OFL
 
 
 -----------------------------------------------------------
