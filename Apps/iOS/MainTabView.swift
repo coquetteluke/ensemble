@@ -82,7 +82,7 @@ private struct CompactChatDestination: View {
 /// A NavigationSplitView cannot do this. Asked for a list as wide as half the screen (the book fold) it shows its
 /// overlay mode for most of a second, the chat full width and dimmed under the list, before it settles. Here the
 /// panes are plain views in a row (or a column for the laptop fold), so a fold or a button moves them in one step
-/// and `PaneGlide` moves each pane from its old place to its new one.
+/// and the panes slide from their old places to their new ones.
 struct SplitRootView: View {
     let client: RemoteClient
     @Environment(RemoteAppModel.self) private var model
@@ -92,9 +92,11 @@ struct SplitRootView: View {
     /// Where the panes sit on screen, to turn the crease's screen position into a pane width.
     @State private var frame: CGRect = .zero
     @State private var toggleHaptic = 0
-    /// When the window last changed size (the phone was opened, shut or turned). A glide is skipped right after,
-    /// since iOS is moving the whole window then.
-    @State private var lastResize = Date.distantPast
+    /// How far each pane is from its place while a fold slides it there. Empty when nothing is moving.
+    @State private var paneShift: [PaneRole: CGSize] = [:]
+    /// A pane button's own glide is running until then, so the fold's slide stays out of its way.
+    @State private var buttonGlideUntil = Date.distantPast
+    @State private var lastSlide = Date.distantPast
 
     /// The top safe area is tall enough to be the upright screen's status band.
     private var liftsSidebar: Bool { frame.minY > 44 }
@@ -136,6 +138,8 @@ struct SplitRootView: View {
                     .ignoresSafeArea(.container, edges: liftsSidebar ? .top : [])
                     .frame(width: width)
                     .overlay(alignment: .trailing) { paneEdge }
+                    .offset(paneShift[.sidebar] ?? .zero)
+                    .zIndex(1)
             }
 
             // Always the second child, whatever is around it, so the chat keeps its place and its scroll position.
@@ -146,13 +150,17 @@ struct SplitRootView: View {
             .safeAreaPadding(.trailing, isBook && plan.detailsWidth != nil ? gutter : 0)
             .frame(height: stackedCrease.map { max(0, $0 - gutter) })
             .frame(maxWidth: .infinity, maxHeight: stackedCrease == nil ? .infinity : nil)
-            .background(RemoteTheme.background.ignoresSafeArea())
+            // The chat's colour runs on under its neighbours, so while it slides there is never a bare gap beside it.
+            .background(RemoteTheme.background.padding(.horizontal, -500).ignoresSafeArea())
+            .offset(paneShift[.chat] ?? .zero)
 
             if let width = plan.detailsWidth, let chat {
                 detailsPane(chat)
                     .safeAreaPadding(.leading, isBook ? gutter : 0)
                     .frame(width: width)
                     .overlay(alignment: .leading) { paneEdge }
+                    .offset(paneShift[.details] ?? .zero)
+                    .zIndex(1)
             }
 
             if stackedCrease != nil {
@@ -160,6 +168,8 @@ struct SplitRootView: View {
                     .padding(.top, gutter)
                     .frame(maxHeight: .infinity)
                     .background(RemoteTheme.sidebar.ignoresSafeArea())
+                    .offset(paneShift[.sidebar] ?? .zero)
+                    .zIndex(1)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -167,18 +177,12 @@ struct SplitRootView: View {
         // panes would jump around the moment you tap a text field while the phone is part folded.
         .background {
             Color.clear
-                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { newFrame in
-                    if newFrame.size != frame.size { lastResize = Date() }
-                    frame = newFrame
-                }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame = $0 }
                 // Outside the reader: a reader outside this modifier would still see the keyboard-shortened size.
                 .ignoresSafeArea(.keyboard)
         }
-        // The hinge changed the layout: glide the panes to their new places. The new layout is not on screen yet.
-        .onChange(of: fold) { old, new in
-            glide(from: self.plan(fold: old, sidebar: sidebarWanted, details: detailsWanted),
-                  to: self.plan(fold: new, sidebar: sidebarWanted, details: detailsWanted))
-        }
+        // The layout changed shape (the hinge): slide the real panes from where they were to where they are now.
+        .onChange(of: plan) { old, new in slide(from: old, to: new) }
         .environment(\.paneControls, PaneControls(
             isActive: true,
             sidebarShown: plan.showsSidebar || stackedCrease != nil,
@@ -212,13 +216,14 @@ struct SplitRootView: View {
         guard case .laptop = plan.shape, let chat else { return nil }
         switch plan.deck {
         case .none: return nil
-        case .sidebar: return AnyView(sidebarPane(compact: true))
-        case .details: return AnyView(detailsPane(chat))
+        case .sidebar: return AnyView(sidebarPane(compact: true).offset(paneShift[.sidebar] ?? .zero))
+        case .details: return AnyView(detailsPane(chat).offset(paneShift[.details] ?? .zero))
         }
     }
 
     private func toggleSidebar(_ plan: PanePlan) {
         toggleHaptic += 1
+        buttonGlideUntil = Date().addingTimeInterval(0.6)
         var sidebar = sidebarWanted, details = detailsWanted
         if plan.showsSidebar {
             sidebar = false
@@ -233,6 +238,7 @@ struct SplitRootView: View {
 
     private func toggleDetails(_ plan: PanePlan) {
         toggleHaptic += 1
+        buttonGlideUntil = Date().addingTimeInterval(0.6)
         var sidebar = sidebarWanted, details = detailsWanted
         if plan.showsDetails {
             details = false
@@ -248,18 +254,52 @@ struct SplitRootView: View {
 
     /// Starts the panes gliding from one plan's places to another's. Call it before the new layout is on screen.
     private func glide(from old: PanePlan, to new: PanePlan) {
-        guard old != new, frame.width > 0, Date().timeIntervalSince(lastResize) > 0.7 else { return }
+        guard old != new, frame.width > 0 else { return }
         PaneGlide.run(from: paneRects(old), to: paneRects(new), colors: [
             .chat: UIColor(RemoteTheme.background), .sidebar: UIColor(RemoteTheme.sidebar), .details: UIColor(RemoteTheme.sidebar),
         ])
+    }
+
+    /// The hinge changed the layout's shape. The panes are already in their new places and sizes: each one is put
+    /// back where it was with an offset, and the offsets then run down to zero. Nothing is laid out again while they
+    /// move, and the panes are the real views, so they stay right when iOS resizes the window mid-fold.
+    private func slide(from old: PanePlan, to new: PanePlan) {
+        let now = Date()
+        guard old.kind != new.kind, frame.width > 0, now > buttonGlideUntil,
+              now.timeIntervalSince(lastSlide) > 0.6, !UIAccessibility.isReduceMotionEnabled else { return }
+        let before = paneRects(old), after = paneRects(new)
+        let bounds = windowBounds
+        let isColumn = { (rect: CGRect) in rect.height >= bounds.height * 0.8 }
+        var shifts: [PaneRole: CGSize] = [:]
+        for (role, place) in after {
+            var start = before[role]
+            // A side pane that changes from a column to the lower half (or back) comes in from its edge instead.
+            if role != .chat, let was = start, isColumn(was) != isColumn(place) { start = nil }
+            let from = start ?? PaneGlide.offstage(role, like: place, in: bounds)
+            let shift = CGSize(width: from.minX - place.minX, height: from.minY - place.minY)
+            if abs(shift.width) > 24 || abs(shift.height) > 24 { shifts[role] = shift }
+        }
+        guard !shifts.isEmpty else { return }
+        lastSlide = now
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still) { paneShift = shifts }
+        // One turn of the run loop later, so the panes are drawn once at their starting places first.
+        DispatchQueue.main.async {
+            withAnimation(PaneMotion.fold) { paneShift = [:] }
+        }
+    }
+
+    private var windowBounds: CGRect {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        return scenes.flatMap(\.windows).first(where: \.isKeyWindow)?.bounds ?? frame
     }
 
     /// Where each pane sits for a plan, in window coordinates, edge to edge (the panes' backgrounds run under the
     /// safe areas). Together the rectangles cover the window, which is what lets the glide end exactly on the real
     /// layout.
     private func paneRects(_ plan: PanePlan) -> [PaneRole: CGRect] {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        let window = scenes.flatMap(\.windows).first(where: \.isKeyWindow)?.bounds ?? frame
+        let window = windowBounds
         var rects: [PaneRole: CGRect] = [:]
         switch plan.shape {
         case .row, .book:

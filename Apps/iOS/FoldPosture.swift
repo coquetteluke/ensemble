@@ -37,8 +37,8 @@ enum FoldMetrics {
 /// Watches the hinge and works out the fold layout, with the crease where it is on the glass.
 ///
 /// iOS reports "partly open" as soon as the hinge leaves flat, and "open" again only once it is flat. The layout
-/// follows at that moment, and `SplitRootView` glides the panes to their new places (`PaneGlide`). The crease is the
-/// middle of the physical screen, mapped into the window.
+/// follows at that moment, and `SplitRootView` slides the panes to their new places. The crease is the middle of the
+/// physical screen, mapped into the window.
 private final class HingeView: UIView {
     var onChange: ((FoldLayout) -> Void)?
     private var partlyOpen = false
@@ -108,16 +108,21 @@ enum PaneRole: Hashable, CaseIterable {
     case chat, sidebar, details
 }
 
-/// Moves the inner screen from one layout to another by gliding each pane from its old place to its new one.
+/// Moves the inner screen from one layout to another by gliding a picture of each pane from its old place to its
+/// new one. Used for the pane buttons only.
 ///
-/// Laying a chat out at a new width takes the main thread several frames, too long to animate the real views
-/// frame by frame without stutter. So the panes on screen during the move are pictures:
+/// Laying a chat out at a new width takes the main thread several frames. So the panes on screen during the move
+/// are pictures:
 /// - a picture of each pane in the old layout is put where the pane is, and starts to move and resize toward
 ///   where that pane will be. The move is handed to the system's renderer at once, so it runs at full speed while
 ///   the main thread works out the real new layout underneath;
 /// - when the new layout is ready, a picture of each pane in it fades in over the old one, inside the moving frame;
 /// - when the frames arrive, the pictures are removed and the real layout is exactly where they were.
 /// A pane that is new slides in from the edge it belongs to, and one that goes slides out to it.
+///
+/// Not used for the hinge. On the real phone iOS resizes the app's window for a moment while the hinge moves, and
+/// pictures pinned to fixed places then sit in the wrong place (dark blocks over half the screen). The hinge moves
+/// the real panes instead, see `SplitRootView.slide`.
 @MainActor
 enum PaneGlide {
     private static let travel: TimeInterval = 0.62
@@ -159,6 +164,9 @@ enum PaneGlide {
             let frame = UIView(frame: start)
             frame.clipsToBounds = true
             frame.backgroundColor = colors[role]
+            // A pane that is coming in has no picture yet. Shown empty, it read as a dark flash at the edge, so it
+            // stays hidden until its picture is ready and then fades in as it slides.
+            if from == nil { frame.alpha = 0 }
             var before: UIView?
             if let from, let picture = root.resizableSnapshotView(from: from, afterScreenUpdates: false, withCapInsets: .zero) {
                 picture.frame.origin = .zero
@@ -199,13 +207,17 @@ enum PaneGlide {
                           let picture = root.resizableSnapshotView(from: target, afterScreenUpdates: true, withCapInsets: .zero)
                     else { continue }
                     picture.frame.origin = .zero
-                    picture.alpha = 0
+                    // In a hidden frame the picture is shown at once, and the frame does the fading.
+                    picture.alpha = piece.frame.alpha == 0 ? 1 : 0
                     piece.frame.addSubview(picture)
                     after.append(picture)
                 }
                 UIView.animate(withDuration: contentFade, delay: 0, options: [.curveEaseInOut, .allowUserInteraction]) {
                     for picture in after { picture.alpha = 1 }
-                    for piece in pieces where piece.target != nil { piece.before?.alpha = 0 }
+                    for piece in pieces where piece.target != nil {
+                        piece.before?.alpha = 0
+                        piece.frame.alpha = 1
+                    }
                 } completion: { _ in
                     filled = true
                     finishIfReady()
@@ -215,7 +227,7 @@ enum PaneGlide {
     }
 
     /// Where a pane waits before it slides in, or goes when it slides out: just past the edge it belongs to.
-    private static func offstage(_ role: PaneRole, like rect: CGRect, in bounds: CGRect) -> CGRect {
+    static func offstage(_ role: PaneRole, like rect: CGRect, in bounds: CGRect) -> CGRect {
         let isColumn = rect.height >= bounds.height * 0.8
         switch role {
         case .sidebar where isColumn: return rect.offsetBy(dx: -rect.maxX, dy: 0)
