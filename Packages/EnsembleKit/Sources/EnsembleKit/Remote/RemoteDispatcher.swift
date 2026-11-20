@@ -48,6 +48,18 @@ public enum RemoteDispatcher {
                 r.text = r.text?.trimmingCharacters(in: .whitespacesAndNewlines).remoteNilIfEmpty
                 try await host.decideRoom(r)
                 return .ack
+            case .changeModel(let m):
+                try await host.changeModel(m)
+                return .ack
+            case .createSession(let s):
+                return .sessionCreated(try await host.createSession(s))
+            case .createRoom(let r):
+                return .roomCreated(try await host.createRoom(r))
+            case .sessionDiff(let sessionID):
+                return .sessionDiff(try await host.sessionDiff(sessionID: sessionID))
+            case .secondOpinion(let req):
+                try await host.requestSecondOpinion(req)
+                return .ack
             }
         } catch let error as RemoteError {
             return .error(error)

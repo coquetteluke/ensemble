@@ -16,29 +16,35 @@ extension SessionStore {
     /// The mode Proceed returns to: the mode before Plan, else the session's mode when the agent planned on its own
     /// initiative, else Accept edits.
     public func proceedMode(for sessionID: String) -> PermissionMode {
-        if let mode = modeBeforePlan[sessionID], mode != .plan { return mode }
-        if let mode = byID[sessionID]?.permissionMode, mode != .plan { return mode }
+        let primaryID = primarySessionID(for: sessionID)
+        if let mode = modeBeforePlan[primaryID] ?? modeBeforePlan[sessionID], mode != .plan { return mode }
+        if let mode = byID[primaryID]?.permissionMode, mode != .plan { return mode }
         return .acceptEdits
     }
 
     /// Plan support for the composer's menu, once loaded; nil until then.
-    public func planModeSupport(for sessionID: String) -> PlanModeSupport? { planSupport[sessionID] }
+    public func planModeSupport(for sessionID: String) -> PlanModeSupport? {
+        planSupport[primarySessionID(for: sessionID)]
+    }
 
     /// Asks the engine whether the session can use Plan mode, and remembers the answer.
     @discardableResult
     public func loadPlanModeSupport(for sessionID: String) async -> PlanModeSupport {
-        if let known = planSupport[sessionID] { return known }
-        let support = await interactionControl?.planModeSupport(sessionID: sessionID)
+        let primaryID = primarySessionID(for: sessionID)
+        if let known = planSupport[primaryID] { return known }
+        let targetID = backingSessionID(for: primaryID)
+        let support = await interactionControl?.planModeSupport(sessionID: targetID)
             ?? .unsupported(reason: "This engine has no plan mode.")
-        planSupport[sessionID] = support
+        planSupport[primaryID] = support
         return support
     }
 
     /// The next mode for Shift-Tab, skipping Plan where the session has no plan mode.
     public func nextPermissionMode(for sessionID: String) -> PermissionMode {
-        guard let session = byID[sessionID] else { return .ask }
+        let primaryID = primarySessionID(for: sessionID)
+        guard let session = byID[primaryID] else { return .ask }
         var next = session.permissionMode.next
-        if next == .plan, planSupport[sessionID]?.isSupported != true { next = next.next }
+        if next == .plan, planSupport[primaryID]?.isSupported != true { next = next.next }
         return next
     }
 
@@ -110,7 +116,12 @@ extension SessionStore {
             try await control.respondToPlan(sessionID: request.sessionID, requestID: request.id, decision: decision)
         }
         if !delivered, let session, let previousMode { session.permissionMode = previousMode }
-        if delivered, case .proceed = decision { modeBeforePlan[request.sessionID] = nil }
+        if delivered, case .proceed(let mode) = decision {
+            let primaryID = primarySessionID(for: request.sessionID)
+            modeBeforePlan[primaryID] = nil
+            modeBeforePlan[request.sessionID] = nil
+            threadLinks.updatePermissionMode(mode, forBackingID: request.sessionID, primaryID: primaryID)
+        }
         return delivered
     }
 

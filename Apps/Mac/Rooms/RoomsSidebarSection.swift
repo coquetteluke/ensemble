@@ -18,18 +18,24 @@ struct RoomsSidebarSection: View {
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
     @State private var deleting: RoomState?
+    @State private var newHovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: theme.z(1)) {
             SidebarSectionHeader(title: "Rooms", collapsed: collapsed, onToggle: onToggle) {
                 Button(action: onNewRoom) {
                     Image(systemName: "plus")
-                        .font(theme.font(size: 11, weight: .medium))
-                        .foregroundStyle(theme.textTertiary)
+                        .font(theme.font(size: 11, weight: .semibold))
+                        .foregroundStyle(newHovering ? theme.textPrimary : theme.textTertiary)
                         .frame(width: theme.z(20), height: theme.z(20))
+                        .background(
+                            RoundedRectangle(cornerRadius: theme.z(5), style: .continuous)
+                                .fill(newHovering ? theme.hover : .clear)
+                        )
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .onHover { newHovering = $0 }
                 .help("New room (Shift-Command-N)")
                 .accessibilityLabel("New room")
             }
@@ -53,16 +59,20 @@ struct RoomsSidebarSection: View {
                     Button(action: onNewRoom) {
                         HStack(spacing: theme.z(6)) {
                             Image(systemName: "plus")
-                                .font(theme.font(size: 10, weight: .semibold))
-                                .frame(width: theme.z(14))
+                                .font(theme.font(size: 9.5, weight: .bold))
+                                .foregroundStyle(theme.accent)
+                                .frame(width: theme.z(16), height: theme.z(16))
+                                .background(Circle().fill(theme.accent.opacity(theme.isDark ? 0.16 : 0.12)))
                             Text("New room")
+                                .font(theme.font(size: 13))
+                                .foregroundStyle(theme.textSecondary)
+                                .lineLimit(1)
                         }
-                        .font(theme.font(size: 13))
-                        .foregroundStyle(theme.textTertiary)
-                        .padding(.leading, theme.z(10))
+                        .padding(.horizontal, theme.z(9))
                         .frame(maxWidth: .infinity, minHeight: theme.z(30), alignment: .leading)
                     }
-                    .buttonStyle(RowButtonStyle())
+                    .buttonStyle(RowButtonStyle(cornerRadius: theme.z(7)))
+                    .help("Create a room for multiple agents (Shift-Command-N)")
                 }
             }
         }
@@ -99,8 +109,11 @@ struct RoomSidebarRow: View {
     let needsYou: Int
     let action: () -> Void
     @Environment(\.theme) private var theme
+    @State private var hovering = false
 
     var body: some View {
+        let dotRing = selected ? theme.selection : (hovering ? theme.hover : theme.sidebar)
+        let agents = room.spec.agents
         Button(action: action) {
             HStack(spacing: theme.z(6)) {
                 // The icon column lines the title up with session titles in the sections below.
@@ -113,15 +126,28 @@ struct RoomSidebarRow: View {
                     .foregroundStyle(selected ? theme.textPrimary : theme.textSidebar)
                     .lineLimit(1)
                     .padding(.trailing, theme.z(2))
-                AgentDots(colors: room.spec.agents.map(\.colorHex), size: 7, ring: selected ? theme.selection : theme.sidebar)
+                if !agents.isEmpty {
+                    HStack(spacing: theme.z(3)) {
+                        AgentDots(colors: agents.map(\.colorHex), size: 7, maxCount: 4, ring: dotRing)
+                        if agents.count > 4 {
+                            Text("+\(agents.count - 4)")
+                                .font(theme.font(size: 10.5, weight: .medium).monospacedDigit())
+                                .foregroundStyle(theme.textTertiary)
+                        }
+                    }
+                    .fixedSize()
+                }
                 Spacer(minLength: theme.z(6))
                 trailing
+                    .fixedSize()
             }
             .padding(.leading, theme.z(10))
             .padding(.trailing, theme.z(10))
             .frame(height: theme.z(30))
         }
-        .buttonStyle(RowButtonStyle(selected: selected))
+        .buttonStyle(RowButtonStyle(selected: selected, cornerRadius: theme.z(7)))
+        .onHover { hovering = $0 }
+        .help(helpText)
         .accessibilityLabel(accessibilityText)
     }
 
@@ -141,7 +167,14 @@ struct RoomSidebarRow: View {
             Text(Format.relative(room.board.last?.date ?? room.spec.created))
                 .font(theme.font(size: 11.5).monospacedDigit())
                 .foregroundStyle(theme.textTertiary)
+                .lineLimit(1)
         }
+    }
+
+    private var helpText: String {
+        let count = room.spec.agents.count
+        let noun = count == 1 ? "agent" : "agents"
+        return "\(room.spec.title) (\(room.spec.mode.label), \(count) \(noun)) \u{00B7} \(Format.abbreviatedPath(room.spec.directory))"
     }
 
     private var accessibilityText: String {

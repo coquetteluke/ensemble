@@ -24,7 +24,7 @@ struct RoomBoardThread: View {
             VStack(alignment: .leading, spacing: theme.z(0)) {
                 if let round = roundStart(message, previous: previous) {
                     RoundDivider(round: round)
-                        .padding(.top, index == 0 ? 0 : 18)
+                        .padding(.top, index == 0 ? 0 : theme.z(18))
                         .padding(.bottom, theme.z(4))
                 }
                 BoardMessageRow(message: message, agents: agents, models: models,
@@ -98,7 +98,7 @@ struct BoardMessageRow: View {
                 .font(theme.font(size: 11.5))
             }
             HStack {
-                Spacer(minLength: 72)
+                Spacer(minLength: theme.z(72))
                 Group {
                     if message.kind == .plan || message.kind == .verdict {
                         MarkdownView(message.text, fontSize: 13.5, textColor: theme.textPrimary)
@@ -167,6 +167,7 @@ struct AgentBoardRow: View {
                                 Text(item.agent?.name ?? item.name)
                                     .font(theme.font(size: 12.5, weight: .semibold))
                                     .foregroundStyle(theme.textPrimary)
+                                    .lineLimit(1)
                                     .frame(minWidth: theme.z(60), alignment: .leading)
                                 Text(item.task)
                                     .font(theme.font(size: 13))
@@ -176,6 +177,9 @@ struct AgentBoardRow: View {
                             }
                         }
                     }
+                    .padding(theme.z(10))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).fill(theme.codeBackground))
                 }
             }
                 .padding(theme.z(12))
@@ -240,6 +244,7 @@ struct AgentToAgentRow: View {
                 .font(theme.font(size: 11, weight: .medium))
                 .foregroundStyle(theme.textTertiary)
                 .frame(width: theme.z(26), height: theme.z(20), alignment: .center)
+                .padding(.top, theme.z(7))
                 .opacity(continued ? 0 : 1)
             HStack(alignment: .top, spacing: theme.z(10)) {
                 RoundedRectangle(cornerRadius: theme.z(1.5)).fill(color).frame(width: theme.z(3))
@@ -248,9 +253,9 @@ struct AgentToAgentRow: View {
                         HStack(spacing: theme.z(5)) {
                             if let from {
                                 AgentDot(hex: from.colorHex, size: 7)
-                                Text(from.name).fontWeight(.semibold).foregroundStyle(theme.textPrimary)
+                                Text(from.name).fontWeight(.semibold).foregroundStyle(theme.textPrimary).lineLimit(1)
                             }
-                            Text("to").foregroundStyle(theme.textTertiary)
+                            Text("to").foregroundStyle(theme.textTertiary).fixedSize()
                             RecipientNames(agents: to)
                             if let tag = message.kind.tag { RoomTag(text: tag) }
                         }
@@ -263,6 +268,7 @@ struct AgentToAgentRow: View {
             }
             .fixedSize(horizontal: false, vertical: true)
             .background(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).fill(color.opacity(theme.isDark ? 0.07 : 0.08)))
+            .overlay(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).strokeBorder(color.opacity(theme.isDark ? 0.16 : 0.22), lineWidth: 1))
             .clipShape(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -324,6 +330,7 @@ struct RecipientNames: View {
                     Text(agent.name + (index < agents.count - 1 ? "," : ""))
                         .fontWeight(.semibold)
                         .foregroundStyle(theme.textPrimary)
+                        .lineLimit(1)
                 }
             }
         }
@@ -343,9 +350,11 @@ struct AgentHeader: View {
                 Text(agent.name)
                     .font(theme.font(size: 12.5, weight: .semibold))
                     .foregroundStyle(theme.textPrimary)
+                    .lineLimit(1)
                 Text(shortModelName(agent.model, models: models))
                     .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textTertiary)
+                    .lineLimit(1)
             } else {
                 Text("Removed agent")
                     .font(theme.font(size: 12.5, weight: .semibold))
@@ -364,14 +373,15 @@ struct RoomNoticeRow: View {
         HStack(alignment: .firstTextBaseline, spacing: theme.z(8)) {
             Image(systemName: symbol)
                 .font(theme.font(size: 11))
+                .foregroundStyle(theme.textTertiary)
                 .frame(width: theme.z(16))
             Text(text)
                 .font(theme.font(size: 12.5))
+                .foregroundStyle(theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .selectableText()
             Spacer(minLength: 0)
         }
-        .foregroundStyle(theme.textTertiary)
         .frame(minHeight: theme.z(18))
     }
 

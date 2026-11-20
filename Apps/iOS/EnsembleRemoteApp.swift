@@ -6,12 +6,15 @@ struct EnsembleRemoteApp: App {
     @State private var model = RemoteAppModel()
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        RemoteTheme.registerFonts()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(model)
-                .preferredColorScheme(.dark)
-                .tint(.accentColor)
+                .remoteThemeEnvironment()
                 .onChange(of: scenePhase) { _, phase in model.scenePhaseChanged(phase) }
         }
     }

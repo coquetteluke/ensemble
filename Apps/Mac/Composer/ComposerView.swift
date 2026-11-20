@@ -59,6 +59,13 @@ struct ComposerView: View {
                     offer: offer,
                     onStart: { Task { await ModelSwitcher.accept(offer, store: store, window: window) } },
                     onCancel: { ModelSwitcher.decline(offer) })
+            } else if let staged = store.stagedModel(for: session.id) {
+                StagedModelBanner(
+                    stagedName: store.modelName(staged),
+                    currentName: store.modelName(session.info.model)
+                ) {
+                    store.clearStagedModel(for: session.id)
+                }
             }
             composerBox
         }
@@ -457,20 +464,58 @@ struct ComposerView: View {
         }
     }
 
-    /// The model's name; the row counts it as at most `maxTitleWidth` wide when given, and cuts it to the room left.
+    /// The model's name (staged next-message model when present, otherwise active); the row counts it as at most
+    /// `maxTitleWidth` wide when given, and cuts it to the room left.
     private func modelChip(maxTitleWidth: CGFloat?) -> some View {
-        let name = store.modelName(session.info.model)
-        return ComposerChip(symbol: nil, title: name, tint: nil, maxTitleWidth: maxTitleWidth) {
+        let effective = store.effectiveModel(for: session)
+        let staged = store.stagedModel(for: session.id)
+        let name = store.modelName(effective)
+        let helpText = staged != nil
+            ? "Next message: \(name) (current: \(store.modelName(session.info.model)))"
+            : "Model: \(name)"
+        return ComposerChip(symbol: nil, title: name, tint: staged != nil ? theme.accent : nil,
+                            badge: staged != nil ? "Next" : nil, maxTitleWidth: maxTitleWidth) {
             showModelMenu.toggle()
         }
-        .help("Model: \(name)")
+        .help(helpText)
         .accessibilityLabel("Model")
-        .accessibilityValue(name)
+        .accessibilityValue(staged != nil ? "\(name), next message" : name)
+        .contextMenu {
+            if staged != nil {
+                Button("Keep \(store.modelName(session.info.model))") {
+                    store.clearStagedModel(for: session.id)
+                }
+            }
+        }
         .popover(isPresented: $showModelMenu, arrowEdge: .bottom) {
-            ModelPickerView(models: store.models, billing: modelBilling, current: session.info.model,
-                            context: .init(store: store, session: session)) { ref in
-                showModelMenu = false
-                Task { await ModelSwitcher.pick(ref, session: session, store: store, window: window) }
+            VStack(spacing: 0) {
+                ModelPickerView(models: store.models, billing: modelBilling, current: effective,
+                                context: .init(store: store, session: session)) { ref in
+                    showModelMenu = false
+                    Task { await ModelSwitcher.pick(ref, session: session, store: store, window: window) }
+                }
+                if staged != nil {
+                    HLine(color: theme.border)
+                    Button {
+                        store.clearStagedModel(for: session.id)
+                        showModelMenu = false
+                    } label: {
+                        HStack(spacing: theme.z(6)) {
+                            Image(systemName: "xmark")
+                                .font(theme.font(size: 10.5, weight: .semibold))
+                            Text("Keep \(store.modelName(session.info.model))")
+                                .font(theme.font(size: 12.5))
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(theme.textSecondary)
+                        .padding(.horizontal, theme.z(14))
+                        .frame(height: theme.z(32))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(RowButtonStyle())
+                    .padding(theme.z(4))
+                    .background(theme.popover)
+                }
             }
             .ensembleTheme()
         }
@@ -510,23 +555,9 @@ struct ComposerView: View {
     @ViewBuilder private var fastToggle: some View {
         if hasFastMode {
             let on = session.fastMode
-            Button {
+            FastModeToggle(isOn: on) {
                 Task { await store.setFastMode(!on, for: session.id) }
-            } label: {
-                Image(systemName: on ? "bolt.fill" : "bolt")
-                    .font(theme.font(size: 13))
-                    .foregroundStyle(on ? theme.accent : theme.textSecondary)
-                    .frame(width: theme.z(30), height: theme.z(28))
-                    .background(
-                        RoundedRectangle(cornerRadius: theme.z(8), style: .continuous)
-                            .fill(on ? theme.accent.opacity(0.14) : .clear)
-                    )
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help(on ? "Fast mode is on" : "Fast mode is off")
-            .accessibilityLabel("Fast mode")
-            .accessibilityValue(on ? "On" : "Off")
         }
     }
 
@@ -534,7 +565,7 @@ struct ComposerView: View {
         let hasText = !(snapshotDraft ?? draft.wrappedValue).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
         if session.isWorking && !hasText {
             Button {
-                Task { await store.stop() }
+                Task { await store.stop(session.id) }
             } label: {
                 RoundedRectangle(cornerRadius: theme.z(2.5))
                     .fill(theme.background)
@@ -560,6 +591,90 @@ struct ComposerView: View {
             .help(session.isWorking ? "Queue (Return): sent when the agent finishes" : "Send (Return)")
             .accessibilityLabel(session.isWorking ? "Queue" : "Send")
         }
+    }
+}
+
+/// Slim dismissible bar above the composer when a model switch is staged for the next message.
+private struct StagedModelBanner: View {
+    let stagedName: String
+    let currentName: String
+    let onClear: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var clearHovering = false
+
+    var body: some View {
+        HStack(spacing: theme.z(8)) {
+            Image(systemName: "arrow.right.circle.fill")
+                .font(theme.font(size: 11.5))
+                .foregroundStyle(theme.accent)
+            Text("Next message: \(stagedName)")
+                .font(theme.font(size: 12, weight: .medium))
+                .foregroundStyle(theme.textPrimary)
+                .lineLimit(1)
+            Spacer(minLength: theme.z(8))
+            Button(action: onClear) {
+                HStack(spacing: theme.z(4)) {
+                    Text(currentName.isEmpty ? "Cancel" : "Keep \(currentName)")
+                        .lineLimit(1)
+                    Image(systemName: "xmark")
+                        .font(theme.font(size: 9, weight: .semibold))
+                }
+                .font(theme.font(size: 11.5))
+                .foregroundStyle(clearHovering ? theme.textPrimary : theme.textSecondary)
+                .padding(.horizontal, theme.z(7))
+                .frame(height: theme.z(22))
+                .background(
+                    RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                        .fill(clearHovering ? theme.hover : .clear)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            .onHover { clearHovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: clearHovering)
+            .help(currentName.isEmpty ? "Cancel staged model switch" : "Keep \(currentName)")
+        }
+        .padding(.horizontal, theme.z(10))
+        .padding(.vertical, theme.z(5))
+        .background(
+            RoundedRectangle(cornerRadius: theme.z(10), style: .continuous)
+                .fill(theme.elevated)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.z(10), style: .continuous)
+                .strokeBorder(theme.border, lineWidth: 1)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Next message: \(stagedName)")
+    }
+}
+
+/// Fast mode button in the composer's bottom row, matching `ComposerIconButton` and `ComposerChip` hover states.
+private struct FastModeToggle: View {
+    let isOn: Bool
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isOn ? "bolt.fill" : "bolt")
+                .font(theme.font(size: 13))
+                .foregroundStyle(isOn ? theme.accent : (hovering ? theme.textPrimary : theme.textSecondary))
+                .frame(width: theme.z(30), height: theme.z(28))
+                .background(
+                    RoundedRectangle(cornerRadius: theme.z(8), style: .continuous)
+                        .fill(isOn ? theme.accent.opacity(hovering ? 0.20 : 0.14) : (hovering ? theme.hover : .clear))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help(isOn ? "Fast mode is on" : "Fast mode is off")
+        .accessibilityLabel("Fast mode")
+        .accessibilityValue(isOn ? "On" : "Off")
     }
 }
 
@@ -617,6 +732,7 @@ struct ComposerChip: View {
     let symbol: String?
     let title: String
     let tint: Color?
+    var badge: String? = nil
     var iconOnly = false
     /// The row counts the title as at most this wide; it is cut to the room the row gives it.
     var maxTitleWidth: CGFloat?
@@ -636,6 +752,15 @@ struct ComposerChip: View {
                             .font(theme.font(size: 12.5))
                             .lineLimit(1)
                             .truncationMode(.tail)
+                    }
+                    if let badge {
+                        Text(badge)
+                            .font(theme.font(size: 10, weight: .semibold))
+                            .foregroundStyle(theme.accent)
+                            .padding(.horizontal, theme.z(5))
+                            .frame(height: theme.z(16))
+                            .background(Capsule().fill(theme.accent.opacity(0.14)))
+                            .fixedSize()
                     }
                 }
                 Image(systemName: "chevron.down")

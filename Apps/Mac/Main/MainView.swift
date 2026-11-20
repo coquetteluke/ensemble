@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import EnsembleKit
 
 /// The main window: sidebar, centre (transcript and composer, two to four sessions side by side, a room, or Hub /
@@ -18,6 +19,8 @@ struct MainView: View {
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
     @Environment(\.openSettings) private var openSettings
+    @State private var showPromoteSheet = false
+    @State private var promotingToRoom = false
 
     static let sidebarWidth: CGFloat = 260
     static let panelWidth: CGFloat = 303
@@ -124,6 +127,26 @@ struct MainView: View {
             NewSessionSheet(store: store, window: window)
                 .ensembleTheme()
         }
+        .sheet(isPresented: $showPromoteSheet) {
+            if let session = store.selected, let activeRooms {
+                PromoteToRoomSheet(
+                    store: store,
+                    session: session,
+                    rooms: activeRooms,
+                    isCreating: $promotingToRoom
+                ) { roomID in
+                    window.openRoom(roomID, rooms: activeRooms)
+                }
+                .ensembleTheme()
+            }
+        }
+        .background { if !isSnapshot { commandShortcuts } }
+        .onReceive(NotificationCenter.default.publisher(for: .ensemblePromoteToRoom)) { _ in
+            openPromoteSheet()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ensembleCopyTranscriptMarkdown)) { _ in
+            copyTranscriptMarkdown()
+        }
         .claudeImport(store: store)
         .alert("Something went wrong", isPresented: errorShown, presenting: store.lastError) { _ in
             Button("OK") { store.lastError = nil }
@@ -138,6 +161,79 @@ struct MainView: View {
         } message: { pending in
             Text(Self.trustMessage(pending))
         }
+    }
+
+    private var activeRooms: RoomsController? {
+        rooms ?? RoomsController.live ?? AgentToolsCenter.shared.rooms
+    }
+
+    private var commandShortcuts: some View {
+        ZStack {
+            Button("Switch model") {
+                if window.route == .session, store.selected != nil { window.requestedMenu = .model }
+            }
+            .appShortcut(.switchModel)
+            Button("Open Session Hub") {
+                window.route = .hub
+            }
+            .appShortcut(.openHub)
+            Button("Focus composer") {
+                if window.route == .session, store.selected != nil { window.composerFocusToken &+= 1 }
+            }
+            .appShortcut(.focusComposer)
+        }
+        .opacity(0)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+
+    private func openPromoteSheet() {
+        guard window.route == .session, let session = store.selected,
+              !session.isSubagent, store.sessionAgentIDs[session.id] == nil,
+              store.models.filter(\.available).count >= 2,
+              activeRooms != nil, !promotingToRoom else { return }
+        showPromoteSheet = true
+    }
+
+    private func copyTranscriptMarkdown() {
+        let markdown: String
+        if window.route == .room, let engine = activeRooms?.selectedEngine {
+            let agentsByID = Dictionary(engine.agents.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            let items: [TranscriptItem] = engine.state.board.map { message in
+                switch message.from {
+                case .user:
+                    .user(id: message.id.uuidString, text: message.text, date: message.date)
+                case .agent(let agentID):
+                    if message.to.isEmpty {
+                        .agentText(id: message.id.uuidString, text: message.text, agentID: agentID, streaming: false)
+                    } else {
+                        .board(id: message.id.uuidString, fromAgentID: agentID, toAgentIDs: message.to, text: message.text, date: message.date)
+                    }
+                case .room:
+                    .notice(id: message.id.uuidString, text: message.text)
+                }
+            }
+            markdown = TranscriptExport.markdown(
+                title: engine.state.spec.title,
+                directory: engine.state.spec.directory,
+                modelName: nil,
+                items: items,
+                agents: agentsByID
+            )
+        } else if window.route == .session, let session = store.selected {
+            markdown = TranscriptExport.markdown(
+                title: session.title,
+                directory: session.directory,
+                modelName: store.modelName(session.info.model),
+                items: session.items,
+                agents: store.agents
+            )
+        } else {
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(markdown, forType: .string)
     }
 
     private var trustShown: Binding<Bool> {
@@ -292,7 +388,7 @@ struct CenterColumn: View {
     var body: some View {
         VStack(spacing: 0) {
             // A room draws its own header (title, mode, phase, Pause, Stop, Take over); split panes draw one each.
-            if window.route != .room && !showsSplit { CenterHeader(store: store, window: window) }
+            if window.route != .room && !showsSplit { CenterHeader(store: store, window: window, rooms: rooms) }
             switch window.route {
             case .session:
                 if showsSplit {
@@ -459,7 +555,19 @@ private struct RoomsWindowSync: ViewModifier {
 struct CenterHeader: View {
     let store: SessionStore
     @Bindable var window: WindowState
+    var rooms: RoomsController? = nil
     @Environment(\.theme) private var theme
+    @Environment(\.isSnapshot) private var isSnapshot
+    @State private var showPromoteSheet = false
+    @State private var promotingToRoom = false
+
+    private var activeRooms: RoomsController? {
+        rooms ?? RoomsController.live ?? AgentToolsCenter.shared.rooms
+    }
+
+    private func addAgentDisabled(for session: SessionModel) -> Bool {
+        store.models.filter(\.available).count < 2 || promotingToRoom || activeRooms == nil
+    }
 
     var body: some View {
         HStack(spacing: theme.z(8)) {
@@ -506,8 +614,25 @@ struct CenterHeader: View {
             case .room:
                 EmptyView()
             }
-            Spacer(minLength: theme.z(60))
-            if window.route == .session, store.selected != nil {
+            Spacer(minLength: theme.z(12))
+            if window.route == .session, let session = store.selected {
+                if !session.isSubagent, store.sessionAgentIDs[session.id] == nil, !isSnapshot {
+                    let disabled = addAgentDisabled(for: session)
+                    Button {
+                        if activeRooms != nil { showPromoteSheet = true }
+                    } label: {
+                        HStack(spacing: theme.z(5)) {
+                            Image(systemName: "person.badge.plus")
+                                .font(theme.font(size: 11, weight: .medium))
+                            Text(promotingToRoom ? "Creating..." : "Add agent")
+                                .font(theme.font(size: 12, weight: .medium))
+                                .lineLimit(1)
+                        }
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .disabled(disabled)
+                    .help(disabled ? "Needs at least 2 available models" : "Add agents and continue in a room")
+                }
                 // Room for the window's toolbar button when no pane is open on the right.
                 TranscriptViewModeMenu()
                     .padding(.trailing, window.showContextPanel ? theme.z(12) : MainView.toolbarButtonsWidth)
@@ -517,6 +642,19 @@ struct CenterHeader: View {
         .frame(height: 52)
         .background(theme.background)
         .zIndex(1)
+        .sheet(isPresented: $showPromoteSheet) {
+            if let session = store.selected, let activeRooms {
+                PromoteToRoomSheet(
+                    store: store,
+                    session: session,
+                    rooms: activeRooms,
+                    isCreating: $promotingToRoom
+                ) { roomID in
+                    window.openRoom(roomID, rooms: activeRooms)
+                }
+                .ensembleTheme()
+            }
+        }
     }
 }
 

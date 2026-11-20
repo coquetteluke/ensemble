@@ -593,4 +593,68 @@ final class SafetyCheckFakeEngine: OpenCodeAPI, EngineSafetyCheckSupport, Sendab
         #expect(engine.replies.isEmpty)
         #expect(store.safetyCheckDecisions(for: Self.sessionID).first?.reason == "Outside the project folder")
     }
+
+    @Test func autoApprovedPromptsStayHiddenFromVisiblePermissionsAndWaitingActivity() async throws {
+        let engine = SafetyCheckFakeEngine()
+        let gate = TestGate()
+        engine.state.withLock {
+            $0.gate = gate
+            $0.answer = "ALLOW: safe test run"
+        }
+        let store = makeStore(engine)
+        var emitted: [PermissionRequest] = []
+        let stream = store.safetyCheck.visiblePermissions()
+        let reader = Task { @MainActor in
+            for await request in stream { emitted.append(request) }
+        }
+        defer { reader.cancel() }
+
+        store.apply(.activity(sessionID: Self.sessionID, .working))
+        ask(store, "npm test")
+        // Engine streams `.activity(.waitingForPermission)` right after `.permissionAsked`.
+        store.apply(.activity(sessionID: Self.sessionID, .waitingForPermission))
+
+        #expect(store.safetyCheck.isHolding("per_1"))
+        #expect(!shown(store, "per_1"))
+        #expect(store.session(Self.sessionID)?.activity == .working)
+        #expect(emitted.isEmpty)
+
+        gate.open()
+        try await pollUntil("prompt answered") { engine.replies.count == 1 }
+        try await waitUntil("check finished") { !store.safetyCheck.isHolding("per_1") }
+        #expect(!shown(store, "per_1"))
+        #expect(store.session(Self.sessionID)?.activity == .working)
+        #expect(emitted.isEmpty)
+    }
+
+    @Test func releasedAskPromptsEmitOnceAfterSafetyCheckFinishes() async throws {
+        let engine = SafetyCheckFakeEngine()
+        let gate = TestGate()
+        engine.state.withLock {
+            $0.gate = gate
+            $0.answer = "ASK: needs confirmation"
+        }
+        let store = makeStore(engine)
+        var emitted: [PermissionRequest] = []
+        let stream = store.safetyCheck.visiblePermissions()
+        let reader = Task { @MainActor in
+            for await request in stream { emitted.append(request) }
+        }
+        defer { reader.cancel() }
+
+        store.apply(.activity(sessionID: Self.sessionID, .working))
+        ask(store, "npm run migrate")
+        store.apply(.activity(sessionID: Self.sessionID, .waitingForPermission))
+
+        #expect(store.safetyCheck.isHolding("per_1"))
+        #expect(store.session(Self.sessionID)?.activity == .working)
+        #expect(emitted.isEmpty)
+
+        gate.open()
+        try await waitUntil("released to visiblePermissions") { emitted.count == 1 }
+        #expect(emitted.map(\.id) == ["per_1"])
+        #expect(shown(store, "per_1"))
+        #expect(store.session(Self.sessionID)?.activity == .waitingForPermission)
+        #expect(!store.safetyCheck.isHolding("per_1"))
+    }
 }

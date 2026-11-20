@@ -25,19 +25,22 @@ public struct RemoteHello: Codable, Hashable, Sendable {
     public var deviceID: String
     /// 32 random bytes, base64url.
     public var clientNonce: String
-    /// `HMAC-SHA256(token, serverNonce || clientNonce || "ensemble-client")`, base64url.
+    /// The phone's ephemeral X25519 public key for this connection: raw 32 bytes, base64url. Never reused.
+    public var ephemeralKey: String
+    /// `HMAC-SHA256(token, serverNonce || clientNonce || macKey || phoneKey || "ensemble-client")`, base64url.
     public var proof: String
     /// The host the phone dialed, exactly as in the pairing code. Bound into the channel keys.
     public var dialedHost: String
     /// The port the phone dialed. Bound into the channel keys.
     public var dialedPort: Int
 
-    public init(protocolVersion: Int = remoteProtocolVersion, deviceName: String, deviceID: String, clientNonce: String, proof: String,
-                dialedHost: String, dialedPort: Int) {
+    public init(protocolVersion: Int = remoteProtocolVersion, deviceName: String, deviceID: String, clientNonce: String, ephemeralKey: String,
+                proof: String, dialedHost: String, dialedPort: Int) {
         self.protocolVersion = protocolVersion
         self.deviceName = deviceName
         self.deviceID = deviceID
         self.clientNonce = clientNonce
+        self.ephemeralKey = ephemeralKey
         self.proof = proof
         self.dialedHost = dialedHost
         self.dialedPort = dialedPort
@@ -129,6 +132,16 @@ public enum RemoteClientMessage: Hashable, Sendable {
     /// Reply: `.ack`. Answers what a room waits on (`RemoteRoom.decision`). Added after protocol 3 shipped: a Mac without
     /// it answers `unknownMessage`.
     case decideRoom(RemoteRoomDecisionReply)
+    /// Reply: `.ack`. Switches or stages the model in a session.
+    case changeModel(RemoteChangeModel)
+    /// Reply: `.sessionCreated`. Creates a new session on the Mac.
+    case createSession(RemoteCreateSession)
+    /// Reply: `.roomCreated`. Creates a new multi-agent room on the Mac.
+    case createRoom(RemoteCreateRoom)
+    /// Reply: `.sessionDiff`. Fetches the working-tree diff for a session or room.
+    case sessionDiff(sessionID: String)
+    /// Reply: `.ack`. Requests an inline second opinion on an assistant reply.
+    case secondOpinion(RemoteSecondOpinionRequest)
 
     public var typeName: String {
         switch self {
@@ -146,6 +159,11 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .answerQuestion: "answerQuestion"
         case .respondToPlan: "respondToPlan"
         case .decideRoom: "roomDecision"
+        case .changeModel: "changeModel"
+        case .createSession: "createSession"
+        case .createRoom: "createRoom"
+        case .sessionDiff: "sessionDiff"
+        case .secondOpinion: "secondOpinion"
         }
     }
 
@@ -154,7 +172,8 @@ public enum RemoteClientMessage: Hashable, Sendable {
         switch self {
         case .hello(let p): try c.encode(p, forKey: .data)
         case .hubSnapshot, .roomsRequest, .usageRequest: break
-        case .openSession(let id), .closeSession(let id): try c.encode(RemoteSessionRef(sessionID: id), forKey: .data)
+        case .openSession(let id), .closeSession(let id), .sessionDiff(let id):
+            try c.encode(RemoteSessionRef(sessionID: id), forKey: .data)
         case .sendMessage(let p): try c.encode(p, forKey: .data)
         case .replyPermission(let p): try c.encode(p, forKey: .data)
         case .setPermissionMode(let p): try c.encode(p, forKey: .data)
@@ -163,6 +182,10 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .answerQuestion(let p): try c.encode(p, forKey: .data)
         case .respondToPlan(let p): try c.encode(p, forKey: .data)
         case .decideRoom(let p): try c.encode(p, forKey: .data)
+        case .changeModel(let p): try c.encode(p, forKey: .data)
+        case .createSession(let p): try c.encode(p, forKey: .data)
+        case .createRoom(let p): try c.encode(p, forKey: .data)
+        case .secondOpinion(let p): try c.encode(p, forKey: .data)
         }
     }
 
@@ -183,6 +206,11 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case "answerQuestion": return .answerQuestion(try c.decode(RemoteQuestionAnswer.self, forKey: .data))
         case "respondToPlan": return .respondToPlan(try c.decode(RemotePlanResponse.self, forKey: .data))
         case "roomDecision": return .decideRoom(try c.decode(RemoteRoomDecisionReply.self, forKey: .data))
+        case "changeModel": return .changeModel(try c.decode(RemoteChangeModel.self, forKey: .data))
+        case "createSession": return .createSession(try c.decode(RemoteCreateSession.self, forKey: .data))
+        case "createRoom": return .createRoom(try c.decode(RemoteCreateRoom.self, forKey: .data))
+        case "sessionDiff": return .sessionDiff(sessionID: try c.decode(RemoteSessionRef.self, forKey: .data).sessionID)
+        case "secondOpinion": return .secondOpinion(try c.decode(RemoteSecondOpinionRequest.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)
         }
     }
@@ -195,10 +223,13 @@ public struct RemoteChallenge: Codable, Hashable, Sendable {
     public var protocolVersion: Int
     /// 32 random bytes, base64url, new for every connection.
     public var serverNonce: String
+    /// The Mac's ephemeral X25519 public key for this connection: raw 32 bytes, base64url. New for every connection.
+    public var ephemeralKey: String
 
-    public init(protocolVersion: Int = remoteProtocolVersion, serverNonce: String) {
+    public init(protocolVersion: Int = remoteProtocolVersion, serverNonce: String, ephemeralKey: String) {
         self.protocolVersion = protocolVersion
         self.serverNonce = serverNonce
+        self.ephemeralKey = ephemeralKey
     }
 }
 
@@ -210,7 +241,7 @@ public struct RemoteWelcome: Codable, Hashable, Sendable {
     public var deviceID: String
     /// Ensemble version on the Mac.
     public var appVersion: String
-    /// `HMAC-SHA256(token, clientNonce || serverNonce || "ensemble-server")`, base64url.
+    /// `HMAC-SHA256(token, clientNonce || serverNonce || phoneKey || macKey || "ensemble-server")`, base64url.
     public var serverProof: String
 
     public init(protocolVersion: Int = remoteProtocolVersion, macName: String, deviceID: String, appVersion: String, serverProof: String) {
@@ -229,11 +260,16 @@ public enum RemoteServerMessage: Hashable, Sendable {
     /// Sent once, right after the connection opens.
     case challenge(RemoteChallenge)
     case welcome(RemoteWelcome)
+    /// Sent inside the sealed channel right after `welcome` (and when the Mac's relay moves) so paired phones learn it.
+    case relayDetails(RemotePairing.Relay)
     case hub(RemoteHubSnapshot)
     case transcript(RemoteTranscript)
     case rooms([RemoteRoom])
     case usage(RemoteUsageSummary)
     case update(RemoteUpdate)
+    case sessionCreated(SessionSummary)
+    case roomCreated(RemoteRoom)
+    case sessionDiff(RemoteSessionDiff)
     /// The request in `re` was carried out.
     case ack
     case error(RemoteError)
@@ -242,11 +278,15 @@ public enum RemoteServerMessage: Hashable, Sendable {
         switch self {
         case .challenge: "challenge"
         case .welcome: "welcome"
+        case .relayDetails: "relayDetails"
         case .hub: "hub"
         case .transcript: "transcript"
         case .rooms: "rooms"
         case .usage: "usage"
         case .update: "update"
+        case .sessionCreated: "sessionCreated"
+        case .roomCreated: "roomCreated"
+        case .sessionDiff: "sessionDiff"
         case .ack: "ack"
         case .error: "error"
         }
@@ -257,11 +297,15 @@ public enum RemoteServerMessage: Hashable, Sendable {
         switch self {
         case .challenge(let p): try c.encode(p, forKey: .data)
         case .welcome(let p): try c.encode(p, forKey: .data)
+        case .relayDetails(let p): try c.encode(p, forKey: .data)
         case .hub(let p): try c.encode(p, forKey: .data)
         case .transcript(let p): try c.encode(p, forKey: .data)
         case .rooms(let p): try c.encode(RemoteRoomsPayload(rooms: p), forKey: .data)
         case .usage(let p): try c.encode(p, forKey: .data)
         case .update(let p): try c.encode(p, forKey: .data)
+        case .sessionCreated(let p): try c.encode(p, forKey: .data)
+        case .roomCreated(let p): try c.encode(p, forKey: .data)
+        case .sessionDiff(let p): try c.encode(p, forKey: .data)
         case .ack: break
         case .error(let p): try c.encode(p, forKey: .data)
         }
@@ -272,11 +316,15 @@ public enum RemoteServerMessage: Hashable, Sendable {
         switch type {
         case "challenge": return .challenge(try c.decode(RemoteChallenge.self, forKey: .data))
         case "welcome": return .welcome(try c.decode(RemoteWelcome.self, forKey: .data))
+        case "relayDetails": return .relayDetails(try c.decode(RemotePairing.Relay.self, forKey: .data))
         case "hub": return .hub(try c.decode(RemoteHubSnapshot.self, forKey: .data))
         case "transcript": return .transcript(try c.decode(RemoteTranscript.self, forKey: .data))
         case "rooms": return .rooms(try c.decode(RemoteRoomsPayload.self, forKey: .data).rooms)
         case "usage": return .usage(try c.decode(RemoteUsageSummary.self, forKey: .data))
         case "update": return .update(try c.decode(RemoteUpdate.self, forKey: .data))
+        case "sessionCreated": return .sessionCreated(try c.decode(SessionSummary.self, forKey: .data))
+        case "roomCreated": return .roomCreated(try c.decode(RemoteRoom.self, forKey: .data))
+        case "sessionDiff": return .sessionDiff(try c.decode(RemoteSessionDiff.self, forKey: .data))
         case "ack": return .ack
         case "error": return .error(try c.decode(RemoteError.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)

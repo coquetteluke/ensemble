@@ -1,4 +1,5 @@
 #if os(macOS)
+import CryptoKit
 import Foundation
 import Network
 import Synchronization
@@ -46,7 +47,7 @@ import Testing
         c.start()
         defer { c.stop() }
 
-        try await waitUntil { c.state == .connected(host: "127.0.0.1") }
+        try await waitUntil { c.state == .connected(via: .direct(host: "127.0.0.1")) }
         try await waitUntil { c.sessions.count == 4 && c.rooms.count == 1 && c.usage != nil }
         #expect(c.macName == "Loopback Mac")
         #expect(c.permissions.map(\.id) == [RemoteDemoData.IDs.permission])
@@ -80,7 +81,7 @@ import Testing
         let c = client(h, hosts: ["127.0.0.2", "127.0.0.1"], handshakeTimeout: .seconds(3))
         c.start()
         defer { c.stop() }
-        try await waitUntil { c.state == .connected(host: "127.0.0.1") }
+        try await waitUntil { c.state == .connected(via: .direct(host: "127.0.0.1")) }
     }
 
     @Test func actionsReachTheHost() async throws {
@@ -235,6 +236,73 @@ import Testing
         #expect(await h.server.status.devices.isEmpty)
     }
 
+    @Test func versionThreeIsRefused() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        // A hello that is otherwise complete but says it speaks protocol 3 (frames inside it are version 4).
+        let phone = try await rawPhone(h, helloVersion: 3)
+        defer { phone.task.cancel() }
+        guard case .string = phone.reply else {
+            Issue.record("The refusal of an old phone must be plaintext")
+            return
+        }
+        let reply = try RemoteCoding.decode(RemoteServerFrame.self, from: Self.data(phone.reply))
+        guard case .error(let error) = reply.message else {
+            Issue.record("Expected an error, got \(reply.message.typeName)")
+            return
+        }
+        #expect(error.code == .unsupportedVersion)
+        #expect(await Self.connectionEnds(phone.task, within: TestWait.ceiling))
+        #expect(await h.server.status.devices.isEmpty)
+    }
+
+    @Test func helloWithAVersionThreeFrameHeaderIsRefused() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let url = try #require(RemotePairing.webSocketURL(host: "127.0.0.1", port: h.port))
+        let task = URLSession.shared.webSocketTask(with: url)
+        task.resume()
+        defer { task.cancel() }
+        _ = try await task.receive()
+        // What a real protocol 3 phone sends: v=3 in the frame header and no ephemeral key.
+        let hello = #"{"v":3,"id":"1","type":"hello","data":{"protocolVersion":3,"deviceName":"Old","deviceID":"old","clientNonce":"\#(RemoteHandshake.encode(RemoteHandshake.makeNonce()))","proof":"\#(RemoteHandshake.encode(RemoteHandshake.makeNonce()))","dialedHost":"127.0.0.1","dialedPort":\#(h.port)}}"#
+        try await task.send(.string(hello))
+        let message = try await task.receive()
+        guard case .string = message else {
+            Issue.record("The refusal of an old phone must be plaintext")
+            return
+        }
+        let reply = try RemoteCoding.decode(RemoteServerFrame.self, from: Self.data(message))
+        guard case .error(let error) = reply.message else {
+            Issue.record("Expected an error, got \(reply.message.typeName)")
+            return
+        }
+        #expect(error.code == .unsupportedVersion)
+    }
+
+    @Test func missingOrMalformedEphemeralKeyIsBadRequest() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let edits: [(inout [String: Any]) -> Void] = [
+            { $0["ephemeralKey"] = nil },
+            { $0["ephemeralKey"] = "not base64 !!" },
+            { $0["ephemeralKey"] = RemoteHandshake.encode(Data(repeating: 1, count: 31)) },
+            { $0["ephemeralKey"] = RemoteHandshake.encode(Data(count: 32)) },   // all zero: no usable shared secret
+        ]
+        for edit in edits {
+            let phone = try await rawPhone(h, helloEdit: edit)
+            defer { phone.task.cancel() }
+            let reply = try RemoteCoding.decode(RemoteServerFrame.self, from: Self.data(phone.reply))
+            guard case .error(let error) = reply.message else {
+                Issue.record("Expected an error, got \(reply.message.typeName)")
+                continue
+            }
+            #expect(error.code == .badRequest)
+            #expect(await Self.connectionEnds(phone.task, within: TestWait.ceiling))
+        }
+        #expect(await h.server.status.devices.isEmpty)
+    }
+
     @Test func phoneTellsTheUserToUpdateAnOlderMac() async throws {
         let fake = try await FakeMac.start(host: "127.0.0.1", port: 0, protocolVersion: 2)
         defer { fake.stop() }
@@ -271,7 +339,8 @@ import Testing
         }
         #expect(w.macName == "Loopback Mac")
         let proof = try #require(RemoteHandshake.decode(w.serverProof, expectedCount: 32))
-        #expect(RemoteHandshake.isValidServerProof(proof, token: h.token, serverNonce: phone.serverNonce, clientNonce: phone.clientNonce))
+        #expect(RemoteHandshake.isValidServerProof(proof, token: h.token, serverNonce: phone.serverNonce, clientNonce: phone.clientNonce,
+                                                   macKey: phone.macKey, phoneKey: phone.phoneKey))
 
         // A sealed request gets a sealed reply.
         try await phone.task.send(.data(try phone.seal(.hubSnapshot, id: "2")))
@@ -364,7 +433,7 @@ import Testing
         let c = client(h, hosts: ["::1"])
         c.start()
         defer { c.stop() }
-        try await waitUntil { c.state == .connected(host: "::1") && c.sessions.count == 4 }
+        try await waitUntil { c.state == .connected(via: .direct(host: "::1")) && c.sessions.count == 4 }
         try await c.open(sessionID: RemoteDemoData.IDs.fixSession)
         #expect(c.openTranscript?.items.isEmpty == false)
 
@@ -432,7 +501,7 @@ import Testing
         let c = client(h, hosts: ["::1", "127.0.0.1"])
         c.start()
         defer { c.stop() }
-        try await waitUntil { c.state == .connected(host: "127.0.0.1") }
+        try await waitUntil { c.state == .connected(via: .direct(host: "127.0.0.1")) }
         #expect(fake.log.all.count >= 1)
         try await waitUntil { c.sessions.count == 4 }
     }
@@ -504,6 +573,250 @@ import Testing
         #expect(await h.server.status.devices.count == 1)
     }
 
+    // MARK: Relay details and rotation
+
+    @Test func relayDetailsAreSavedAfterWelcome() async throws {
+        let h = try await startServer(acceptedHosts: ["::1"])
+        defer { Task { await h.server.stop() } }
+
+        let firstRelay = RemotePairing.Relay(url: "wss://relay-one.example", mailbox: RelayIdentity.make().mailboxID)
+        await h.server.setActiveRelay(firstRelay)
+
+        // Check raw wire order and sealing first: welcome is frame 0, relayDetails is frame 1, both sealed binary.
+        var raw = try await rawPhone(h)
+        let welcomeFrame = try raw.open(raw.reply)
+        guard case .welcome = welcomeFrame.message else {
+            raw.task.cancel()
+            Issue.record("Expected welcome first, got \(welcomeFrame.message.typeName)")
+            return
+        }
+        let nextMessage = try await raw.task.receive()
+        guard case .data(let sealedRelay) = nextMessage else {
+            raw.task.cancel()
+            Issue.record("Expected relayDetails to arrive as a sealed binary frame")
+            return
+        }
+        #expect(sealedRelay.range(of: Data(firstRelay.url.utf8)) == nil)
+        #expect(sealedRelay.range(of: Data(firstRelay.mailbox.utf8)) == nil)
+        let detailsFrame = try raw.open(nextMessage)
+        #expect(detailsFrame.message == .relayDetails(firstRelay))
+        raw.task.cancel()
+
+        // Through a TCP proxy, verify RemoteClient saves the initial relay and later rotates to previousRelay,
+        // while no plaintext frame on the wire carries relayDetails, the relay URL or the mailbox ID.
+        let proxy = try await TCPRelay.start(listenHost: "::1", port: UInt16(h.port),
+                                             targetHost: "127.0.0.1", targetPort: UInt16(h.port))
+        defer { proxy.stop() }
+
+        let initialPairing = RemotePairing(hosts: ["::1"], port: h.port, token: h.token, macName: "Loopback Mac")
+        let store = RemotePairingStore.inMemory(initial: initialPairing)
+        let c = RemoteClient(pairing: initialPairing, deviceName: "Test Phone",
+                             deviceID: "test-\(UUID().uuidString)", pairingStore: store)
+        c.handshakeTimeout = .seconds(30)
+        c.requestTimeout = .seconds(60)
+        c.start()
+        defer { c.stop() }
+
+        try await waitUntil("initial relayDetails to be saved") {
+            c.state == .connected(via: .direct(host: "::1")) && c.pairing.relay == firstRelay
+        }
+        #expect(c.pairing.previousRelay == nil)
+        #expect(store.load()?.relay == firstRelay)
+        #expect(store.load()?.previousRelay == nil)
+
+        // When the Mac moves to a second relay while the phone is connected, the old relay becomes previousRelay.
+        let secondRelay = RemotePairing.Relay(url: "wss://relay-two.example", mailbox: RelayIdentity.make().mailboxID)
+        await h.server.setActiveRelay(secondRelay)
+        try await waitUntil("rotated relayDetails to be saved") {
+            c.pairing.relay == secondRelay
+        }
+        #expect(c.pairing.previousRelay == firstRelay)
+        #expect(store.load()?.relay == secondRelay)
+        #expect(store.load()?.previousRelay == firstRelay)
+
+        // Reconnecting directly does not drop previousRelay before the new relay itself works.
+        let countBeforeReconnect = proxy.connectionCount
+        c.reconnectNow()
+        try await waitUntil("direct reconnect to complete") {
+            proxy.connectionCount > countBeforeReconnect && c.state == .connected(via: .direct(host: "::1"))
+        }
+        try await c.refreshHub()
+        #expect(c.pairing.relay == secondRelay)
+        #expect(c.pairing.previousRelay == firstRelay)
+        #expect(store.load()?.previousRelay == firstRelay)
+
+        // Malformed or insecure relay details are ignored without overwriting the stored pairing.
+        await h.server.setActiveRelay(RemotePairing.Relay(url: "ws://insecure.example", mailbox: firstRelay.mailbox))
+        await h.server.setActiveRelay(RemotePairing.Relay(url: "wss://relay.example", mailbox: "short"))
+        try await c.refreshHub()
+        #expect(c.pairing.relay == secondRelay)
+        #expect(c.pairing.previousRelay == firstRelay)
+        #expect(store.load()?.relay == secondRelay)
+
+        // R1 -> R2 (unproven) -> R3 keeps previousRelay == R1 instead of clobbering it with unproven R2.
+        let thirdRelay = RemotePairing.Relay(url: "wss://relay-three.example", mailbox: RelayIdentity.make().mailboxID)
+        await h.server.setActiveRelay(thirdRelay)
+        try await waitUntil("third relayDetails to be saved") {
+            c.pairing.relay == thirdRelay
+        }
+        #expect(c.pairing.previousRelay == firstRelay)
+        #expect(store.load()?.relay == thirdRelay)
+        #expect(store.load()?.previousRelay == firstRelay)
+
+        // Rolling back to R1 before any newer relay worked clears previousRelay to nil.
+        await h.server.setActiveRelay(firstRelay)
+        try await waitUntil("rollback relayDetails to be saved") {
+            c.pairing.relay == firstRelay
+        }
+        #expect(c.pairing.previousRelay == nil)
+        #expect(store.load()?.relay == firstRelay)
+        #expect(store.load()?.previousRelay == nil)
+
+        let wireBytes = proxy.fromMac.all
+        #expect(!wireBytes.isEmpty)
+        for secret in ["relayDetails", firstRelay.url, firstRelay.mailbox, secondRelay.url, secondRelay.mailbox,
+                       thirdRelay.url, thirdRelay.mailbox] {
+            #expect(wireBytes.range(of: Data(secret.utf8)) == nil, "\(secret) crossed the wire in plaintext")
+        }
+    }
+
+    @Test func previousRelayIsTriedWhenTheNewOneFails() async throws {
+        let oldFake = try await FakeRelay.start()
+        let newFake = try await FakeRelay.start()
+        let identity = RelayIdentity.make()
+        let token = RemoteToken.generate()
+        let host = DemoRemoteHost()
+        let config = RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Relay Mac",
+                                                helloTimeout: .seconds(30))
+        let server = RemoteServer(host: host, token: token, configuration: config)
+        try await server.start()
+
+        let oldRelay = RemotePairing.Relay(url: oldFake.url.absoluteString, mailbox: identity.mailboxID)
+        let newRelay = RemotePairing.Relay(url: newFake.url.absoluteString, mailbox: identity.mailboxID)
+        newFake.stop()
+        await server.setActiveRelay(newRelay)
+
+        let fallbackHost = RelayHost(relayURL: oldFake.url, identity: identity, token: token, server: server)
+        await fallbackHost.start()
+
+        do {
+            try await pollUntil("fallback relay host to sign in") {
+                await fallbackHost.status == .connected && oldFake.hostIsReady(identity.mailboxID)
+            }
+
+            let pairing = RemotePairing(hosts: [], port: remoteDefaultPort, token: token, macName: "Relay Mac",
+                                        relay: newRelay, previousRelay: oldRelay)
+            let store = RemotePairingStore.inMemory(initial: pairing)
+            let c = RemoteClient(pairing: pairing, deviceName: "Test Phone",
+                                 deviceID: "phone-\(UUID().uuidString)", pairingStore: store)
+            c.handshakeTimeout = .seconds(10)
+            c.requestTimeout = .seconds(30)
+            c.start()
+
+            do {
+                try await waitUntil("phone to connect through previousRelay") {
+                    c.state == .connected(via: .relay) && c.sessions.count == 4
+                }
+                #expect(oldFake.phoneConnections(identity.mailboxID).count == 1)
+                #expect(c.pairing.relay == newRelay)
+                #expect(c.pairing.previousRelay == oldRelay)
+                #expect(store.load()?.relay == newRelay)
+                #expect(store.load()?.previousRelay == oldRelay)
+
+                // If the Mac rolls back to oldRelay while the phone is connected through oldRelay, previousRelay clears.
+                await server.setActiveRelay(oldRelay)
+                try await waitUntil("rollback over active fallback connection clears previousRelay") {
+                    c.pairing.relay == oldRelay && c.pairing.previousRelay == nil
+                }
+                #expect(store.load()?.relay == oldRelay)
+                #expect(store.load()?.previousRelay == nil)
+                c.stop()
+            } catch {
+                c.stop()
+                throw error
+            }
+
+            await fallbackHost.stop()
+            await server.stop()
+            oldFake.stop()
+        } catch {
+            await fallbackHost.stop()
+            await server.stop()
+            oldFake.stop()
+            throw error
+        }
+    }
+
+    @Test func previousRelayIsDroppedAfterTheNewOneWorks() async throws {
+        let oldFake = try await FakeRelay.start()
+        let newFake = try await FakeRelay.start()
+        let identity = RelayIdentity.make()
+        let token = RemoteToken.generate()
+        let host = DemoRemoteHost()
+        let config = RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Relay Mac",
+                                                helloTimeout: .seconds(30))
+        let server = RemoteServer(host: host, token: token, configuration: config)
+        try await server.start()
+
+        let oldRelay = RemotePairing.Relay(url: oldFake.url.absoluteString, mailbox: identity.mailboxID)
+        let newRelay = RemotePairing.Relay(url: newFake.url.absoluteString, mailbox: identity.mailboxID)
+        await server.setActiveRelay(newRelay)
+
+        let fallbackHost = RelayHost(relayURL: oldFake.url, identity: identity, token: token, server: server)
+        let primaryHost = RelayHost(relayURL: newFake.url, identity: identity, token: token, server: server)
+        await fallbackHost.start()
+        await primaryHost.start()
+
+        do {
+            try await pollUntil("both relay hosts to sign in") {
+                let fallbackStatus = await fallbackHost.status
+                let primaryStatus = await primaryHost.status
+                return fallbackStatus == .connected
+                    && primaryStatus == .connected
+                    && oldFake.hostIsReady(identity.mailboxID)
+                    && newFake.hostIsReady(identity.mailboxID)
+            }
+
+            let pairing = RemotePairing(hosts: [], port: remoteDefaultPort, token: token, macName: "Relay Mac",
+                                        relay: newRelay, previousRelay: oldRelay)
+            let store = RemotePairingStore.inMemory(initial: pairing)
+            let c = RemoteClient(pairing: pairing, deviceName: "Test Phone",
+                                 deviceID: "phone-\(UUID().uuidString)", pairingStore: store)
+            c.handshakeTimeout = .seconds(10)
+            c.requestTimeout = .seconds(30)
+            c.start()
+
+            do {
+                try await waitUntil("phone to connect through the new relay and drop previousRelay") {
+                    c.state == .connected(via: .relay) && c.sessions.count == 4 && c.pairing.previousRelay == nil
+                }
+                #expect(newFake.phoneConnections(identity.mailboxID).count == 1)
+                #expect(oldFake.phoneConnections(identity.mailboxID).isEmpty)
+                #expect(c.pairing.relay == newRelay)
+                #expect(c.pairing.previousRelay == nil)
+                #expect(store.load()?.relay == newRelay)
+                #expect(store.load()?.previousRelay == nil)
+                c.stop()
+            } catch {
+                c.stop()
+                throw error
+            }
+
+            await primaryHost.stop()
+            await fallbackHost.stop()
+            await server.stop()
+            newFake.stop()
+            oldFake.stop()
+        } catch {
+            await primaryHost.stop()
+            await fallbackHost.stop()
+            await server.stop()
+            newFake.stop()
+            oldFake.stop()
+            throw error
+        }
+    }
+
     // MARK: Helpers
 
     static let sendHi = RemoteClientMessage.sendMessage(RemoteSendMessage(target: .session(RemoteDemoData.IDs.fixSession), text: "hi"))
@@ -513,6 +826,8 @@ import Testing
         let task: URLSessionWebSocketTask
         let serverNonce: Data
         let clientNonce: Data
+        let macKey: Data
+        let phoneKey: Data
         var channel: RemoteChannel
         /// The Mac's answer to the hello, as it came off the socket.
         let reply: URLSessionWebSocketTask.Message
@@ -529,24 +844,39 @@ import Testing
     }
 
     /// Connects, answers the challenge with a valid proof and returns the Mac's reply without reading it.
-    func rawPhone(_ h: Harness, dialedHost: String = "127.0.0.1", dialedPort: Int? = nil) async throws -> RawPhone {
+    /// - Parameter helloEdit: changes the hello's JSON before it is sent, for tests that need a broken one.
+    func rawPhone(_ h: Harness, dialedHost: String = "127.0.0.1", dialedPort: Int? = nil, helloVersion: Int = remoteProtocolVersion,
+                  helloEdit: (inout [String: Any]) -> Void = { _ in }) async throws -> RawPhone {
         let url = try #require(RemotePairing.webSocketURL(host: "127.0.0.1", port: h.port))
         let task = URLSession.shared.webSocketTask(with: url)
         task.resume()
         let first = try RemoteCoding.decode(RemoteServerFrame.self, from: Self.data(try await task.receive()))
         guard case .challenge(let challenge) = first.message else { throw RemoteError(.badRequest, "no challenge") }
         let serverNonce = try #require(RemoteHandshake.decode(challenge.serverNonce, expectedCount: 32))
+        let macKey = try #require(RemoteHandshake.decode(challenge.ephemeralKey, expectedCount: 32))
         let clientNonce = RemoteHandshake.makeNonce()
-        let proof = RemoteHandshake.clientProof(token: h.token, serverNonce: serverNonce, clientNonce: clientNonce)
+        let phoneKeyPair = Curve25519.KeyAgreement.PrivateKey()
+        let phoneKey = phoneKeyPair.publicKey.rawRepresentation
+        let secret = try phoneKeyPair.sharedSecretFromKeyAgreement(with: try Curve25519.KeyAgreement.PublicKey(rawRepresentation: macKey))
+            .withUnsafeBytes { Data($0) }
+        let proof = RemoteHandshake.clientProof(token: h.token, serverNonce: serverNonce, clientNonce: clientNonce,
+                                                macKey: macKey, phoneKey: phoneKey)
         let port = dialedPort ?? h.port
-        let hello = RemoteHello(deviceName: "Raw Phone", deviceID: "raw", clientNonce: RemoteHandshake.encode(clientNonce),
+        let hello = RemoteHello(protocolVersion: helloVersion, deviceName: "Raw Phone", deviceID: "raw",
+                                clientNonce: RemoteHandshake.encode(clientNonce), ephemeralKey: RemoteHandshake.encode(phoneKey),
                                 proof: RemoteHandshake.encode(proof), dialedHost: dialedHost, dialedPort: port)
-        let text = String(decoding: try RemoteCoding.encode(RemoteClientFrame(.hello(hello), id: "1")), as: UTF8.self)
+        var json = try #require(try JSONSerialization.jsonObject(
+            with: try RemoteCoding.encode(RemoteClientFrame(.hello(hello), id: "1"))) as? [String: Any])
+        var body = try #require(json["data"] as? [String: Any])
+        helloEdit(&body)
+        json["data"] = body
+        let text = String(decoding: try JSONSerialization.data(withJSONObject: json), as: UTF8.self)
         try await task.send(.string(text))
         let reply = try await task.receive()
-        let channel = RemoteChannel(token: h.token, serverNonce: serverNonce, clientNonce: clientNonce,
+        let channel = RemoteChannel(token: h.token, sharedSecret: secret, serverNonce: serverNonce, clientNonce: clientNonce,
                                     dialedHost: dialedHost, dialedPort: port, role: .client)
-        return RawPhone(task: task, serverNonce: serverNonce, clientNonce: clientNonce, channel: channel, reply: reply)
+        return RawPhone(task: task, serverNonce: serverNonce, clientNonce: clientNonce, macKey: macKey, phoneKey: phoneKey,
+                        channel: channel, reply: reply)
     }
 
     /// A hello as a version 2 phone sent it: a valid proof, and no dialed host or port.
@@ -556,7 +886,8 @@ import Testing
             throw RemoteError(.badRequest, "no challenge")
         }
         let clientNonce = RemoteHandshake.makeNonce()
-        let proof = RemoteHandshake.clientProof(token: token, serverNonce: serverNonce, clientNonce: clientNonce)
+        let proof = RemoteHandshake.clientProof(token: token, serverNonce: serverNonce, clientNonce: clientNonce,
+                                                macKey: Data(repeating: 0, count: 32), phoneKey: Data(repeating: 0, count: 32))
         return #"{"v":2,"id":"1","type":"hello","data":{"protocolVersion":2,"deviceName":"Old","deviceID":"old","clientNonce":""#
             + RemoteHandshake.encode(clientNonce) + #"","proof":""# + RemoteHandshake.encode(proof) + #""}}"#
     }
@@ -656,6 +987,211 @@ import Testing
             return false
         }
     }
+
+    @Test func backwardCompatibleDecodingOfOlderHubAndTranscriptPayloads() throws {
+        let now = ISO8601DateFormatter().string(from: Date())
+        let oldHubJSON = """
+        {
+          "sessions": [{
+            "id": "s1",
+            "title": "Legacy session",
+            "directory": "/tmp/proj",
+            "activity": "idle",
+            "lastActivity": "\(now)"
+          }]
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let hub = try decoder.decode(RemoteHubSnapshot.self, from: Data(oldHubJSON.utf8))
+        #expect(hub.sessions.count == 1)
+        #expect(hub.sessions[0].modelProviderID == nil)
+        #expect(hub.sessions[0].modelID == nil)
+        #expect(hub.sessions[0].pendingModelName == nil)
+        #expect(hub.availableModels.isEmpty)
+        #expect(hub.recentFolders.isEmpty)
+
+        let oldTranscriptJSON = """
+        {
+          "sessionID": "s1",
+          "title": "Legacy session",
+          "items": [],
+          "activity": "idle"
+        }
+        """
+        let transcript = try decoder.decode(RemoteTranscript.self, from: Data(oldTranscriptJSON.utf8))
+        #expect(transcript.modelProviderID == nil)
+        #expect(transcript.modelID == nil)
+        #expect(transcript.pendingModelName == nil)
+        #expect(transcript.secondOpinions.isEmpty)
+    }
+
+    @Test func midChatModelSwitchStagesAndAppliesOnNextMessage() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let phone = client(h)
+        phone.start()
+        defer { phone.stop() }
+        try await waitUntil { phone.state.isConnected && !phone.availableModels.isEmpty }
+
+        try await phone.open(sessionID: RemoteDemoData.IDs.fixSession)
+        try await waitUntil { phone.openTranscript?.sessionID == RemoteDemoData.IDs.fixSession }
+
+        try await phone.changeModel(
+            sessionID: RemoteDemoData.IDs.fixSession,
+            providerID: "antigravity",
+            modelID: "gemini-3-pro"
+        )
+        try await waitUntil { phone.openTranscript?.pendingModelName == "Gemini 3 Pro" }
+        #expect(phone.sessions.first(where: { $0.id == RemoteDemoData.IDs.fixSession })?.pendingModelName == "Gemini 3 Pro")
+
+        try await phone.send("Continue with Gemini", to: .session(RemoteDemoData.IDs.fixSession))
+        try await waitUntil {
+            phone.openTranscript?.modelID == "gemini-3-pro" && phone.openTranscript?.pendingModelName == nil
+        }
+        #expect(phone.openTranscript?.modelProviderID == "antigravity")
+    }
+
+    @Test func createSessionAndCreateRoomRoundTripOverLoopback() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let phone = client(h)
+        phone.start()
+        defer { phone.stop() }
+        try await waitUntil { phone.state.isConnected && !phone.recentFolders.isEmpty }
+
+        let createdSession = try await phone.createSession(
+            directory: "/Users/demo/code/webapp",
+            providerID: "claude-code",
+            modelID: "sonnet",
+            title: "Phone started task"
+        )
+        #expect(createdSession.title == "Phone started task")
+        #expect(createdSession.modelID == "sonnet")
+        try await waitUntil { phone.sessions.contains(where: { $0.id == createdSession.id }) }
+
+        let createdRoom = try await phone.createRoom(
+            directory: "/Users/demo/code/notes",
+            title: "Phone review room",
+            mode: .debate,
+            agents: [
+                RemoteNewRoomAgent(name: "Ada", role: "Lead", providerID: "claude-code", modelID: "opus"),
+                RemoteNewRoomAgent(name: "Grace", role: "Critic", providerID: "antigravity", modelID: "gemini-3-pro"),
+            ]
+        )
+        #expect(createdRoom.title == "Phone review room")
+        #expect(createdRoom.mode == .debate)
+        #expect(createdRoom.agents.count == 2)
+        try await waitUntil { phone.rooms.contains(where: { $0.id == createdRoom.id }) }
+    }
+
+    @Test func sessionDiffAndSecondOpinionRoundTripOverLoopback() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let phone = client(h)
+        phone.start()
+        defer { phone.stop() }
+        try await waitUntil { phone.state.isConnected && !phone.availableModels.isEmpty }
+
+        let diff = try await phone.sessionDiff(sessionID: RemoteDemoData.IDs.fixSession)
+        #expect(diff.sessionID == RemoteDemoData.IDs.fixSession)
+        #expect(!diff.files.isEmpty)
+
+        try await phone.open(sessionID: RemoteDemoData.IDs.fixSession)
+        try await waitUntil { phone.openTranscript?.sessionID == RemoteDemoData.IDs.fixSession }
+        let beforeCount = phone.openTranscript?.secondOpinions.count ?? 0
+
+        try await phone.requestSecondOpinion(
+            sessionID: RemoteDemoData.IDs.fixSession,
+            itemID: "fix-reply-1",
+            replyText: "Changed cookie SameSite to Lax.",
+            providerID: "antigravity",
+            modelID: "gemini-3-pro"
+        )
+        try await waitUntil { (phone.openTranscript?.secondOpinions.count ?? 0) == beforeCount + 1 }
+        #expect(phone.openTranscript?.secondOpinions.last?.modelName == "Gemini 3 Pro")
+        #expect(phone.openTranscript?.secondOpinions.last?.status == "ready")
+    }
+
+    @Test func streamingTextDeltaWithoutPriorUpsertRendersLive() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let phone = client(h)
+        phone.start()
+        defer { phone.stop() }
+        try await waitUntil { phone.state.isConnected && phone.sessions.count == 4 }
+
+        try await phone.open(sessionID: RemoteDemoData.IDs.fixSession)
+        try await waitUntil { phone.openTranscript?.sessionID == RemoteDemoData.IDs.fixSession }
+
+        await h.host.emit(.textDelta(sessionID: RemoteDemoData.IDs.fixSession, itemID: "stream-only-1", delta: "Hello "))
+        await h.host.emit(.textDelta(sessionID: RemoteDemoData.IDs.fixSession, itemID: "stream-only-1", delta: "world"))
+        try await waitUntil {
+            guard let item = phone.openTranscript?.items.first(where: { $0.id == "stream-only-1" }) else { return false }
+            if case .agentText(_, let text, _, let streaming) = item {
+                return text == "Hello world" && streaming
+            }
+            return false
+        }
+    }
+
+    @Test func sessionReplacedCallbackFiresAndUpdatesOpenSession() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let phone = client(h)
+        var replacedPairs: [(String, SessionSummary)] = []
+        phone.onSessionReplaced = { oldID, newSummary in
+            replacedPairs.append((oldID, newSummary))
+        }
+        phone.start()
+        defer { phone.stop() }
+        try await waitUntil { phone.state.isConnected && phone.sessions.count == 4 }
+
+        try await phone.open(sessionID: RemoteDemoData.IDs.fixSession)
+        try await waitUntil { phone.openTranscript?.sessionID == RemoteDemoData.IDs.fixSession }
+
+        let replacement = try #require(phone.sessions.first(where: { $0.id == RemoteDemoData.IDs.docsSession }))
+        await h.host.emit(.sessionReplaced(oldSessionID: RemoteDemoData.IDs.fixSession, newSession: replacement))
+
+        try await waitUntil {
+            phone.openSessionID == RemoteDemoData.IDs.docsSession
+                && phone.openTranscript?.sessionID == RemoteDemoData.IDs.docsSession
+                && replacedPairs.count == 1
+        }
+        #expect(replacedPairs.first?.0 == RemoteDemoData.IDs.fixSession)
+        #expect(replacedPairs.first?.1.id == RemoteDemoData.IDs.docsSession)
+        #expect(!phone.sessions.contains(where: { $0.id == RemoteDemoData.IDs.fixSession }))
+    }
+
+    @Test func pairingCodeRejectsMalformedRelayURLsAndMailboxes() throws {
+        let validMailbox = RelayIdentity.make().mailboxID
+        let badCodes = [
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example?q=1","mailbox":"\#(validMailbox)"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://user:pass@relay.example","mailbox":"\#(validMailbox)"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example#frag","mailbox":"\#(validMailbox)"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example/extra","mailbox":"\#(validMailbox)"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"https://relay.example","mailbox":"\#(validMailbox)"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"ws://relay.example","mailbox":"\#(validMailbox)"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example","mailbox":"too-short"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example","mailbox":"bad/chars+in=mailbox!123456"}}"#,
+            #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example","mailbox":"\#(String(repeating: "a", count: 129))"}}"#,
+        ]
+        for code in badCodes {
+            #expect(throws: RemotePairing.CodeError.badRelay) {
+                try RemotePairing(code: code)
+            }
+        }
+
+        let validWSS = #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"wss://relay.example/","mailbox":"\#(validMailbox)"}}"#
+        let decoded = try RemotePairing(code: validWSS)
+        #expect(decoded.relay?.url == "wss://relay.example/")
+        #expect(decoded.relay?.mailbox == validMailbox)
+
+        #if DEBUG
+        let debugLoopback = #"{"hosts":[],"port":47823,"token":"tok","macName":"Mac","relay":{"url":"ws://127.0.0.1:8787","mailbox":"\#(validMailbox)"}}"#
+        #expect(try RemotePairing(code: debugLoopback).relay?.url == "ws://127.0.0.1:8787")
+        #endif
+    }
 }
 /// Counts how many of some TCP connections the server has closed.
 final class ServerClosures: Sendable {
@@ -712,7 +1248,8 @@ final class FakeMac: Sendable {
             connection.stateUpdateHandler = { state in
                 if case .ready = state {
                     let challenge = RemoteChallenge(protocolVersion: protocolVersion,
-                                                    serverNonce: RemoteHandshake.encode(RemoteHandshake.makeNonce()))
+                                                    serverNonce: RemoteHandshake.encode(RemoteHandshake.makeNonce()),
+                                                    ephemeralKey: RemoteHandshake.encode(Curve25519.KeyAgreement.PrivateKey().publicKey.rawRepresentation))
                     send(.challenge(challenge), version: protocolVersion, on: connection)
                     receive(on: connection, log: log)
                 }
@@ -757,7 +1294,15 @@ final class FakeMac: Sendable {
 
     private static func send(_ message: RemoteServerMessage, replyTo: String? = nil, version: Int = remoteProtocolVersion,
                              on connection: NWConnection) {
-        guard let data = try? RemoteCoding.encode(RemoteServerFrame(message, replyTo: replyTo, version: version)) else { return }
+        guard var data = try? RemoteCoding.encode(RemoteServerFrame(message, replyTo: replyTo, version: version)) else { return }
+        // A Mac older than protocol 4 sends a challenge without an ephemeral key.
+        if version < 4, case .challenge = message,
+           var json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+           var body = json["data"] as? [String: Any] {
+            body["ephemeralKey"] = nil
+            json["data"] = body
+            data = (try? JSONSerialization.data(withJSONObject: json)) ?? data
+        }
         let context = NWConnection.ContentContext(identifier: "text", metadata: [NWProtocolWebSocket.Metadata(opcode: .text)])
         connection.send(content: data, contentContext: context, isComplete: true, completion: .idempotent)
     }

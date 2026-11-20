@@ -136,6 +136,39 @@ public struct AgentBrowserState: Equatable, Sendable {
     }
 }
 
+/// Outcome of delivering a cross-session message from `message_agent`.
+public enum AgentDeliveryResult: Equatable, Sendable {
+    case delivered(targetSessionID: String?, targetTitle: String, targetModelName: String, targetTurn: String, queued: Bool)
+    case refused(String)
+}
+
+/// Request sent to `AgentToolsEnvironment.askAgent` for a read-only cross-model question.
+public struct AskAgentRequest: Equatable, Sendable {
+    public var directory: String
+    public var model: ModelRef
+    public var modelName: String
+    public var question: String
+    public var diffSummary: String?
+    public var hopLease: AgentExchangeLimiter.HopLease
+
+    public init(directory: String, model: ModelRef, modelName: String, question: String, diffSummary: String?,
+                hopLease: AgentExchangeLimiter.HopLease) {
+        self.directory = directory
+        self.model = model
+        self.modelName = modelName
+        self.question = question
+        self.diffSummary = diffSummary
+        self.hopLease = hopLease
+    }
+}
+
+/// Outcome of a read-only `ask_agent` run.
+public enum AskAgentResult: Equatable, Sendable {
+    case answered(String)
+    case refused(String)
+    case failed(String)
+}
+
 /// What the coordinator needs from the app, as closures so it can be tested without windows.
 @MainActor
 public struct AgentToolsEnvironment {
@@ -149,9 +182,11 @@ public struct AgentToolsEnvironment {
         public var archived: Bool
         /// Changes when the user sends a message: the number of user messages so far.
         public var turn: String
+        public var title: String
+        public var modelName: String
 
         public init(id: String, rootID: String, directory: String, model: ModelRef?, permissionMode: PermissionMode,
-                    archived: Bool, turn: String) {
+                    archived: Bool, turn: String, title: String = "", modelName: String = "") {
             self.id = id
             self.rootID = rootID
             self.directory = directory
@@ -159,6 +194,8 @@ public struct AgentToolsEnvironment {
             self.permissionMode = permissionMode
             self.archived = archived
             self.turn = turn
+            self.title = title
+            self.modelName = modelName
         }
     }
 
@@ -180,13 +217,50 @@ public struct AgentToolsEnvironment {
     public var send: (String, String) async -> Void
     /// A folder's own default permission mode, if it has one (`ProposalMode`).
     public var folderMode: (String) -> PermissionMode?
+    /// All known models, used for fuzzy matching and prioritizing alternate makers in `ask_agent`.
+    public var availableModels: () -> [ModelInfo]
+    /// Open top-level sessions and rooms visible to `list_agents`.
+    public var listAgents: (_ excludeSessionID: String, _ ownRoomID: UUID?) -> [AgentDirectoryEntry]
+    /// The room a session belongs to, if any.
+    public var ownRoomID: (String) -> UUID?
+    /// Latest transcript item id in a session, for anchoring inline exchange cards.
+    public var latestItemID: (String) -> String?
+    /// Delivers a cross-session message to a session or room id.
+    public var deliverAgentMessage: (_ targetID: String, _ formattedMessage: String) async -> AgentDeliveryResult
+    /// Executes a read-only `ask_agent` question against another model.
+    public var askAgent: (AskAgentRequest) async -> AskAgentResult
+    /// Loads a compact working-tree git diff summary when `include_diff` is true.
+    public var gitDiff: (String) async -> String?
+    /// Providers whose browser sign-in requires a trusted folder.
+    public var providersNeedingTrust: () -> Set<String>
+    /// Permission mode of a target session or room id, for privilege-escalation checks.
+    public var targetPermissionMode: (String) -> PermissionMode?
+    /// Full directory path of a target session or room id, for trust and cross-folder checks.
+    public var targetDirectory: (String) -> String?
+    /// Active member session ids belonging to a room id, for hop-limit propagation.
+    public var roomMemberSessionIDs: (String) -> [String]
 
     public init(session: @escaping (String) -> Session?, browser: @escaping (String) -> (any AgentBrowserSurface)?,
                 isTrusted: @escaping (String) -> Bool, knownFolders: @escaping () -> [String],
                 resolveModel: @escaping (String?, Session) -> (model: ModelRef?, name: String, matched: Bool),
                 showBrowser: @escaping (String) -> Void, log: @escaping (String, String) -> Void,
                 startSession: @escaping (SessionProposal, Session) async throws -> String, send: @escaping (String, String) async -> Void,
-                folderMode: @escaping (String) -> PermissionMode? = { _ in nil }) {
+                folderMode: @escaping (String) -> PermissionMode? = { _ in nil },
+                availableModels: @escaping () -> [ModelInfo] = { [] },
+                listAgents: @escaping (_ excludeSessionID: String, _ ownRoomID: UUID?) -> [AgentDirectoryEntry] = { _, _ in [] },
+                ownRoomID: @escaping (String) -> UUID? = { _ in nil },
+                latestItemID: @escaping (String) -> String? = { _ in nil },
+                deliverAgentMessage: @escaping (_ targetID: String, _ formattedMessage: String) async -> AgentDeliveryResult = { _, _ in
+                    .refused("Cross-session messaging is not configured.")
+                },
+                askAgent: @escaping (AskAgentRequest) async -> AskAgentResult = { _ in
+                    .failed("Cross-model ask is not configured.")
+                },
+                gitDiff: @escaping (String) async -> String? = { _ in nil },
+                providersNeedingTrust: @escaping () -> Set<String> = { [] },
+                targetPermissionMode: @escaping (String) -> PermissionMode? = { _ in nil },
+                targetDirectory: @escaping (String) -> String? = { _ in nil },
+                roomMemberSessionIDs: @escaping (String) -> [String] = { _ in [] }) {
         self.session = session
         self.browser = browser
         self.isTrusted = isTrusted
@@ -197,6 +271,17 @@ public struct AgentToolsEnvironment {
         self.startSession = startSession
         self.send = send
         self.folderMode = folderMode
+        self.availableModels = availableModels
+        self.listAgents = listAgents
+        self.ownRoomID = ownRoomID
+        self.latestItemID = latestItemID
+        self.deliverAgentMessage = deliverAgentMessage
+        self.askAgent = askAgent
+        self.gitDiff = gitDiff
+        self.providersNeedingTrust = providersNeedingTrust
+        self.targetPermissionMode = targetPermissionMode
+        self.targetDirectory = targetDirectory
+        self.roomMemberSessionIDs = roomMemberSessionIDs
     }
 }
 
@@ -208,10 +293,12 @@ public final class AgentToolsCoordinator: AgentToolsHost {
     public private(set) var proposals: [SessionProposal] = []
     public private(set) var permissionRequests: [BrowserPermissionRequest] = []
     public private(set) var browserStates: [String: AgentBrowserState] = [:]
+    public private(set) var exchanges: [AgentExchange] = []
     public private(set) var grants = BrowserGrants()
 
     @ObservationIgnored public var environment: AgentToolsEnvironment
     @ObservationIgnored private var limiter = ProposalLimiter()
+    @ObservationIgnored private var exchangeLimiter = AgentExchangeLimiter()
     @ObservationIgnored private var waiters: [String: CheckedContinuation<BrowserPermissionAnswer, Never>] = [:]
     @ObservationIgnored private var busy: Set<String> = []
     @ObservationIgnored private var queued: [String: [CheckedContinuation<Void, Never>]] = [:]
@@ -233,6 +320,12 @@ public final class AgentToolsCoordinator: AgentToolsHost {
         switch call {
         case .propose(let input):
             return propose(input, session: session)
+        case .listAgents:
+            return listAgents(session: session, own: own)
+        case .messageAgent(let input):
+            return await messageAgent(input, session: session, own: own)
+        case .askAgent(let input):
+            return await askAgent(input, session: session)
         case .browser(let action):
             return await browser(action, session: session, siteGrants: caller.canUseSiteGrants)
         }
@@ -314,6 +407,289 @@ public final class AgentToolsCoordinator: AgentToolsHost {
     private func update(_ proposalID: String, _ change: (inout SessionProposal) -> Void) {
         guard let index = proposals.firstIndex(where: { $0.id == proposalID }) else { return }
         change(&proposals[index])
+    }
+
+    // MARK: Cross-session messaging & ask_agent
+
+    public func exchanges(for sessionID: String) -> [AgentExchange] {
+        exchanges.filter { $0.isVisible(in: sessionID) }
+    }
+
+    public func dismissExchange(_ exchangeID: String, for sessionID: String) {
+        guard let index = exchanges.firstIndex(where: { $0.id == exchangeID }) else { return }
+        exchanges[index].dismissedBy.insert(sessionID)
+    }
+
+    public func noteUserTurn(in sessionID: String) {
+        exchangeLimiter.reset(session: sessionID)
+        for memberID in environment.roomMemberSessionIDs(sessionID) {
+            exchangeLimiter.reset(session: memberID)
+        }
+    }
+
+    public func registerHelperLease(sessionID: String, lease: AgentExchangeLimiter.HopLease, turn: String = "0") {
+        exchangeLimiter.attachHelper(sessionID, lease: lease, turn: turn)
+    }
+
+    func listAgents(session: AgentToolsEnvironment.Session, own: AgentToolsEnvironment.Session) -> AgentToolResult {
+        guard environment.isTrusted(session.directory) else {
+            return .refused("list_agents is disabled in untrusted folders. Trust this folder first.")
+        }
+        let ownRoom = environment.ownRoomID(session.id)
+        let excluded: Set<String> = [session.id, own.id]
+        let entries = environment.listAgents(session.id, ownRoom).filter { entry in
+            if excluded.contains(entry.id) { return false }
+            if let ownRoom, entry.kind == .room,
+               entry.id.caseInsensitiveCompare(ownRoom.uuidString) == .orderedSame {
+                return false
+            }
+            if let targetDir = environment.targetDirectory(entry.id) ?? environment.session(entry.id)?.directory {
+                if !targetDir.isEmpty && !environment.isTrusted(targetDir) { return false }
+            } else if !entry.folder.isEmpty && !environment.isTrusted(entry.folder) {
+                return false
+            }
+            return true
+        }
+        return .text(AgentDirectoryEntry.encodeList(entries))
+    }
+
+    func messageAgent(
+        _ input: AgentMessageInput,
+        session: AgentToolsEnvironment.Session,
+        own: AgentToolsEnvironment.Session
+    ) async -> AgentToolResult {
+        guard environment.isTrusted(session.directory) else {
+            return .refused("message_agent is disabled in untrusted folders. Trust this folder first.")
+        }
+        let requestedTarget = input.targetSessionID
+        let ownRoom = environment.ownRoomID(session.id)
+        if requestedTarget == session.id || requestedTarget == own.id {
+            return .refused("You cannot message your own session.")
+        }
+        if let ownRoom, requestedTarget.caseInsensitiveCompare(ownRoom.uuidString) == .orderedSame {
+            return .refused("You cannot message your own room with message_agent.")
+        }
+
+        let directSession = environment.session(requestedTarget)
+        if let directSession {
+            if directSession.id == session.id || directSession.rootID == session.id {
+                return .refused("You cannot message your own session.")
+            }
+            if directSession.archived {
+                return .refused("That session is archived.")
+            }
+        }
+        let openEntries = environment.listAgents(session.id, ownRoom)
+        let matchedRoom = openEntries.first {
+            $0.kind == .room && $0.id.caseInsensitiveCompare(requestedTarget) == .orderedSame
+        }
+        guard directSession != nil || matchedRoom != nil else {
+            return .refused("No active session or room has id \(requestedTarget).")
+        }
+
+        let canonicalTargetID = directSession?.rootID ?? matchedRoom?.id ?? requestedTarget
+        let targetSessionForLimiter = directSession.map { environment.session($0.rootID) ?? $0 }
+
+        let targetFolder = environment.targetDirectory(canonicalTargetID)
+            ?? targetSessionForLimiter?.directory
+            ?? directSession?.directory
+            ?? ""
+        guard !targetFolder.isEmpty else {
+            return .refused("Blocked: could not verify the target folder. Use propose_session or ask the user.")
+        }
+        guard environment.isTrusted(targetFolder) else {
+            return .refused("Blocked: target session or room is in an untrusted folder.")
+        }
+        let callerResolved = WorkspaceTrust.resolvedPath(session.directory)
+        let targetResolved = WorkspaceTrust.resolvedPath(targetFolder)
+        guard let callerResolved, let targetResolved, callerResolved == targetResolved else {
+            let callerName = AgentDirectoryEntry.folderBasename(session.directory)
+            return .refused("Blocked: an agent in \(callerName) cannot message a session in another folder directly. Use propose_session or ask the user.")
+        }
+
+        let callerMode = own.permissionMode.autonomyRank <= session.permissionMode.autonomyRank
+            ? own.permissionMode
+            : session.permissionMode
+        let targetMode = environment.targetPermissionMode(canonicalTargetID)
+            ?? targetSessionForLimiter?.permissionMode
+            ?? directSession?.permissionMode
+        guard let targetMode else {
+            return .refused("Blocked: could not verify the target's permission mode. Use propose_session or ask the user.")
+        }
+        if targetMode.autonomyRank > callerMode.autonomyRank {
+            return .refused("Blocked: an agent in \(callerMode.shortLabel) mode cannot message a target in looser \(targetMode.shortLabel) mode directly. Use propose_session or ask the user.")
+        }
+
+        let sourceAliases = ownRoom.map { [$0.uuidString] } ?? []
+        let targetAliases = matchedRoom != nil ? environment.roomMemberSessionIDs(canonicalTargetID) : []
+        let lease: AgentExchangeLimiter.HopLease
+        switch exchangeLimiter.beginHop(
+            from: session.id,
+            sourceTurn: session.turn,
+            to: canonicalTargetID,
+            targetTurn: targetSessionForLimiter?.turn,
+            sourceAliases: sourceAliases,
+            targetAliases: targetAliases
+        ) {
+        case .success(let granted):
+            lease = granted
+        case .failure(let refusal):
+            return .refused(refusal.message)
+        }
+
+        let fromTitle = session.title.isEmpty ? "Session" : session.title
+        let fromModel = session.modelName.isEmpty ? (session.model?.description ?? "Agent") : session.modelName
+        let initialTargetTitle = targetSessionForLimiter?.title.isEmpty == false
+            ? (targetSessionForLimiter?.title ?? "Agent")
+            : (matchedRoom?.title ?? "Agent")
+        let initialTargetModel = targetSessionForLimiter?.modelName.isEmpty == false
+            ? (targetSessionForLimiter?.modelName ?? "Agent")
+            : (matchedRoom?.model ?? "Agent")
+
+        var anchors: [String: String] = [:]
+        if let sourceAnchor = environment.latestItemID(session.id) {
+            anchors[session.id] = sourceAnchor
+        }
+        let exchange = AgentExchange(
+            kind: .message,
+            fromSessionID: session.id,
+            fromTitle: fromTitle,
+            fromModelName: fromModel,
+            toSessionID: canonicalTargetID,
+            toTitle: initialTargetTitle,
+            toModelName: initialTargetModel,
+            message: input.message,
+            status: .sending,
+            anchors: anchors
+        )
+        exchanges.append(exchange)
+
+        let senderLabel = AgentToolText.clean("\(fromModel) (\(fromTitle))", limit: 160)
+        let formatted = AgentToolText.untrusted(input.message, source: "Message from \(senderLabel)")
+        let outcome = await environment.deliverAgentMessage(canonicalTargetID, formatted)
+        switch outcome {
+        case .delivered(let targetSessionID, let deliveredTitle, let deliveredModel, _, let queued):
+            if matchedRoom != nil {
+                let postMembers = environment.roomMemberSessionIDs(canonicalTargetID)
+                if !postMembers.isEmpty {
+                    exchangeLimiter.propagate(lease: lease, to: postMembers)
+                }
+            }
+            let resolvedTarget = targetSessionID ?? canonicalTargetID
+            updateExchange(exchange.id) { item in
+                item.toSessionID = resolvedTarget
+                item.toTitle = deliveredTitle
+                item.toModelName = deliveredModel
+                item.status = queued ? .queued : .delivered
+                if let targetSessionID, let targetAnchor = environment.latestItemID(targetSessionID) {
+                    item.anchors[targetSessionID] = targetAnchor
+                }
+            }
+            return .text(
+                "Delivered message to \(deliveredTitle) (\(deliveredModel))"
+                    + (queued ? " (queued while busy)." : ".")
+            )
+        case .refused(let reason):
+            updateExchange(exchange.id) { $0.status = .failed(reason) }
+            return .refused(reason)
+        }
+    }
+
+    func askAgent(_ input: AskAgentInput, session: AgentToolsEnvironment.Session) async -> AgentToolResult {
+        let models = environment.availableModels()
+        let resolvedModel: ModelRef?
+        let resolvedName: String
+        let matched: Bool
+        if !models.isEmpty {
+            let outcome = ProposalModelMatch.resolve(
+                asked: input.model,
+                models: models,
+                current: session.model,
+                preferOther: true
+            )
+            resolvedModel = outcome.model
+            resolvedName = outcome.name
+            matched = outcome.matched
+        } else {
+            let fallback = environment.resolveModel(input.model, session)
+            resolvedModel = fallback.model
+            resolvedName = fallback.name
+            matched = fallback.matched
+        }
+        guard matched, let targetModel = resolvedModel else {
+            return .refused("No available model matches \"\(input.model)\".")
+        }
+
+        let isTrusted = environment.isTrusted(session.directory)
+        if let trustRefusal = ModelTrustPolicy.refusal(
+            for: targetModel,
+            directory: session.directory,
+            isTrusted: isTrusted,
+            providersNeedingTrust: environment.providersNeedingTrust()
+        ) {
+            return .refused(trustRefusal)
+        }
+
+        let sourceAliases = environment.ownRoomID(session.id).map { [$0.uuidString] } ?? []
+        let lease: AgentExchangeLimiter.HopLease
+        switch exchangeLimiter.beginHop(from: session.id, sourceTurn: session.turn, sourceAliases: sourceAliases) {
+        case .success(let granted):
+            lease = granted
+        case .failure(let refusal):
+            return .refused(refusal.message)
+        }
+
+        var diffSummary: String?
+        if input.includeDiff, isTrusted {
+            diffSummary = await environment.gitDiff(session.directory)
+        }
+
+        let fromTitle = session.title.isEmpty ? "Session" : session.title
+        let fromModel = session.modelName.isEmpty ? (session.model?.description ?? "Agent") : session.modelName
+        var anchors: [String: String] = [:]
+        if let sourceAnchor = environment.latestItemID(session.id) {
+            anchors[session.id] = sourceAnchor
+        }
+        let exchange = AgentExchange(
+            kind: .ask,
+            fromSessionID: session.id,
+            fromTitle: fromTitle,
+            fromModelName: fromModel,
+            toSessionID: nil,
+            toTitle: resolvedName,
+            toModelName: resolvedName,
+            message: input.question,
+            status: .sending,
+            anchors: anchors
+        )
+        exchanges.append(exchange)
+
+        let request = AskAgentRequest(
+            directory: session.directory,
+            model: targetModel,
+            modelName: resolvedName,
+            question: input.question,
+            diffSummary: diffSummary,
+            hopLease: lease
+        )
+        let answer = await environment.askAgent(request)
+        switch answer {
+        case .answered(let text):
+            let cleaned = AgentToolText.clean(text, limit: 8000, multiline: true)
+            updateExchange(exchange.id) {
+                $0.status = .answered
+                $0.replyPreview = cleaned
+            }
+            return .text(cleaned)
+        case .refused(let reason), .failed(let reason):
+            updateExchange(exchange.id) { $0.status = .failed(reason) }
+            return .refused(reason)
+        }
+    }
+
+    private func updateExchange(_ id: String, _ change: (inout AgentExchange) -> Void) {
+        guard let index = exchanges.firstIndex(where: { $0.id == id }) else { return }
+        change(&exchanges[index])
     }
 
     // MARK: Browser
@@ -467,6 +843,15 @@ public final class AgentToolsCoordinator: AgentToolsHost {
         grants.revoke(session: sessionID)
         browserStates[sessionID] = nil
         proposals.removeAll { $0.sessionID == sessionID }
+        exchangeLimiter.reset(session: sessionID)
+        for index in exchanges.indices {
+            exchanges[index].dismissedBy.insert(sessionID)
+        }
+        exchanges.removeAll { item in
+            let fromHidden = item.dismissedBy.contains(item.fromSessionID)
+            let toHidden = item.toSessionID.map { item.dismissedBy.contains($0) } ?? true
+            return fromHidden && toHidden
+        }
     }
 
     private func denyRequests(_ sessionID: String) {
@@ -497,10 +882,220 @@ public final class AgentToolsCoordinator: AgentToolsHost {
 
     /// Puts cards and state in place for snapshots and previews.
     public func seedForSnapshot(proposals: [SessionProposal] = [], requests: [BrowserPermissionRequest] = [],
-                                states: [String: AgentBrowserState] = [:]) {
+                                states: [String: AgentBrowserState] = [:], exchanges: [AgentExchange] = []) {
         self.proposals = proposals
         permissionRequests = requests
         browserStates = states
+        self.exchanges = exchanges
+    }
+}
+
+// MARK: - One-shot read-only helper & safe git diff
+
+/// Result of running a disposable one-shot helper turn (`ask_agent` and `Second opinion`).
+public enum OneShotPromptResult: Equatable, Sendable {
+    case answered(String)
+    case failed(String)
+}
+
+/// Runs a single read-only prompt in a disposable helper session and deletes it on finish or cancel.
+public enum OneShotPromptRunner {
+    private actor Collector {
+        private var order: [String] = []
+        private var deltasByItem: [String: String] = [:]
+        private var finishedByItem: [String: String] = [:]
+        private var done = false
+        private var errorMessage: String?
+        private var continuation: CheckedContinuation<Void, Never>?
+
+        func appendDelta(itemID: String, delta: String) {
+            if !order.contains(itemID) { order.append(itemID) }
+            deltasByItem[itemID, default: ""] += delta
+        }
+
+        func finishText(itemID: String, text: String) {
+            if !order.contains(itemID) { order.append(itemID) }
+            finishedByItem[itemID] = text
+        }
+
+        func complete(outcome: String, error: String?) {
+            guard !done else { return }
+            if let error, !error.isEmpty {
+                errorMessage = error
+            } else if outcome == "failed" || outcome == "interrupted" {
+                errorMessage = outcome == "interrupted" ? "Cancelled." : "The helper run failed."
+            }
+            done = true
+            continuation?.resume()
+            continuation = nil
+        }
+
+        func waitUntilDone() async {
+            if done { return }
+            await withCheckedContinuation { continuation = $0 }
+        }
+
+        func snapshot() -> OneShotPromptResult {
+            if let errorMessage {
+                return .failed(errorMessage)
+            }
+            for itemID in order.reversed() {
+                let raw = finishedByItem[itemID] ?? deltasByItem[itemID] ?? ""
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return .answered(trimmed)
+                }
+            }
+            return .failed("The model returned no text.")
+        }
+    }
+
+    public static func run(
+        api: any OpenCodeAPI,
+        directory: String,
+        model: ModelRef,
+        prompt: String,
+        timeout: Duration = .seconds(180),
+        onSessionCreated: (@Sendable (String) async -> Void)? = nil,
+        onSessionFinished: (@Sendable (String) async -> Void)? = nil
+    ) async -> OneShotPromptResult {
+        let session: EngineSession
+        do {
+            session = try await api.createSession(
+                directory: directory,
+                model: model,
+                agent: nil,
+                permissionMode: .plan,
+                parentID: nil
+            )
+        } catch {
+            return .failed(error.localizedDescription)
+        }
+
+        let sessionID = session.id
+        if let onSessionCreated {
+            await onSessionCreated(sessionID)
+        }
+        try? await api.setArchived(sessionID, archived: true)
+
+        let collector = Collector()
+        let stream = api.events()
+        let eventTask = Task {
+            for await event in stream {
+                if Task.isCancelled { break }
+                switch event {
+                case .textDelta(let sid, let itemID, let delta) where sid == sessionID:
+                    await collector.appendDelta(itemID: itemID, delta: delta)
+                case .textEnded(let sid, let itemID, let text) where sid == sessionID:
+                    await collector.finishText(itemID: itemID, text: text)
+                case .permissionAsked(let request) where request.sessionID == sessionID:
+                    Task {
+                        try? await api.replyPermission(
+                            sessionID: sessionID,
+                            requestID: request.id,
+                            decision: .reject,
+                            message: "Read-only helper: do not run commands or edit files."
+                        )
+                    }
+                case .executionEnded(let sid, let outcome, let error) where sid == sessionID:
+                    await collector.complete(outcome: outcome, error: error)
+                default:
+                    break
+                }
+            }
+            await collector.complete(outcome: "failed", error: "The helper stream closed early.")
+        }
+
+        let timeoutTask = Task {
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            try? await api.interrupt(sessionID)
+            await collector.complete(outcome: "failed", error: "Timed out waiting for a reply.")
+        }
+
+        do {
+            try await api.prompt(sessionID, text: prompt, files: [])
+        } catch {
+            await collector.complete(outcome: "failed", error: error.localizedDescription)
+        }
+
+        await withTaskCancellationHandler {
+            await collector.waitUntilDone()
+        } onCancel: {
+            Task { await collector.complete(outcome: "interrupted", error: "Cancelled.") }
+        }
+
+        let result = await collector.snapshot()
+        eventTask.cancel()
+        timeoutTask.cancel()
+        await Task.detached {
+            try? await api.interrupt(sessionID)
+            try? await api.deleteSession(sessionID)
+            if let onSessionFinished {
+                await onSessionFinished(sessionID)
+            }
+        }.value
+        return result
+    }
+}
+
+/// Collects a bounded working-tree diff summary using `GitRunner` in trusted repositories.
+public enum GitDiffSummaryLoader {
+    public static func diffSummary(
+        in directory: String,
+        isTrusted: Bool,
+        fallbackChanges: [FileChange] = [],
+        maxCharacters: Int = 4000
+    ) async -> String? {
+        if isTrusted, GitSafety.repositoryFolder(containing: directory) != nil {
+            let runner = GitRunner()
+            let headCheck = await runner.run(["rev-parse", "--verify", "HEAD"], in: directory)
+            let diffArgs = headCheck.succeeded
+                ? ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "HEAD"]
+                : ["diff", "--no-ext-diff", "--no-textconv", "--no-color"]
+            let diffOut = await runner.run(diffArgs, in: directory)
+            if diffOut.succeeded {
+                let text = diffOut.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    return capped(text, limit: maxCharacters)
+                }
+            }
+            let statusOut = await runner.run(["status", "--short"], in: directory)
+            if statusOut.succeeded {
+                let status = statusOut.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !status.isEmpty {
+                    return capped("Working tree status:\n" + status, limit: maxCharacters)
+                }
+            }
+        }
+
+        let patches = fallbackChanges.compactMap { change -> String? in
+            let name = Format.relativePath(change.path, base: directory)
+            if let diff = change.diff?.trimmingCharacters(in: .whitespacesAndNewlines), !diff.isEmpty {
+                return "\(name):\n\(diff)"
+            }
+            return "\(change.kind.rawValue): \(name)"
+        }
+        guard !patches.isEmpty else { return nil }
+        return capped(patches.joined(separator: "\n\n"), limit: maxCharacters)
+    }
+
+    private static func capped(_ text: String, limit: Int) -> String {
+        guard text.count > limit else { return text }
+        guard limit > 24 else { return String(text.prefix(limit)) }
+        return String(text.prefix(limit - 18)) + "\n...(truncated)"
+    }
+}
+
+public extension SessionStore {
+    /// Marks a temporary helper session as hidden so it never flashes in the sidebar, Hub, or iPhone remote.
+    func registerHiddenHelperSession(_ sessionID: String) {
+        hiddenSessionIDs.insert(sessionID)
+    }
+
+    /// Removes a finished temporary helper session from the hidden set.
+    func unregisterHiddenHelperSession(_ sessionID: String) {
+        hiddenSessionIDs.remove(sessionID)
     }
 }
 #endif

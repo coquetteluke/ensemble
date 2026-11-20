@@ -46,10 +46,15 @@ struct SplitSessionsView: View {
         .background { splitShortcuts }
     }
 
-    /// Pane widths from the layout's shares, after the 1 pt dividers.
+    /// Pane widths from the layout's shares, after the 1 pt dividers. Any rounding remainder goes to the last pane.
     private func paneWidths(_ layout: SplitLayout, total: CGFloat) -> [CGFloat] {
-        let usable = max(0, total - CGFloat(max(0, layout.panes.count - 1)))
-        return layout.fractions.map { (usable * $0).rounded(.down) }
+        let count = layout.fractions.count
+        guard count > 0 else { return [] }
+        let usable = max(0, total - CGFloat(max(0, count - 1)))
+        var widths: [CGFloat] = layout.fractions.dropLast().map { (usable * CGFloat($0)).rounded(.down) }
+        let used = widths.reduce(0, +)
+        widths.append(max(0, usable - used))
+        return widths
     }
 
     private func paneIndex(at x: CGFloat, widths: [CGFloat]) -> Int? {
@@ -64,31 +69,24 @@ struct SplitSessionsView: View {
     private func divider(_ index: Int, layout: SplitLayout, total: CGFloat) -> some View {
         let usable = max(1, total - CGFloat(layout.panes.count - 1))
         let minFraction = Double(theme.z(SplitLayout.minPaneWidth) / usable)
-        return VLine()
-            .overlay {
-                Color.clear
-                    .frame(width: theme.z(9))
-                    .contentShape(Rectangle())
-                    .pointerStyle(.columnResize)
-                    .gesture(
-                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                            .onChanged { value in
-                                let start = dragStart ?? layout.fractions
-                                if dragStart == nil { dragStart = start }
-                                window.resizeSplit(divider: index, from: start, by: Double(value.translation.width / usable),
-                                                   minFraction: minFraction, save: false)
-                            }
-                            .onEnded { value in
-                                let start = dragStart ?? layout.fractions
-                                window.resizeSplit(divider: index, from: start, by: Double(value.translation.width / usable),
-                                                   minFraction: minFraction, save: true)
-                                dragStart = nil
-                            }
-                    )
-                    .onTapGesture(count: 2) { window.equalizePanes() }
-                    .help("Drag to resize. Double-click to make the panes equal.")
-            }
-            .zIndex(1)
+        return SplitDivider(
+            hitWidth: theme.z(9),
+            dragging: dragStart != nil,
+            onDragChanged: { width in
+                let start = dragStart ?? layout.fractions
+                if dragStart == nil { dragStart = start }
+                window.resizeSplit(divider: index, from: start, by: Double(width / usable),
+                                   minFraction: minFraction, save: false)
+            },
+            onDragEnded: { width in
+                let start = dragStart ?? layout.fractions
+                window.resizeSplit(divider: index, from: start, by: Double(width / usable),
+                                   minFraction: minFraction, save: true)
+                dragStart = nil
+            },
+            onEqualize: { window.equalizePanes() }
+        )
+        .zIndex(1)
     }
 
     /// Control-Command-W closes the focused pane; Option-Command-Left and Right move between panes.
@@ -178,6 +176,7 @@ struct SplitPaneView: View {
             }
             if let session {
                 SplitPaneStatus(store: store, session: session)
+                    .fixedSize()
                 // The folder shows only when it fits whole next to the whole title; otherwise the title alone.
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: theme.z(8)) {
@@ -195,11 +194,13 @@ struct SplitPaneView: View {
                 Text("Session not available")
                     .font(theme.font(size: 13))
                     .foregroundStyle(theme.textTertiary)
+                    .lineLimit(1)
             }
-            Spacer(minLength: theme.z(8))
+            Spacer(minLength: theme.z(4))
             IconButton("xmark", help: "Close pane (Control-Command-W)", size: 24) {
                 window.closePane(pane.id, store: store)
             }
+            .opacity(focused || !showsFocus ? 1 : 0.72)
             if isLast && !window.showContextPanel {
                 // The window's toolbar buttons sit here when no pane is open on the right.
                 Color.clear.frame(width: MainView.toolbarButtonsWidth - theme.z(10), height: 1)
@@ -209,6 +210,12 @@ struct SplitPaneView: View {
         .padding(.trailing, theme.z(10))
         .frame(height: 52)
         .background(theme.background)
+        .overlay {
+            if showsFocus && focused {
+                theme.accent.opacity(theme.isDark ? 0.065 : 0.045)
+                    .allowsHitTesting(false)
+            }
+        }
         .overlay(alignment: .bottom) {
             // The focused pane carries an accent line under its title.
             if showsFocus && focused {
@@ -225,6 +232,35 @@ struct SplitPaneView: View {
             .font(theme.font(size: 13, weight: .semibold))
             .foregroundStyle(focused || !showsFocus ? theme.textPrimary : theme.textSecondary)
             .lineLimit(1)
+            .truncationMode(.tail)
+    }
+}
+
+private struct SplitDivider: View {
+    let hitWidth: CGFloat
+    let dragging: Bool
+    let onDragChanged: (CGFloat) -> Void
+    let onDragEnded: (CGFloat) -> Void
+    let onEqualize: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        VLine(color: dragging ? theme.accent.opacity(0.75) : (hovering ? theme.textTertiary.opacity(0.6) : nil))
+            .overlay {
+                Color.clear
+                    .frame(width: hitWidth)
+                    .contentShape(Rectangle())
+                    .pointerStyle(.columnResize)
+                    .onHover { hovering = $0 }
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged { value in onDragChanged(value.translation.width) }
+                            .onEnded { value in onDragEnded(value.translation.width) }
+                    )
+                    .onTapGesture(count: 2, perform: onEqualize)
+                    .help("Drag to resize. Double-click to make the panes equal.")
+            }
     }
 }
 

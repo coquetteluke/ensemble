@@ -464,6 +464,23 @@ public enum ModelCatalog {
         return folders.lazy.flatMap(\.all).first { $0.contains(ref) }
     }
 
+    /// The route a single-selection picker uses for `choice`: the route matching `selected` when it is usable (or the
+    /// whole choice is unavailable), otherwise `choice.primary`.
+    public static func pickerRoute(for choice: ModelChoice, selected: ModelRef? = nil) -> ModelRoute? {
+        if let selected, let matched = choice.route(for: selected), matched.available || !choice.available {
+            return matched
+        }
+        return choice.primary
+    }
+
+    /// Normalizes `ref` to its deduplicated picker route inside `folders` (for example turning `claude-code/default`
+    /// into `claude-code/opus`), so single-selection pickers always match a row's tag.
+    public static func resolvedRef(for ref: ModelRef?, in folders: [ModelFolder]) -> ModelRef? {
+        guard let ref else { return nil }
+        guard let choice = choice(for: ref, in: folders) else { return ref }
+        return pickerRoute(for: choice, selected: ref)?.ref ?? ref
+    }
+
     /// The folder of the model `ref` names.
     public static func folder(for ref: ModelRef?, in folders: [ModelFolder]) -> ModelFolder? {
         guard let ref else { return nil }

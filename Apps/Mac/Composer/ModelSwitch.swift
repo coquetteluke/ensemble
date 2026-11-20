@@ -27,7 +27,7 @@ enum ModelSwitcher {
         let sessionID = session.id
         ModelChangeOffers.shared.bySession[sessionID] = nil
         switch await store.changeModel(ref, for: sessionID) {
-        case .switched, .failed:
+        case .switched, .stagedForNextMessage, .failed:
             break
         case .restarted(let from, let to):
             moveDraft(from: from, to: to, window: window)
@@ -62,6 +62,9 @@ enum ModelSwitcher {
         case .changeModel(let sessionID, let model):
             guard let session = store.session(sessionID) else { return }
             await pick(model, session: session, store: store, window: window)
+            if store.trustNotes.refusals[sessionID] != nil {
+                await store.sendRefusedMessageAgain(for: session)
+            }
         case .startLike(let sessionID, let model):
             guard let fresh = await store.startSession(like: sessionID, model: model) else { return }
             moveDraft(from: sessionID, to: fresh.id, window: window)

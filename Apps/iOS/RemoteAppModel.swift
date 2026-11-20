@@ -74,9 +74,13 @@ final class RemoteAppModel {
         isActive && (tab == .hub || tab == .rooms) && selectedChat?.sessionID == sessionID
     }
 
-    /// Switches the sidebar between Hub and Rooms (inner screen).
+    /// Switches the sidebar between Hub and Rooms (inner screen) without leaving Usage or Settings.
     func showList(_ list: RemoteTab) {
-        tab = list == .rooms ? .rooms : .hub
+        let target: RemoteTab = list == .rooms ? .rooms : .hub
+        listTab = target
+        if tab == .hub || tab == .rooms {
+            tab = target
+        }
     }
 
     init() {
@@ -134,7 +138,7 @@ final class RemoteAppModel {
         client?.stop()
         if client != nil { resetNavigation() }
         let demo = RemoteClient(inProcessHost: DemoRemoteHost(data: .showcase()), macName: "Demo Mac")
-        watchAlerts(demo)
+        configure(demo)
         demo.start()
         client = demo
         isDemo = true
@@ -188,15 +192,42 @@ final class RemoteAppModel {
         }
     }
 
-    /// Shows what newly needs you as a notification.
-    private func watchAlerts(_ client: RemoteClient) {
+    /// Connects client callbacks for alerts and session replacements (for example cross-engine restarts).
+    private func configure(_ client: RemoteClient) {
         client.onAlert = { [weak self] alert in self?.notifier.post(alert) }
+        client.onSessionReplaced = { [weak self] oldSessionID, newSession in
+            self?.handleSessionReplaced(oldSessionID: oldSessionID, newSession: newSession)
+        }
+    }
+
+    /// Rewrites navigation routes and migrates per-chat UI state when a session is replaced on the Mac.
+    private func handleSessionReplaced(oldSessionID: String, newSession: SessionSummary) {
+        guard oldSessionID != newSession.id else { return }
+        let replacementTitle = newSession.title
+        hubPath = hubPath.map { route in
+            guard route.sessionID == oldSessionID else { return route }
+            return ChatRoute(sessionID: newSession.id, title: replacementTitle.isEmpty ? route.title : replacementTitle)
+        }
+        roomsPath = roomsPath.map { route in
+            guard route.sessionID == oldSessionID else { return route }
+            return ChatRoute(sessionID: newSession.id, title: replacementTitle.isEmpty ? route.title : replacementTitle)
+        }
+        if let draft = drafts.removeValue(forKey: oldSessionID), drafts[newSession.id] == nil {
+            drafts[newSession.id] = draft
+        }
+        if let addressee = addressees.removeValue(forKey: oldSessionID), addressees[newSession.id] == nil {
+            addressees[newSession.id] = addressee
+        }
+        if let anchor = scrollAnchors.removeValue(forKey: oldSessionID), scrollAnchors[newSession.id] == nil {
+            scrollAnchors[newSession.id] = anchor
+        }
+        notifier?.clear(sessionID: oldSessionID)
     }
 
     private func connect(_ pairing: RemotePairing) {
         client?.stop()
-        let c = RemoteClient(pairing: pairing, deviceName: UIDevice.current.name, deviceID: Self.deviceID())
-        watchAlerts(c)
+        let c = RemoteClient(pairing: pairing, deviceName: UIDevice.current.name, deviceID: Self.deviceID(), pairingStore: store)
+        configure(c)
         c.start()
         client = c
         if RemoteNotifier.enabled { Task { await RemoteNotifier.requestAuthorization() } }

@@ -21,6 +21,7 @@ public final class SafetyCheckState {
 
     /// Prompts the check has finished with (shown, answered or dropped); never held again.
     @ObservationIgnored var released: Set<String> = []
+    @ObservationIgnored private var visiblePermissionContinuations: [UUID: AsyncStream<PermissionRequest>.Continuation] = [:]
     @ObservationIgnored var cache: [String: [String: CachedAnswer]] = [:]
     @ObservationIgnored var cacheOrder: [String: [String]] = [:]
     @ObservationIgnored var tasks: [String: Task<Void, Never>] = [:]
@@ -146,6 +147,26 @@ public final class SafetyCheckState {
     func markReleased(_ requestID: String) {
         if released.count > 5000 { released.removeAll() }
         released.insert(requestID)
+    }
+
+    /// True while the safety check is deciding `requestID` and keeping it out of the session's open prompts.
+    public func isHolding(_ requestID: String) -> Bool {
+        checking.contains(requestID)
+    }
+
+    /// Live stream of permission prompts that cleared the safety check and entered a session's `pendingPermissions`.
+    public func visiblePermissions() -> AsyncStream<PermissionRequest> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream.makeStream(of: PermissionRequest.self, bufferingPolicy: .bufferingNewest(512))
+        visiblePermissionContinuations[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { @MainActor [weak self] in self?.visiblePermissionContinuations[id] = nil }
+        }
+        return stream
+    }
+
+    func notifyPermissionVisible(_ request: PermissionRequest) {
+        for continuation in visiblePermissionContinuations.values { continuation.yield(request) }
     }
 
     // MARK: Previews and snapshots

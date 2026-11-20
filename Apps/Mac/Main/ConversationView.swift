@@ -16,6 +16,7 @@ struct ConversationView: View {
     @State private var position = ScrollPosition(edge: .bottom)
     /// The status line is too narrow for the "Work in a copy" switch; the composer's More menu offers it instead.
     @State private var worktreeSwitchInMore = false
+    @Environment(\.transcriptActions) private var parentActions
 
     static let columnWidth: CGFloat = 760
     /// Below this width (before zoom) the transcript, the composer and the status line use tighter side padding.
@@ -24,6 +25,7 @@ struct ConversationView: View {
     var body: some View {
         VStack(spacing: 0) {
             transcript
+                .environment(\.transcriptActions, enrichedTranscriptActions)
             ComposerColumn {
                 // "Trust this folder?" when the session's engine skips or refuses the folder's own settings.
                 SessionTrustCard(store: store, session: session)
@@ -45,12 +47,71 @@ struct ConversationView: View {
         .environment(\.interactionStore, store)
     }
 
+    private var activeRooms: RoomsController? {
+        RoomsController.live ?? AgentToolsCenter.shared.rooms
+    }
+
+    private var retryLastMessage: (() -> Void)? {
+        guard !session.isWorking else { return nil }
+        guard let text = session.items.reversed().compactMap({ item -> String? in
+            guard case .user(_, let text, _) = item else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : text
+        }).first else { return nil }
+        return {
+            Task { await store.send(text, to: session.id) }
+        }
+    }
+
+    private var enrichedTranscriptActions: TranscriptActions {
+        var updated = parentActions
+        let session = self.session
+        let window = self.window
+        let openParent = parentActions.openSession
+        let rooms = activeRooms
+        updated.currentSessionID = session.id
+        updated.agentExchanges = AgentToolsCenter.shared.coordinator?.exchanges(for: session.id) ?? []
+        updated.secondOpinions = AgentToolsCenter.shared.secondOpinions.opinions(for: session.id)
+        updated.secondOpinionModels = SecondOpinionModels.options(from: store.models, current: session.info.model)
+        updated.canShowSecondOpinion = !isSnapshot
+        updated.openSession = { targetID in
+            if let roomID = UUID(uuidString: targetID),
+               let rooms,
+               rooms.state(roomID) != nil {
+                window.openRoom(roomID, rooms: rooms)
+            } else {
+                openParent(targetID)
+            }
+        }
+        updated.requestSecondOpinion = { itemID, replyText, model in
+            AgentToolsCenter.shared.requestSecondOpinion(in: session, itemID: itemID, replyText: replyText, model: model)
+        }
+        updated.retrySecondOpinion = { opinion in
+            AgentToolsCenter.shared.retrySecondOpinion(opinion, in: session)
+        }
+        updated.dismissSecondOpinion = { opinion in
+            AgentToolsCenter.shared.dismissSecondOpinion(opinion)
+        }
+        updated.dismissAgentExchange = { exchange in
+            AgentToolsCenter.shared.coordinator?.dismissExchange(exchange.id, for: session.id)
+        }
+        return updated
+    }
+
     private var content: some View {
         VStack(alignment: .leading, spacing: theme.z(16)) {
             if session.isSubagent, let parentID = session.info.parentID {
                 SubagentBanner(store: store, parentID: parentID, window: window)
             }
-            TranscriptList(items: session.items, resolutions: session.resolutions, agents: store.agents)
+            TranscriptList(
+                items: session.items,
+                resolutions: session.resolutions,
+                agents: store.agents,
+                onRetry: retryLastMessage,
+                onContinueWithModel: { ref in
+                    Task { _ = await store.changeModel(ref, for: session.id) }
+                }
+            )
             ProposalCardsHost(session: session)
             if let todos = TodoParser.latest(in: session.items), !todos.isEmpty,
                session.isWorking || todos.contains(where: { $0.status == .pending || $0.status == .inProgress }) {

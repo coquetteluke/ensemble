@@ -15,6 +15,20 @@ public struct TranscriptActions: Sendable {
     /// The prompt that answers to Command-Y (Allow once), Option-Command-Y (Always allow) and
     /// Command-period (Reject): the newest open one in the session on screen.
     public var shortcutPermissionID: String?
+    /// Current session id shown in the transcript, for exchange card perspective and anchors.
+    public var currentSessionID: String?
+    /// Cross-session exchanges (`message_agent`, `ask_agent`) visible in this session.
+    public var agentExchanges: [AgentExchange]
+    /// Inline second opinions keyed by transcript item id.
+    public var secondOpinions: [String: [SecondOpinion]]
+    /// Available models for the Second opinion menu (other makers ordered first).
+    public var secondOpinionModels: [SecondOpinionModelOption]
+    /// True when the Second opinion action bar should appear on completed assistant replies.
+    public var canShowSecondOpinion: Bool
+    public var requestSecondOpinion: @MainActor @Sendable (_ itemID: String, _ replyText: String, _ model: ModelRef) -> Void
+    public var retrySecondOpinion: @MainActor @Sendable (SecondOpinion) -> Void
+    public var dismissSecondOpinion: @MainActor @Sendable (SecondOpinion) -> Void
+    public var dismissAgentExchange: @MainActor @Sendable (AgentExchange) -> Void
 
     public init(openSession: @escaping @MainActor @Sendable (String) -> Void = { _ in },
                 replyPermission: @escaping @MainActor @Sendable (PermissionRequest, PermissionDecision) -> Void = { _, _ in },
@@ -23,7 +37,16 @@ public struct TranscriptActions: Sendable {
                 edit: @escaping @MainActor @Sendable (String) -> Void = { _ in },
                 historySupported: Bool = false,
                 workingAgentName: String? = nil,
-                shortcutPermissionID: String? = nil) {
+                shortcutPermissionID: String? = nil,
+                currentSessionID: String? = nil,
+                agentExchanges: [AgentExchange] = [],
+                secondOpinions: [String: [SecondOpinion]] = [:],
+                secondOpinionModels: [SecondOpinionModelOption] = [],
+                canShowSecondOpinion: Bool = false,
+                requestSecondOpinion: @escaping @MainActor @Sendable (_ itemID: String, _ replyText: String, _ model: ModelRef) -> Void = { _, _, _ in },
+                retrySecondOpinion: @escaping @MainActor @Sendable (SecondOpinion) -> Void = { _ in },
+                dismissSecondOpinion: @escaping @MainActor @Sendable (SecondOpinion) -> Void = { _ in },
+                dismissAgentExchange: @escaping @MainActor @Sendable (AgentExchange) -> Void = { _ in }) {
         self.openSession = openSession
         self.replyPermission = replyPermission
         self.fork = fork
@@ -32,6 +55,15 @@ public struct TranscriptActions: Sendable {
         self.historySupported = historySupported
         self.workingAgentName = workingAgentName
         self.shortcutPermissionID = shortcutPermissionID
+        self.currentSessionID = currentSessionID
+        self.agentExchanges = agentExchanges
+        self.secondOpinions = secondOpinions
+        self.secondOpinionModels = secondOpinionModels
+        self.canShowSecondOpinion = canShowSecondOpinion
+        self.requestSecondOpinion = requestSecondOpinion
+        self.retrySecondOpinion = retrySecondOpinion
+        self.dismissSecondOpinion = dismissSecondOpinion
+        self.dismissAgentExchange = dismissAgentExchange
     }
 
     public static let none = TranscriptActions()
@@ -144,18 +176,29 @@ public struct TranscriptList: View {
     let items: [TranscriptItem]
     let resolutions: [String: PermissionResolution]
     let agents: [UUID: AgentSpec]
+    let onRetry: (() -> Void)?
+    let onContinueWithModel: ((ModelRef) -> Void)?
     @Environment(\.isSnapshot) private var isSnapshot
     @Environment(\.theme) private var theme
     @Environment(\.transcriptViewMode) private var forcedMode
     @Environment(\.transcriptFocus) private var focus
+    @Environment(\.transcriptActions) private var actions
     @AppStorage(TranscriptViewMode.storageKey) private var savedMode = TranscriptViewMode.normal.rawValue
     @State private var appliedFocusToken: Int?
     @State private var highlightedBlockID: String?
 
-    public init(items: [TranscriptItem], resolutions: [String: PermissionResolution] = [:], agents: [UUID: AgentSpec] = [:]) {
+    public init(
+        items: [TranscriptItem],
+        resolutions: [String: PermissionResolution] = [:],
+        agents: [UUID: AgentSpec] = [:],
+        onRetry: (() -> Void)? = nil,
+        onContinueWithModel: ((ModelRef) -> Void)? = nil
+    ) {
         self.items = items
         self.resolutions = resolutions
         self.agents = agents
+        self.onRetry = onRetry
+        self.onContinueWithModel = onContinueWithModel
     }
 
     private var mode: TranscriptViewMode { forcedMode ?? TranscriptViewMode(rawValue: savedMode) ?? .normal }
@@ -179,28 +222,147 @@ public struct TranscriptList: View {
     }
 
     private func rows(_ blocks: [TranscriptBlock]) -> some View {
-        ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
-            let previous = index > 0 ? blocks[index - 1] : nil
-            Group {
-                switch block {
-                case .single(let item):
-                    TranscriptItemView(item: item, previous: previous?.lastItem, resolution: resolutions[item.id], agents: agents)
-                case .activity(_, let steps):
-                    ActivityGroupView(items: steps, resolutions: resolutions)
+        let partitioned = partitionExchanges(blocks)
+        let modelLabels = switchedModelLabels()
+        let latestReply = latestReplyID()
+        let retryError = retryableErrorID()
+        return Group {
+            ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
+                let previous = index > 0 ? blocks[index - 1] : nil
+                let attached = partitioned.anchored[block.id] ?? []
+                VStack(alignment: .leading, spacing: theme.z(10)) {
+                    Group {
+                        switch block {
+                        case .single(let item):
+                            TranscriptItemView(
+                                item: item,
+                                previous: previous?.lastItem,
+                                resolution: resolutions[item.id],
+                                agents: agents,
+                                modelLabel: modelLabels[item.id],
+                                isLatestReply: item.id == latestReply,
+                                onRetry: item.id == retryError ? onRetry : nil,
+                                onContinueWithModel: onContinueWithModel
+                            )
+                        case .activity(_, let steps):
+                            ActivityGroupView(items: steps, resolutions: resolutions)
+                        }
+                    }
+                    ForEach(attached) { exchange in
+                        exchangeCard(exchange)
+                    }
                 }
-            }
-            .background {
-                if highlightedBlockID == block.id {
-                    RoundedRectangle(cornerRadius: theme.z(9), style: .continuous)
-                        .fill(theme.accent.opacity(0.13))
-                        .padding(.horizontal, -theme.z(10))
-                        .padding(.vertical, -theme.z(6))
-                        .transition(.opacity)
+                .background {
+                    if highlightedBlockID == block.id {
+                        RoundedRectangle(cornerRadius: theme.z(9), style: .continuous)
+                            .fill(theme.accent.opacity(0.13))
+                            .padding(.horizontal, -theme.z(10))
+                            .padding(.vertical, -theme.z(6))
+                            .transition(.opacity)
+                    }
                 }
+                .id(block.id)
+                .padding(.top, index == 0 ? 0 : spacing(before: block, after: previous))
             }
-            .id(block.id)
-            .padding(.top, index == 0 ? 0 : spacing(before: block, after: previous))
+
+            if !partitioned.trailing.isEmpty {
+                VStack(alignment: .leading, spacing: theme.z(10)) {
+                    ForEach(partitioned.trailing) { exchange in
+                        exchangeCard(exchange)
+                    }
+                }
+                .padding(.top, blocks.isEmpty ? 0 : theme.z(12))
+            }
         }
+    }
+
+    /// Maps the first assistant reply after each mid-chat model switch notice to the switched model's name.
+    private func switchedModelLabels() -> [String: String] {
+        var labels: [String: String] = [:]
+        var pendingModel: String?
+        for item in items {
+            switch item {
+            case .notice(_, let text):
+                if let switched = TranscriptExport.switchedModelName(fromNotice: text) {
+                    pendingModel = switched
+                }
+            case .agentText(let id, let text, let agentID, _):
+                guard agentID == nil,
+                      let model = pendingModel,
+                      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    continue
+                }
+                labels[id] = model
+                pendingModel = nil
+            default:
+                continue
+            }
+        }
+        return labels
+    }
+
+    private func latestReplyID() -> String? {
+        for item in items.reversed() {
+            if case .agentText(let id, let text, _, _) = item,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return id
+            }
+        }
+        return nil
+    }
+
+    private func retryableErrorID() -> String? {
+        guard onRetry != nil, !isTranscriptWorking else { return nil }
+        for item in items.reversed() {
+            switch item {
+            case .error(let id, _):
+                return id
+            case .user, .agentText, .board:
+                return nil
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
+    private var isTranscriptWorking: Bool {
+        if actions.workingAgentName != nil { return true }
+        return items.contains { item in
+            switch item {
+            case .agentText(_, _, _, let streaming): streaming
+            case .reasoning(_, _, let streaming): streaming
+            case .tool(let tool): tool.status == .running || tool.status == .pending
+            default: false
+            }
+        }
+    }
+
+    private func partitionExchanges(_ blocks: [TranscriptBlock]) -> (anchored: [String: [AgentExchange]], trailing: [AgentExchange]) {
+        guard !actions.agentExchanges.isEmpty, let sessionID = actions.currentSessionID else {
+            return ([:], [])
+        }
+        var anchored: [String: [AgentExchange]] = [:]
+        var trailing: [AgentExchange] = []
+        for exchange in actions.agentExchanges {
+            if let itemID = exchange.anchors[sessionID],
+               let block = blocks.first(where: { $0.contains(itemID: itemID) }) {
+                anchored[block.id, default: []].append(exchange)
+            } else {
+                trailing.append(exchange)
+            }
+        }
+        return (anchored, trailing)
+    }
+
+    private func exchangeCard(_ exchange: AgentExchange) -> some View {
+        let sessionID = actions.currentSessionID ?? ""
+        return AgentExchangeCardView(
+            exchange: exchange,
+            currentSessionID: sessionID,
+            onOpenTarget: { targetID in actions.openSession(targetID) },
+            onDismiss: { actions.dismissAgentExchange(exchange) }
+        )
     }
 
     /// Scrolls to the focused message once it is loaded, then flashes its row.
@@ -288,23 +450,49 @@ public struct TranscriptItemView: View {
     let previous: TranscriptItem?
     let resolution: PermissionResolution?
     let agents: [UUID: AgentSpec]
+    let modelLabel: String?
+    let isLatestReply: Bool
+    let onRetry: (() -> Void)?
+    let onContinueWithModel: ((ModelRef) -> Void)?
     @Environment(\.transcriptViewMode) private var mode
     /// Knows which error rows are plan limit stops (`AutoContinue.swift`).
     @Environment(\.interactionStore) private var store
 
-    public init(item: TranscriptItem, previous: TranscriptItem? = nil, resolution: PermissionResolution? = nil, agents: [UUID: AgentSpec] = [:]) {
+    public init(
+        item: TranscriptItem,
+        previous: TranscriptItem? = nil,
+        resolution: PermissionResolution? = nil,
+        agents: [UUID: AgentSpec] = [:],
+        modelLabel: String? = nil,
+        isLatestReply: Bool = false,
+        onRetry: (() -> Void)? = nil,
+        onContinueWithModel: ((ModelRef) -> Void)? = nil
+    ) {
         self.item = item
         self.previous = previous
         self.resolution = resolution
         self.agents = agents
+        self.modelLabel = modelLabel
+        self.isLatestReply = isLatestReply
+        self.onRetry = onRetry
+        self.onContinueWithModel = onContinueWithModel
     }
 
     public var body: some View {
         switch item {
         case .user(let id, let text, let date):
             UserBubble(id: id, text: text, date: date)
-        case .agentText(_, let text, let agentID, let streaming):
-            AgentTextRow(text: text, agent: agentID.flatMap { agents[$0] }, showHeader: showsAgentHeader(agentID), streaming: streaming)
+        case .agentText(let id, let text, let agentID, let streaming):
+            AgentTextRow(
+                itemID: id,
+                text: text,
+                agent: agentID.flatMap { agents[$0] },
+                showHeader: showsAgentHeader(agentID),
+                streaming: streaming,
+                modelLabel: modelLabel,
+                isLatestReply: isLatestReply,
+                onContinueWithModel: onContinueWithModel
+            )
         case .reasoning(_, let text, let streaming):
             ReasoningRow(text: text, streaming: streaming, expanded: (mode ?? .normal) != .normal)
         case .tool(let tool):
@@ -321,7 +509,7 @@ public struct TranscriptItemView: View {
             if let stop = store?.usageLimitStop(forItem: id) {
                 UsageLimitCard(stop: stop)
             } else {
-                ErrorRow(message: message)
+                ErrorRow(message: message, onRetry: onRetry)
             }
         case .notice(let id, let text):
             if let store, let notice = store.rewindNotice(forItem: id) {
@@ -489,25 +677,224 @@ struct MessageActionButton: View {
 
 /// Agent Markdown. In rooms it starts with the agent's colour dot and name.
 public struct AgentTextRow: View {
+    let itemID: String
     let text: String
     let agent: AgentSpec?
     let showHeader: Bool
     let streaming: Bool
+    let modelLabel: String?
+    let isLatestReply: Bool
+    let onContinueWithModel: ((ModelRef) -> Void)?
     @Environment(\.theme) private var theme
+    @Environment(\.transcriptActions) private var actions
+    @State private var hovering = false
+    @State private var secondOpinionHovered = false
+    @State private var copied = false
+    @State private var showModelPicker = false
 
-    public init(text: String, agent: AgentSpec?, showHeader: Bool, streaming: Bool) {
+    public init(
+        itemID: String = "",
+        text: String,
+        agent: AgentSpec?,
+        showHeader: Bool,
+        streaming: Bool,
+        modelLabel: String? = nil,
+        isLatestReply: Bool = false,
+        onContinueWithModel: ((ModelRef) -> Void)? = nil
+    ) {
+        self.itemID = itemID
         self.text = text
         self.agent = agent
         self.showHeader = showHeader
         self.streaming = streaming
+        self.modelLabel = modelLabel
+        self.isLatestReply = isLatestReply
+        self.onContinueWithModel = onContinueWithModel
+    }
+
+    public init(text: String, agent: AgentSpec?, showHeader: Bool, streaming: Bool) {
+        self.init(itemID: "", text: text, agent: agent, showHeader: showHeader, streaming: streaming)
     }
 
     public var body: some View {
+        let opinions = itemID.isEmpty ? [] : (actions.secondOpinions[itemID] ?? [])
         VStack(alignment: .leading, spacing: theme.z(6)) {
             if showHeader, let agent {
                 AgentNameTag(agent: agent)
+            } else if let modelLabel, !modelLabel.isEmpty {
+                Text(modelLabel)
+                    .font(theme.font(size: 10.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(theme.textTertiary)
+                    .padding(.horizontal, theme.z(6))
+                    .padding(.vertical, theme.z(2))
+                    .background(Capsule().fill(theme.codeBackground))
+                    .overlay(Capsule().strokeBorder(theme.separator, lineWidth: 1))
+                    .accessibilityLabel("Model: \(modelLabel)")
             }
             MarkdownView(text, streaming: streaming)
+
+            if showsActionBar {
+                replyActionBar
+            }
+
+            if !opinions.isEmpty {
+                VStack(alignment: .leading, spacing: theme.z(8)) {
+                    ForEach(opinions) { opinion in
+                        SecondOpinionCardView(
+                            opinion: opinion,
+                            onRetry: { actions.retrySecondOpinion(opinion) },
+                            onDismiss: { actions.dismissSecondOpinion(opinion) },
+                            onUseModel: onContinueWithModel
+                        )
+                    }
+                }
+                .padding(.top, theme.z(4))
+            }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+    }
+
+    private var showsActionBar: Bool {
+        actions.canShowSecondOpinion
+            && !streaming
+            && !itemID.isEmpty
+            && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var actionBarOpacity: Double {
+        if hovering || showModelPicker || copied { return 1 }
+        return isLatestReply ? 0.55 : 0
+    }
+
+    private var replyActionBar: some View {
+        HStack(spacing: theme.z(6)) {
+            MessageActionButton(
+                symbol: copied ? "checkmark" : "doc.on.doc",
+                help: copied ? "Copied" : "Copy reply",
+                enabled: true
+            ) {
+                copyToPasteboard(text)
+                copied = true
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(1.5))
+                    copied = false
+                }
+            }
+
+            if !actions.secondOpinionModels.isEmpty {
+                secondOpinionTrigger
+            }
+            Spacer(minLength: 0)
+        }
+        .opacity(actionBarOpacity)
+        .allowsHitTesting(hovering || showModelPicker || copied || isLatestReply)
+        .animation(.easeOut(duration: 0.15), value: actionBarOpacity)
+    }
+
+    @ViewBuilder
+    private var secondOpinionTrigger: some View {
+        if actions.secondOpinionModels.count == 1, let sole = actions.secondOpinionModels.first {
+            Button {
+                actions.requestSecondOpinion(itemID, text, sole.ref)
+            } label: {
+                secondOpinionLabel(title: "Second opinion (\(sole.name))")
+            }
+            .buttonStyle(.plain)
+            .onHover { secondOpinionHovered = $0 }
+            .help("Ask \(sole.name) for a second opinion")
+        } else {
+            Button {
+                showModelPicker.toggle()
+            } label: {
+                secondOpinionLabel(title: "Second opinion")
+            }
+            .buttonStyle(.plain)
+            .onHover { secondOpinionHovered = $0 }
+            .help("Ask another model for a second opinion")
+            .popover(isPresented: $showModelPicker, arrowEdge: .bottom) {
+                SecondOpinionModelPicker(options: actions.secondOpinionModels) { option in
+                    showModelPicker = false
+                    actions.requestSecondOpinion(itemID, text, option.ref)
+                }
+            }
+        }
+    }
+
+    private func secondOpinionLabel(title: String) -> some View {
+        HStack(spacing: theme.z(4)) {
+            Image(systemName: "text.bubble")
+                .font(theme.font(size: 11))
+            Text(title)
+                .font(theme.font(size: 11.5, weight: .medium))
+        }
+        .foregroundStyle(secondOpinionHovered || showModelPicker ? theme.textPrimary : theme.textSecondary)
+        .padding(.horizontal, theme.z(7))
+        .frame(height: theme.z(22))
+        .background(
+            RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                .fill(theme.hover.opacity(secondOpinionHovered || showModelPicker ? 1 : (hovering ? 0.5 : 0.35)))
+        )
+        .contentShape(Rectangle())
+    }
+}
+
+private struct SecondOpinionModelPicker: View {
+    let options: [SecondOpinionModelOption]
+    let onPick: (SecondOpinionModelOption) -> Void
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        let other = options.filter(\.isOtherMaker)
+        let same = options.filter { !$0.isOtherMaker }
+
+        VStack(alignment: .leading, spacing: theme.z(6)) {
+            Text("Ask another model")
+                .font(theme.font(size: 12, weight: .semibold))
+                .foregroundStyle(theme.textPrimary)
+                .padding(.horizontal, theme.z(6))
+
+            if !other.isEmpty {
+                section("Other makers", items: other)
+            }
+            if !same.isEmpty {
+                section("Same maker", items: same)
+            }
+        }
+        .padding(theme.z(10))
+        .frame(minWidth: theme.z(240), maxWidth: theme.z(320))
+        .background(theme.popover)
+    }
+
+    private func section(_ title: String, items: [SecondOpinionModelOption]) -> some View {
+        VStack(alignment: .leading, spacing: theme.z(2)) {
+            Text(title)
+                .font(theme.font(size: 10.5, weight: .medium))
+                .foregroundStyle(theme.textTertiary)
+                .padding(.horizontal, theme.z(6))
+                .padding(.top, theme.z(2))
+
+            ForEach(items) { option in
+                Button {
+                    onPick(option)
+                } label: {
+                    HStack(spacing: theme.z(8)) {
+                        Text(option.name)
+                            .font(theme.font(size: 12.5))
+                            .foregroundStyle(theme.textPrimary)
+                            .lineLimit(1)
+                        Spacer(minLength: theme.z(8))
+                        Text(option.makerName)
+                            .font(theme.font(size: 11))
+                            .foregroundStyle(theme.textTertiary)
+                            .lineLimit(1)
+                    }
+                    .padding(.horizontal, theme.z(8))
+                    .padding(.vertical, theme.z(5))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(RowButtonStyle())
+            }
         }
     }
 }
@@ -625,9 +1012,14 @@ public struct BoardRow: View {
 
 public struct ErrorRow: View {
     let message: String
+    let onRetry: (() -> Void)?
     @Environment(\.theme) private var theme
+    @State private var retryHovered = false
 
-    public init(message: String) { self.message = message }
+    public init(message: String, onRetry: (() -> Void)? = nil) {
+        self.message = message
+        self.onRetry = onRetry
+    }
 
     public var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: theme.z(8)) {
@@ -639,7 +1031,33 @@ public struct ErrorRow: View {
                 .foregroundStyle(theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .selectableText()
-            Spacer(minLength: 0)
+            Spacer(minLength: theme.z(6))
+            if let onRetry {
+                Button(action: onRetry) {
+                    HStack(spacing: theme.z(4)) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(theme.font(size: 10.5, weight: .medium))
+                        Text("Retry")
+                            .font(theme.font(size: 11.5, weight: .medium))
+                    }
+                    .foregroundStyle(retryHovered ? theme.textPrimary : theme.textSecondary)
+                    .padding(.horizontal, theme.z(8))
+                    .padding(.vertical, theme.z(4))
+                    .background(
+                        RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                            .fill(retryHovered ? theme.danger.opacity(0.18) : theme.danger.opacity(0.08))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                            .strokeBorder(theme.danger.opacity(retryHovered ? 0.45 : 0.25), lineWidth: 1)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { retryHovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: retryHovered)
+                .help("Retry last message")
+            }
         }
         .padding(.horizontal, theme.z(12))
         .padding(.vertical, theme.z(9))

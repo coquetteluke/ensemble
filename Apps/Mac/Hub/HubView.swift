@@ -57,10 +57,9 @@ struct HubView: View {
                     }
                 }
                 .frame(maxWidth: theme.z(Self.columnWidth), alignment: .leading)
-                .padding(.horizontal, theme.z(28))
                 .padding(.top, theme.z(14))
                 .padding(.bottom, theme.z(48))
-                .frame(maxWidth: .infinity)
+                .modifier(AdaptiveInsetModifier(wide: 28, narrow: 16))
             }
             .focusable(!isSnapshot)
             .focused($boardFocused)
@@ -217,9 +216,11 @@ struct HubSectionHeader: View {
             Text(title)
                 .font(theme.font(size: 13, weight: .semibold))
                 .foregroundStyle(theme.textPrimary)
+                .lineLimit(1)
             Text("\(count)")
                 .font(theme.font(size: 12).monospacedDigit())
                 .foregroundStyle(theme.textTertiary)
+                .fixedSize()
         }
         .accessibilityElement(children: .combine)
     }
@@ -235,40 +236,58 @@ private struct HubTotals: View {
         HStack(spacing: theme.z(10)) {
             ForEach([HubBucket.needsYou, .running, .finished], id: \.self) { bucket in
                 let count = sections.first { $0.bucket == bucket }?.items.count ?? 0
-                Button { onSelect(bucket) } label: {
-                    VStack(alignment: .leading, spacing: theme.z(4)) {
-                        Text(bucket.label)
-                            .font(theme.font(size: 12))
-                            .foregroundStyle(tint(bucket, count) ?? theme.textSecondary)
-                        Text("\(count)")
-                            .font(theme.font(size: 22, weight: .medium).monospacedDigit())
-                            .foregroundStyle(tint(bucket, count) ?? theme.textPrimary)
-                    }
-                    .padding(.horizontal, theme.z(14))
-                    .padding(.vertical, theme.z(11))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).fill(fill(bucket, count)))
-                    .overlay(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).strokeBorder(theme.border.opacity(0.7)))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(count == 0)
-                .help(count == 0 ? bucket.label : "Show \(bucket.label)")
-                .accessibilityLabel("\(bucket.label): \(count)")
+                HubTotalTile(bucket: bucket, count: count) { onSelect(bucket) }
             }
         }
     }
+}
 
-    private func tint(_ bucket: HubBucket, _ count: Int) -> Color? {
-        guard count > 0 else { return nil }
-        switch bucket {
-        case .needsYou: return theme.accent
-        case .running, .finished, .old: return nil
+private struct HubTotalTile: View {
+    let bucket: HubBucket
+    let count: Int
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        let highlighted = bucket == .needsYou && count > 0
+        let activeHover = hovering && count > 0
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: theme.z(4)) {
+                Text(bucket.label)
+                    .font(theme.font(size: 12))
+                    .foregroundStyle(highlighted ? theme.accent : theme.textSecondary)
+                    .lineLimit(1)
+                Text("\(count)")
+                    .font(theme.font(size: 22, weight: .medium).monospacedDigit())
+                    .foregroundStyle(highlighted ? theme.accent : theme.textPrimary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, theme.z(14))
+            .padding(.vertical, theme.z(11))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: theme.z(10), style: .continuous)
+                    .fill(fill(highlighted: highlighted, hovering: activeHover))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: theme.z(10), style: .continuous)
+                    .strokeBorder(highlighted ? theme.accent.opacity(theme.isDark ? 0.35 : 0.3) : theme.border, lineWidth: 1)
+            )
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(count == 0)
+        .onHover { hovering = $0 }
+        .help(count == 0 ? bucket.label : "Show \(bucket.label)")
+        .accessibilityLabel("\(bucket.label): \(count)")
     }
 
-    private func fill(_ bucket: HubBucket, _ count: Int) -> Color {
-        bucket == .needsYou && count > 0 ? theme.accent.opacity(theme.isDark ? 0.12 : 0.08) : theme.elevated
+    private func fill(highlighted: Bool, hovering: Bool) -> Color {
+        if highlighted {
+            return theme.accent.opacity(theme.isDark ? (hovering ? 0.16 : 0.12) : (hovering ? 0.12 : 0.08))
+        }
+        return hovering ? theme.elevatedHover : theme.elevated
     }
 }
 

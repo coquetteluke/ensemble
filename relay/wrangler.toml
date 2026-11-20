@@ -1,0 +1,24 @@
+name = "ensemble-relay"
+main = "src/index.ts"
+compatibility_date = "2026-08-22"
+
+routes = [{ pattern = "relay.coquettemc.com", custom_domain = true }]
+
+[[durable_objects.bindings]]
+name = "MAILBOX"
+class_name = "Mailbox"
+
+[[durable_objects.bindings]]
+name = "CLAIM_LIMITER"
+class_name = "ClaimLimiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Mailbox"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["ClaimLimiter"]
+
+[observability]
+enabled = false

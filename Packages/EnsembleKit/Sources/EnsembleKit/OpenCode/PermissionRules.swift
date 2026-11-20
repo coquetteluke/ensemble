@@ -204,10 +204,13 @@ public enum PermissionRules {
 
     /// Plan mode: the session also runs OpenCode's `plan` agent (which adds a "you are in Plan mode" reminder), but
     /// that agent alone still allows every shell command and writes under `~/.opencode/plan`, so the session rules make
-    /// it read-only. Anything not named is denied, MCP tools included; reads and searches run (`.env` files ask);
-    /// the read-only commands Auto allows run, and every other command, every edit, Code Mode, image generation and
-    /// work outside the project are denied. Questions and skills are allowed, and so are subagents, whose sessions copy
-    /// these rules. Web fetches and searches ask: they change nothing on this Mac and are often what a plan needs.
+    /// it read-only. Anything not named is denied, other MCP tools included; Ensemble's own read-only and proposal
+    /// tools (`ensemble_propose_session`, `ensemble_browser_snapshot`, `ensemble_browser_screenshot`,
+    /// `ensemble_browser_console`, `ensemble_list_agents`, `ensemble_ask_agent`) run without asking OpenCode first
+    /// (mutating browser tools stay denied). Reads and searches run (`.env` files ask); the read-only commands Auto
+    /// allows run, and every other command, every edit, Code Mode, image generation and work outside the project are
+    /// denied. Questions and skills are allowed, and so are subagents, whose sessions copy these rules. Web fetches
+    /// and searches ask: they change nothing on this Mac and are often what a plan needs.
     public static let planRuleset: [PermissionRule] = {
         var rules = [
             PermissionRule("*", "*", "deny"),
@@ -220,6 +223,13 @@ public enum PermissionRules {
             PermissionRule("question", "*", "allow"),
             PermissionRule("skill", "*", "allow"),
             PermissionRule("subagent", "*", "allow"),
+            // Read-only and proposal Ensemble MCP tools (Ensemble's own bridge handles cards and safety rules).
+            PermissionRule("ensemble_propose_session", "*", "allow"),
+            PermissionRule("ensemble_browser_snapshot", "*", "allow"),
+            PermissionRule("ensemble_browser_screenshot", "*", "allow"),
+            PermissionRule("ensemble_browser_console", "*", "allow"),
+            PermissionRule("ensemble_list_agents", "*", "allow"),
+            PermissionRule("ensemble_ask_agent", "*", "allow"),
             PermissionRule("browser", "*", "deny"),
             PermissionRule("skill", "browser", "deny"),
             PermissionRule("edit", "*", "deny"),
@@ -238,9 +248,15 @@ public enum PermissionRules {
     /// The engine agent that goes with a mode: OpenCode's `plan` agent for Plan, its default `build` agent otherwise.
     public static func agent(for mode: PermissionMode) -> String { mode == .plan ? "plan" : "build" }
 
+    /// The exact MCP action names for Ensemble's own built-in tools (`ensemble_<tool>`). Enumerated explicitly instead
+    /// of using an `ensemble_*` wildcard so a third-party MCP server with an `ensemble_` prefix can never auto-allow.
+    public static let ensembleToolActions: [String] = AgentToolName.allCases.map {
+        "\(AgentToolsMCP.serverName)_\($0.rawValue)"
+    }
+
     private static func base(editsAllowed: Bool) -> [PermissionRule] {
         var rules = [
-            // Anything not named below, including MCP tools, asks.
+            // Anything not named below, including third-party MCP tools, asks.
             PermissionRule("*", "*", "ask"),
             // Reading and searching inside the project.
             PermissionRule("read", "*", "allow"),
@@ -253,6 +269,10 @@ public enum PermissionRules {
             PermissionRule("question", "*", "allow"),
             PermissionRule("skill", "*", "allow"),
             PermissionRule("subagent", "*", "allow"),
+        ]
+        // Ensemble's own MCP tools handle confirmation inside Ensemble, so OpenCode does not ask twice.
+        rules += ensembleToolActions.map { PermissionRule($0, "*", "allow") }
+        rules += [
             // The engine's own defaults deny the desktop browser; keep that.
             PermissionRule("browser", "*", "deny"),
             PermissionRule("skill", "browser", "deny"),
@@ -421,13 +441,18 @@ public enum PermissionRules {
         }
     }
 
-    /// The mode of a ruleset that an earlier Ensemble version wrote for Ask, Accept edits or Auto (it starts with a
-    /// catch-all ask and allows subagents) but that differs from today's ruleset for that mode. Such a session keeps
-    /// its old rules until its mode is set again, so the caller should reapply `ruleset(for:)` with this mode.
-    /// `nil` for current rulesets and for rules Ensemble did not write.
+    /// The mode of a ruleset that an earlier Ensemble version wrote for Ask, Accept edits, Auto or Plan (it starts
+    /// with Ensemble's catch-all rule and allows subagents) but that differs from today's ruleset for that mode. Such
+    /// a session keeps its old rules until its mode is set again, so the caller should reapply `ruleset(for:)` with
+    /// this mode. `nil` for current rulesets and for rules Ensemble did not write.
     public static func outdatedMode(for rules: [PermissionRule]) -> PermissionMode? {
-        guard mode(for: rules) == nil, rules.first == PermissionRule("*", "*", "ask"),
-              rules.contains(PermissionRule("subagent", "*", "allow")),
+        guard mode(for: rules) == nil, rules.contains(PermissionRule("subagent", "*", "allow")) else { return nil }
+        if rules.first == PermissionRule("*", "*", "deny"),
+           rules.contains(PermissionRule("question", "*", "allow")),
+           rules.contains(PermissionRule("edit", "*", "deny")) {
+            return .plan
+        }
+        guard rules.first == PermissionRule("*", "*", "ask"),
               let edit = rules.last(where: { $0.action == "edit" && $0.resource == "*" }) else { return nil }
         if edit.effect == "ask" { return .ask }
         guard edit.effect == "allow" else { return nil }

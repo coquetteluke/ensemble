@@ -11,11 +11,16 @@ extension SessionStore {
     /// Copies the session (up to and including `messageID`, or all of it) into a new session and opens it.
     @discardableResult
     public func fork(_ sessionID: String, atMessageID messageID: String?) async -> SessionModel? {
-        guard let history = historyControl, let source = byID[sessionID] else { return nil }
+        let primaryID = primarySessionID(for: sessionID)
+        guard let history = historyControl, let source = byID[primaryID] else { return nil }
+        if threadLinks.hasLinks(for: primaryID) {
+            lastError = "Fork is not available after switching engines in a thread."
+            return nil
+        }
         do {
             var engineID: String?
             if let messageID { engineID = try await engineMessageID(for: messageID, in: source) }
-            let info = try await history.fork(sessionID, atMessageID: engineID)
+            let info = try await history.fork(primaryID, atMessageID: engineID)
             let session = upsertSession(info)
             session.permissionMode = source.permissionMode
             select(session.id)
@@ -29,16 +34,21 @@ extension SessionStore {
     /// Removes `messageID` and everything after it, then reloads the transcript.
     @discardableResult
     public func rewind(_ sessionID: String, toBeforeMessageID messageID: String) async -> Bool {
-        guard let history = historyControl, let session = byID[sessionID] else { return false }
+        let primaryID = primarySessionID(for: sessionID)
+        guard let history = historyControl, let session = byID[primaryID] else { return false }
+        if threadLinks.hasLinks(for: primaryID) {
+            lastError = "Rewind is not available after switching engines in a thread."
+            return false
+        }
         do {
             guard let engineID = try await engineMessageID(for: messageID, in: session) else { return false }
-            try await history.rewind(sessionID, toBeforeMessageID: engineID)
+            try await history.rewind(primaryID, toBeforeMessageID: engineID)
             // Prompts after the rewind point are gone; take the engine's list rather than the old one.
             if let pending = try? await engine.pendingPermissions() {
-                session.pendingPermissions = pending.filter { $0.sessionID == sessionID }
+                session.pendingPermissions = pending.filter { primarySessionID(for: $0.sessionID) == session.id }
             }
             session.transcriptLoaded = false
-            await loadSession(sessionID)
+            await loadSession(primaryID)
             return true
         } catch {
             lastError = "Could not rewind: \(error.localizedDescription)"

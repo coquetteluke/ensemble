@@ -88,6 +88,7 @@ public struct PrimaryButtonStyle: ButtonStyle {
         let tint: Color?
         @Environment(\.theme) private var theme
         @Environment(\.isEnabled) private var isEnabled
+        @State private var hovering = false
 
         var body: some View {
             configuration.label
@@ -98,9 +99,12 @@ public struct PrimaryButtonStyle: ButtonStyle {
                 .background(
                     RoundedRectangle(cornerRadius: theme.z(7), style: .continuous)
                         .fill(tint ?? theme.accent)
+                        .brightness(isEnabled && hovering && !configuration.isPressed ? 0.06 : 0)
                         .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.4)
                 )
                 .contentShape(Rectangle())
+                .onHover { hovering = $0 }
+                .animation(.easeOut(duration: 0.12), value: hovering)
         }
     }
 }

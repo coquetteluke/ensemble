@@ -5,16 +5,21 @@ import Synchronization
 
 /// Mutual challenge-response so the pairing token never travels over the wire.
 ///
-/// 1. On connect the Mac sends a random `serverNonce` (`challenge`).
-/// 2. The phone picks a random `clientNonce` and sends
-///    `HMAC-SHA256(token, serverNonce || clientNonce || "ensemble-client")` with it (`hello`).
+/// 1. On connect the Mac sends a random `serverNonce` and a fresh X25519 public key, `macKey` (`challenge`).
+/// 2. The phone picks a random `clientNonce` and its own fresh X25519 public key, `phoneKey`, and sends
+///    `HMAC-SHA256(token, serverNonce || clientNonce || macKey || phoneKey || "ensemble-client")` with them (`hello`).
 /// 3. The Mac checks that proof in constant time and answers with
-///    `HMAC-SHA256(token, clientNonce || serverNonce || "ensemble-server")` (`welcome`).
+///    `HMAC-SHA256(token, clientNonce || serverNonce || phoneKey || macKey || "ensemble-server")` (`welcome`).
 /// 4. The phone checks the Mac's proof before it trusts anything the Mac sends.
 ///
-/// The HMAC key is the token's UTF-8 bytes. Nonces are 32 random bytes, base64url on the wire.
+/// Both proofs cover both public keys, so a relay that swaps either key makes them fail. The X25519 shared secret
+/// of the two keys then goes into the channel keys (see `RemoteChannel`), and both private keys are dropped after the
+/// handshake. The HMAC key is the token's UTF-8 bytes. Nonces are 32 random bytes and keys are raw 32 bytes,
+/// base64url on the wire.
 public enum RemoteHandshake {
     public static let nonceByteCount = 32
+    /// Raw length of an X25519 public key.
+    public static let keyByteCount = 32
     static let clientLabel = Data("ensemble-client".utf8)
     static let serverLabel = Data("ensemble-server".utf8)
 
@@ -26,22 +31,36 @@ public enum RemoteHandshake {
         return Data(bytes)
     }
 
-    public static func clientProof(token: String, serverNonce: Data, clientNonce: Data) -> Data {
-        mac(token, serverNonce + clientNonce + clientLabel)
+    public static func clientProof(token: String, serverNonce: Data, clientNonce: Data, macKey: Data, phoneKey: Data) -> Data {
+        mac(token, clientMessage(serverNonce: serverNonce, clientNonce: clientNonce, macKey: macKey, phoneKey: phoneKey))
     }
 
-    public static func serverProof(token: String, serverNonce: Data, clientNonce: Data) -> Data {
-        mac(token, clientNonce + serverNonce + serverLabel)
+    public static func serverProof(token: String, serverNonce: Data, clientNonce: Data, macKey: Data, phoneKey: Data) -> Data {
+        mac(token, serverMessage(serverNonce: serverNonce, clientNonce: clientNonce, macKey: macKey, phoneKey: phoneKey))
+    }
+
+    private static func clientMessage(serverNonce: Data, clientNonce: Data, macKey: Data, phoneKey: Data) -> Data {
+        serverNonce + clientNonce + macKey + phoneKey + clientLabel
+    }
+
+    private static func serverMessage(serverNonce: Data, clientNonce: Data, macKey: Data, phoneKey: Data) -> Data {
+        clientNonce + serverNonce + phoneKey + macKey + serverLabel
     }
 
     /// Constant-time check of the phone's proof.
-    public static func isValidClientProof(_ proof: Data, token: String, serverNonce: Data, clientNonce: Data) -> Bool {
-        HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: serverNonce + clientNonce + clientLabel, using: key(token))
+    public static func isValidClientProof(_ proof: Data, token: String, serverNonce: Data, clientNonce: Data, macKey: Data,
+                                          phoneKey: Data) -> Bool {
+        HMAC<SHA256>.isValidAuthenticationCode(
+            proof, authenticating: clientMessage(serverNonce: serverNonce, clientNonce: clientNonce, macKey: macKey, phoneKey: phoneKey),
+            using: key(token))
     }
 
     /// Constant-time check of the Mac's proof.
-    public static func isValidServerProof(_ proof: Data, token: String, serverNonce: Data, clientNonce: Data) -> Bool {
-        HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: clientNonce + serverNonce + serverLabel, using: key(token))
+    public static func isValidServerProof(_ proof: Data, token: String, serverNonce: Data, clientNonce: Data, macKey: Data,
+                                          phoneKey: Data) -> Bool {
+        HMAC<SHA256>.isValidAuthenticationCode(
+            proof, authenticating: serverMessage(serverNonce: serverNonce, clientNonce: clientNonce, macKey: macKey, phoneKey: phoneKey),
+            using: key(token))
     }
 
     /// A nonce or proof as base64url without padding.
@@ -59,6 +78,20 @@ public enum RemoteHandshake {
         while s.count % 4 != 0 { s.append("=") }
         guard let data = Data(base64Encoded: s), data.count == expectedCount else { return nil }
         return data
+    }
+
+    /// An ephemeral key pair for one connection. The private half is a value the caller must drop after the handshake.
+    public static func makeKeyPair() -> Curve25519.KeyAgreement.PrivateKey {
+        Curve25519.KeyAgreement.PrivateKey()
+    }
+
+    /// The X25519 shared secret (32 bytes) of `privateKey` and the other side's raw public key; `nil` when the public
+    /// key is not 32 bytes or gives no usable secret (a low-order point).
+    public static func sharedSecret(privateKey: Curve25519.KeyAgreement.PrivateKey, peerKey: Data) -> Data? {
+        guard peerKey.count == keyByteCount,
+              let publicKey = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: peerKey),
+              let secret = try? privateKey.sharedSecretFromKeyAgreement(with: publicKey) else { return nil }
+        return secret.withUnsafeBytes { Data($0) }
     }
 
     private static func key(_ token: String) -> SymmetricKey {
@@ -188,26 +221,56 @@ public final class InMemoryRemoteTokenStore: RemoteTokenStore {
     public func deleteToken() throws { token.withLock { $0 = nil } }
 }
 
-/// Saves the phone's pairing in the Keychain.
+/// Saves the phone's pairing in the Keychain (or in memory for tests).
 public struct RemotePairingStore: Sendable {
+    private final class StorageBox: Sendable {
+        let value: Mutex<RemotePairing?>
+
+        init(_ initial: RemotePairing?) {
+            self.value = Mutex(initial)
+        }
+    }
+
     public var service: String
     public var account: String
+    private let memory: StorageBox?
 
     public init(service: String = RemoteKeychain.defaultService, account: String = "pairing") {
         self.service = service
         self.account = account
+        self.memory = nil
+    }
+
+    private init(memory: StorageBox) {
+        self.service = ""
+        self.account = ""
+        self.memory = memory
+    }
+
+    /// An in-memory store for tests and previews that never touches the Keychain.
+    public static func inMemory(initial: RemotePairing? = nil) -> RemotePairingStore {
+        RemotePairingStore(memory: StorageBox(initial))
     }
 
     public func load() -> RemotePairing? {
+        if let memory { return memory.value.withLock { $0 } }
         guard let data = try? RemoteKeychain.read(service: service, account: account) else { return nil }
         return try? JSONDecoder().decode(RemotePairing.self, from: data)
     }
 
     public func save(_ pairing: RemotePairing) throws {
+        if let memory {
+            memory.value.withLock { $0 = pairing }
+            return
+        }
         try RemoteKeychain.write(try JSONEncoder().encode(pairing), service: service, account: account)
     }
 
     public func delete() throws {
+        if let memory {
+            memory.value.withLock { $0 = nil }
+            return
+        }
         try RemoteKeychain.delete(service: service, account: account)
     }
 }

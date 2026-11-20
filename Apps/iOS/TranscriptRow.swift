@@ -1,77 +1,208 @@
 import EnsembleKit
 import SwiftUI
 
-/// Simple rendering of one transcript row: text, tool one-liners, permission cards, board messages.
+/// Renders one row in a session or room transcript.
 struct TranscriptRow: View {
     let item: TranscriptItem
     let agents: [UUID: RemoteAgent]
     let client: RemoteClient
+    var modelLabel: String? = nil
+    var secondOpinions: [RemoteSecondOpinion] = []
+    var availableModels: [RemoteModelOption] = []
+    var currentModelID: String? = nil
+    var onRequestSecondOpinion: ((String, String, RemoteModelOption) -> Void)? = nil
+    var retrySecondOpinion: ((RemoteSecondOpinion, String) -> (() -> Void)?)? = nil
+    var continueWithOpinionModel: ((RemoteSecondOpinion) -> (() -> Void)?)? = nil
+    var onRetryError: (() -> Void)? = nil
     var onError: (String) -> Void
 
     var body: some View {
         switch item {
         case .user(_, let text, _):
-            HStack {
-                Spacer(minLength: 40)
-                Text(text)
-                    .font(.body)
-                    .foregroundStyle(RemoteTheme.primaryText)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
-                    .background(RemoteTheme.userBubble, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .textSelection(.enabled)
-            }
-        case .agentText(_, let text, let agentID, let streaming):
-            VStack(alignment: .leading, spacing: 4) {
-                if let agent = agentID.flatMap({ agents[$0] }) {
-                    AgentTag(agent: agent)
-                }
-                AgentMessageText(text: text)
-                if streaming {
-                    ProgressView().controlSize(.mini)
-                }
-            }
-        case .reasoning(_, let text, _):
-            DisclosureGroup {
-                Text(text)
-                    .font(.footnote)
-                    .foregroundStyle(RemoteTheme.tertiaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } label: {
-                Label("Thinking", systemImage: "brain")
-                    .font(.footnote)
-                    .foregroundStyle(RemoteTheme.secondaryText)
-            }
-            .tint(RemoteTheme.secondaryText)
+            UserMessageBubble(text: text)
+        case .agentText(let id, let text, let agentID, let streaming):
+            AgentTextRow(
+                itemID: id,
+                text: text,
+                agent: agentID.flatMap { agents[$0] },
+                modelLabel: modelLabel,
+                streaming: streaming,
+                opinions: secondOpinions.filter { $0.itemID == id },
+                availableModels: availableModels,
+                currentModelID: currentModelID,
+                onRequestSecondOpinion: onRequestSecondOpinion,
+                retrySecondOpinion: retrySecondOpinion,
+                continueWithOpinionModel: continueWithOpinionModel
+            )
+        case .reasoning(_, let text, let streaming):
+            RemoteReasoningRow(text: text, streaming: streaming)
         case .tool(let tool):
-            ToolLine(tool: tool)
+            RemoteToolRow(tool: tool)
         case .permission(let request):
             if request.isQuestion {
                 RemoteQuestionCard(request: request, client: client, onError: onError)
             } else if request.isPlan {
                 RemotePlanCard(request: request, client: client, onError: onError)
             } else {
-                // In a room, the agent that asks (its own session, or one of its subagents' prompts).
-                PermissionCard(request: request, client: client, onError: onError,
-                               agent: agents.values.first { $0.sessionID == request.sessionID })
+                PermissionCard(
+                    request: request,
+                    client: client,
+                    onError: onError,
+                    agent: agents.values.first { $0.sessionID == request.sessionID }
+                )
             }
         case .board(_, let from, let to, let text, _):
             BoardMessage(from: agents[from], to: to.compactMap { agents[$0] }, text: text)
         case .error(_, let message):
-            Label(message, systemImage: "exclamationmark.triangle.fill")
-                .font(.footnote)
-                .foregroundStyle(RemoteTheme.danger)
+            RemoteErrorRow(message: message, onRetry: onRetryError)
         case .notice(_, let text):
-            Text(text)
-                .font(.caption)
-                .foregroundStyle(RemoteTheme.tertiaryText)
-                .frame(maxWidth: .infinity)
+            RemoteNoticeRow(text: text)
         }
     }
+}
 
-    static func markdown(_ text: String) -> AttributedString {
-        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(text)
+// MARK: - User & Assistant Rows
+
+private struct UserMessageBubble: View {
+    let text: String
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 48)
+            Text(text)
+                .font(RemoteTheme.font(size: 15, relativeTo: .body))
+                .foregroundStyle(RemoteTheme.primaryText)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(
+                    RemoteTheme.userBubble,
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(RemoteTheme.border.opacity(0.6), lineWidth: 0.75)
+                )
+                .textSelection(.enabled)
+        }
+    }
+}
+
+private struct AgentTextRow: View {
+    let itemID: String
+    let text: String
+    let agent: RemoteAgent?
+    let modelLabel: String?
+    let streaming: Bool
+    let opinions: [RemoteSecondOpinion]
+    let availableModels: [RemoteModelOption]
+    let currentModelID: String?
+    let onRequestSecondOpinion: ((String, String, RemoteModelOption) -> Void)?
+    let retrySecondOpinion: ((RemoteSecondOpinion, String) -> (() -> Void)?)?
+    let continueWithOpinionModel: ((RemoteSecondOpinion) -> (() -> Void)?)?
+
+    @ScaledMetric(relativeTo: .body) private var messageSize: CGFloat = 15
+    @State private var copied = false
+    @State private var copyHaptic = 0
+
+    private var orderedModels: [RemoteModelOption] {
+        guard let currentModelID else { return availableModels }
+        let other = availableModels.filter { $0.modelID != currentModelID }
+        let same = availableModels.filter { $0.modelID == currentModelID }
+        return other + same
+    }
+
+    private var hasText: Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let agent {
+                AgentTag(agent: agent, showModel: true)
+            } else if let modelLabel, !modelLabel.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: "cpu")
+                        .font(RemoteTheme.font(size: 10, weight: .medium, relativeTo: .caption2))
+                    Text(modelLabel)
+                        .font(RemoteTheme.font(size: 11.5, weight: .medium, relativeTo: .caption))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(RemoteTheme.tertiaryText)
+            }
+            MarkdownView(text, fontSize: messageSize, streaming: streaming)
+            if streaming {
+                ConstellationSpinner(size: 13)
+                    .padding(.top, 2)
+            } else if hasText {
+                HStack(spacing: 8) {
+                    Button {
+                        copyToPasteboard(text)
+                        copyHaptic += 1
+                        copied = true
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .seconds(1.5))
+                            copied = false
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                                .font(RemoteTheme.font(size: 11, weight: .medium, relativeTo: .caption))
+                            Text(copied ? "Copied" : "Copy")
+                                .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption))
+                        }
+                        .foregroundStyle(copied ? RemoteTheme.success : RemoteTheme.secondaryText)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(RemoteTheme.cardRaised, in: Capsule())
+                        .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+                        .frame(minHeight: RemoteTheme.minTapTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(copied ? "Copied reply" : "Copy reply")
+
+                    if let onRequestSecondOpinion, !availableModels.isEmpty {
+                        Menu {
+                            Section("Ask another model") {
+                                ForEach(orderedModels) { option in
+                                    Button {
+                                        onRequestSecondOpinion(itemID, text, option)
+                                    } label: {
+                                        Text(option.makerName.isEmpty ? option.name : "\(option.name) (\(option.makerName))")
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "text.bubble")
+                                    .font(RemoteTheme.font(size: 11, weight: .medium, relativeTo: .caption))
+                                Text("Second opinion")
+                                    .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption))
+                            }
+                            .foregroundStyle(RemoteTheme.secondaryText)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(RemoteTheme.cardRaised, in: Capsule())
+                            .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+                            .frame(minHeight: RemoteTheme.minTapTarget)
+                            .contentShape(Rectangle())
+                        }
+                    }
+                }
+            }
+
+            ForEach(opinions) { opinion in
+                RemoteSecondOpinionCard(
+                    opinion: opinion,
+                    onRetry: retrySecondOpinion?(opinion, text),
+                    onContinueWithModel: continueWithOpinionModel?(opinion)
+                )
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .sensoryFeedback(.selection, trigger: copyHaptic)
     }
 }
 
@@ -80,90 +211,266 @@ struct AgentMessageText: View {
     let text: String
     @ScaledMetric private var size: CGFloat
 
-    init(text: String, size: CGFloat = 17) {
+    init(text: String, size: CGFloat = 15) {
         self.text = text
         _size = ScaledMetric(wrappedValue: size, relativeTo: .body)
     }
 
     var body: some View {
-        Text(TranscriptRow.markdown(text))
-            .font(MessageType.font(size: size))
-            .tracking(MessageType.tracking(size))
-            .lineSpacing(MessageType.lineSpacing(size))
-            .foregroundStyle(RemoteTheme.primaryText)
-            .textSelection(.enabled)
+        MarkdownView(text, fontSize: self.size)
     }
 }
 
 struct AgentTag: View {
     let agent: RemoteAgent
+    var showModel = false
 
     var body: some View {
-        HStack(spacing: 5) {
-            Circle().fill(Color(remoteHex: agent.colorHex)).frame(width: 8, height: 8)
+        HStack(spacing: 6) {
+            Circle()
+                .fill(Color(remoteHex: agent.colorHex))
+                .frame(width: 8, height: 8)
             Text(agent.name)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(Color(remoteHex: agent.colorHex))
+                .font(RemoteTheme.font(size: 13, weight: .semibold, relativeTo: .caption))
+                .foregroundStyle(RemoteTheme.primaryText)
+            if showModel && !agent.model.isEmpty {
+                Text(shortModelLabel(agent.model))
+                    .font(RemoteTheme.font(size: 11.5, relativeTo: .caption2))
+                    .foregroundStyle(RemoteTheme.tertiaryText)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func shortModelLabel(_ full: String) -> String {
+        let modelPart = full.split(separator: "/").last.map(String.init) ?? full
+        return modelPart.split(separator: "#").first.map(String.init) ?? modelPart
+    }
+}
+
+// MARK: - Reasoning & Tool Calls
+
+private struct RemoteReasoningRow: View {
+    let text: String
+    let streaming: Bool
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.snappy) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "lightbulb")
+                        .font(RemoteTheme.font(size: 12.5, relativeTo: .footnote))
+                        .foregroundStyle(RemoteTheme.tertiaryText)
+                    Text(streaming ? "Thinking" : "Thought")
+                        .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
+                        .foregroundStyle(RemoteTheme.secondaryText)
+                    if streaming {
+                        Spinner(size: 10)
+                    }
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right")
+                        .font(RemoteTheme.font(size: 10, weight: .semibold, relativeTo: .caption2))
+                        .foregroundStyle(RemoteTheme.tertiaryText)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(minHeight: RemoteTheme.minTapTarget)
+                .background(RemoteTheme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(RemoteTheme.border, lineWidth: 0.75)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                HStack(alignment: .top, spacing: 10) {
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(RemoteTheme.border)
+                        .frame(width: 2)
+                    MarkdownView(text, fontSize: 13.5, textColor: RemoteTheme.secondaryText, serif: false)
+                }
+                .padding(.leading, 6)
+                .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }
 
-/// A tool call in one line: icon, name, what it touched, status.
-struct ToolLine: View {
+/// Tool call card inspired by Ensemble Mac's `ToolCardView`, with visible status pill and tap-to-expand details.
+struct RemoteToolRow: View {
     let tool: ToolCallInfo
+    @State private var expanded = false
+    @Environment(\.sessionDirectory) private var baseDirectory
 
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.caption)
-                .foregroundStyle(RemoteTheme.secondaryText)
-                .frame(width: 16)
-            Text(tool.name.capitalized)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(RemoteTheme.secondaryText)
-            Text(tool.title)
-                .font(.system(.footnote, design: .monospaced))
-                .foregroundStyle(RemoteTheme.primaryText.opacity(0.85))
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 4)
-            status
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(RemoteTheme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    private var summary: ToolSummary { ToolSummary(tool, baseDirectory: baseDirectory) }
+
+    private var hasDetails: Bool {
+        if let diff = tool.diff, !diff.isEmpty { return true }
+        if let out = tool.outputPreview, !out.isEmpty { return true }
+        let name = tool.name.lowercased()
+        if ["bash", "shell", "run", "command"].contains(name) { return true }
+        return tool.inputJSON != "{}" && !["read", "grep", "glob", "list"].contains(name)
     }
 
-    private var icon: String {
-        switch tool.name {
-        case "bash", "shell": "terminal"
-        case "edit", "write", "patch": "pencil"
-        case "read": "doc.text"
-        case "grep", "glob", "search", "list": "magnifyingglass"
-        case "webfetch", "websearch": "globe"
-        case "task": "person.crop.circle.badge.plus"
-        default: "wrench.and.screwdriver"
+    var body: some View {
+        let info = summary
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                guard hasDetails else { return }
+                withAnimation(.snappy) { expanded.toggle() }
+            } label: {
+                header(info)
+            }
+            .buttonStyle(.plain)
+            .disabled(!hasDetails)
+
+            if expanded {
+                Rectangle().fill(RemoteTheme.separator).frame(height: 1)
+                detail
+                    .padding(11)
+            }
+        }
+        .background(RemoteTheme.card, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(RemoteTheme.border, lineWidth: 0.75)
+        )
+    }
+
+    private func header(_ info: ToolSummary) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: info.symbol)
+                .font(RemoteTheme.font(size: 12, relativeTo: .footnote))
+                .foregroundStyle(RemoteTheme.tertiaryText)
+                .frame(width: 16)
+
+            HStack(spacing: 5) {
+                Text(info.verb)
+                    .font(RemoteTheme.font(size: 13, weight: .medium, relativeTo: .footnote))
+                    .foregroundStyle(RemoteTheme.secondaryText)
+                    .fixedSize()
+                if !info.subject.isEmpty {
+                    Text(info.subject)
+                        .font(
+                            info.monospacedSubject
+                                ? RemoteTheme.font(size: 12.5, design: .monospaced, relativeTo: .footnote)
+                                : RemoteTheme.font(size: 13, weight: .medium, relativeTo: .footnote)
+                        )
+                        .foregroundStyle(RemoteTheme.primaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            if let add = info.additions, let del = info.deletions, add + del > 0 {
+                HStack(spacing: 4) {
+                    Text("+\(add)").foregroundStyle(RemoteTheme.success)
+                    Text("-\(del)").foregroundStyle(RemoteTheme.danger)
+                }
+                .font(RemoteTheme.font(size: 11.5, weight: .semibold, relativeTo: .caption).monospacedDigit())
+                .fixedSize()
+            }
+
+            statusPill
+
+            if hasDetails {
+                Image(systemName: "chevron.right")
+                    .font(RemoteTheme.font(size: 10, weight: .semibold, relativeTo: .caption2))
+                    .foregroundStyle(RemoteTheme.tertiaryText)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(minHeight: 40)
+        .contentShape(Rectangle())
+    }
+
+    @ViewBuilder
+    private var statusPill: some View {
+        switch tool.status {
+        case .pending, .running:
+            HStack(spacing: 4) {
+                Spinner(size: 10)
+                Text("Running")
+            }
+            .font(RemoteTheme.font(size: 11, weight: .semibold, relativeTo: .caption2))
+            .foregroundStyle(RemoteTheme.secondaryText)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(RemoteTheme.cardRaised, in: Capsule())
+        case .succeeded:
+            Image(systemName: "checkmark")
+                .font(RemoteTheme.font(size: 10, weight: .bold, relativeTo: .caption2))
+                .foregroundStyle(RemoteTheme.success)
+                .frame(width: 20, height: 20)
+                .background(RemoteTheme.success.opacity(0.14), in: Circle())
+        case .failed:
+            Text("Failed")
+                .font(RemoteTheme.font(size: 11, weight: .semibold, relativeTo: .caption2))
+                .foregroundStyle(RemoteTheme.danger)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(RemoteTheme.danger.opacity(0.14), in: Capsule())
         }
     }
 
     @ViewBuilder
-    private var status: some View {
-        switch tool.status {
-        case .pending, .running: ProgressView().controlSize(.mini)
-        case .succeeded: Image(systemName: "checkmark").font(.caption2.weight(.bold)).foregroundStyle(RemoteTheme.success)
-        case .failed: Image(systemName: "xmark").font(.caption2.weight(.bold)).foregroundStyle(RemoteTheme.danger)
+    private var detail: some View {
+        let name = tool.name.lowercased()
+        if let diff = tool.diff, !diff.isEmpty {
+            DiffView(diff: diff)
+                .background(RemoteTheme.codeBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else if ["bash", "shell", "run", "command"].contains(name) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("$ \(tool.title)")
+                    .font(RemoteTheme.font(size: 12.5, design: .monospaced, relativeTo: .footnote))
+                    .foregroundStyle(RemoteTheme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                if let output = tool.outputPreview, !output.isEmpty {
+                    outputBox(output)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else if let output = tool.outputPreview, !output.isEmpty {
+            outputBox(output)
+        } else {
+            outputBox(tool.inputJSON)
         }
+    }
+
+    private func outputBox(_ text: String) -> some View {
+        Text(text)
+            .font(RemoteTheme.font(size: 12, design: .monospaced, relativeTo: .caption))
+            .foregroundStyle(RemoteTheme.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(9)
+            .background(RemoteTheme.codeBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .textSelection(.enabled)
     }
 }
 
-/// A permission prompt with Allow once, Always and Reject.
+// MARK: - Permission Card
+
+/// A permission prompt with Allow once, Always, and Reject.
 struct PermissionCard: View {
     let request: PermissionRequest
     let client: RemoteClient
     var onError: (String) -> Void
-    /// The room agent that asks, when in a room.
     var agent: RemoteAgent?
     @State private var busy = false
+    @State private var allowHaptic = 0
+    @State private var rejectHaptic = 0
 
     private var decision: PermissionDecision? { client.permissionDecisions[request.id] }
     private var answered: Bool {
@@ -171,59 +478,65 @@ struct PermissionCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: "hand.raised.fill").foregroundStyle(RemoteTheme.warning)
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 8) {
+                Image(systemName: "hand.raised.fill")
+                    .foregroundStyle(RemoteTheme.warning)
                 Text("Permission needed")
-                    .font(.subheadline.weight(.semibold))
+                    .font(RemoteTheme.font(size: 14, weight: .semibold, relativeTo: .subheadline))
                     .foregroundStyle(RemoteTheme.primaryText)
-                if let agent { AgentTag(agent: agent) }
+                if let agent {
+                    AgentTag(agent: agent)
+                }
                 Spacer(minLength: 4)
                 Chip(text: request.kind)
             }
-            Text(PermissionDisplay.visible(request.title))
-                .font(.system(.footnote, design: .monospaced))
-                .foregroundStyle(RemoteTheme.primaryText)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RemoteTheme.cardRaised, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .textSelection(.enabled)
+
+            RemoteCommandBox(text: PermissionDisplay.visible(request.title), maxHeight: 220)
+
             if let detail = request.detail.map({ PermissionDisplay.visible($0) }), !detail.isEmpty {
                 Text(detail)
-                    .font(.footnote)
+                    .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
                     .foregroundStyle(RemoteTheme.secondaryText)
             }
+
             let patterns = PermissionDisplay.patterns(request)
             if !patterns.isEmpty {
                 Label {
                     Text("Always allows " + patterns.joined(separator: "; "))
-                        .font(.system(.caption, design: .monospaced))
+                        .font(RemoteTheme.font(size: 12, design: .monospaced, relativeTo: .caption))
                 } icon: {
                     Image(systemName: "infinity")
                 }
-                .font(.caption)
+                .font(RemoteTheme.font(size: 12, relativeTo: .caption))
                 .foregroundStyle(RemoteTheme.tertiaryText)
             }
+
             if answered {
-                Label(answerText, systemImage: decision == .reject ? "xmark.circle" : "checkmark.circle")
-                    .font(.footnote.weight(.medium))
+                Label(answerText, systemImage: decision == .reject ? "xmark.circle.fill" : "checkmark.circle.fill")
+                    .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
                     .foregroundStyle(decision == .reject ? RemoteTheme.danger : RemoteTheme.success)
             } else {
-                HStack(spacing: 8) {
+                FlowRow(spacing: 8, lineSpacing: 8) {
                     Button("Allow once") { reply(.once) }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(RemotePrimaryButtonStyle())
                     Button("Always") { reply(.always) }
-                        .buttonStyle(.bordered)
-                    Spacer()
+                        .buttonStyle(RemoteSecondaryButtonStyle())
                     Button("Reject", role: .destructive) { reply(.reject) }
-                        .buttonStyle(.bordered)
-                        .tint(RemoteTheme.danger)
+                        .buttonStyle(
+                            RemoteSecondaryButtonStyle(
+                                foreground: RemoteTheme.danger,
+                                border: RemoteTheme.danger.opacity(0.4)
+                            )
+                        )
                 }
-                .controlSize(.small)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .disabled(busy || !client.state.isConnected)
             }
         }
-        .remoteCard(padding: 12)
+        .remoteCard(padding: 14, attention: !answered)
+        .sensoryFeedback(.success, trigger: allowHaptic)
+        .sensoryFeedback(.warning, trigger: rejectHaptic)
     }
 
     private var answerText: String {
@@ -236,6 +549,7 @@ struct PermissionCard: View {
     }
 
     private func reply(_ d: PermissionDecision) {
+        if d == .reject { rejectHaptic += 1 } else { allowHaptic += 1 }
         busy = true
         Task {
             do { try await client.reply(to: request, decision: d) } catch { onError(error.localizedDescription) }
@@ -244,31 +558,90 @@ struct PermissionCard: View {
     }
 }
 
+// MARK: - Board, Error, Notice Rows
+
 /// A message one agent posted to the room board.
 struct BoardMessage: View {
     let from: RemoteAgent?
     let to: [RemoteAgent]
     let text: String
 
+    @ScaledMetric(relativeTo: .body) private var messageSize: CGFloat = 14.5
+
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
+        HStack(alignment: .top, spacing: 10) {
             RoundedRectangle(cornerRadius: 1.5)
-                .fill(from.map { Color(remoteHex: $0.colorHex) } ?? RemoteTheme.stroke)
+                .fill(from.map { Color(remoteHex: $0.colorHex) } ?? RemoteTheme.border)
                 .frame(width: 3)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 4) {
-                    if let from { AgentTag(agent: from) }
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 5) {
+                    if let from {
+                        AgentTag(agent: from)
+                    }
                     if !to.isEmpty {
-                        Image(systemName: "arrow.right").font(.caption2).foregroundStyle(RemoteTheme.tertiaryText)
+                        Image(systemName: "arrow.right")
+                            .font(RemoteTheme.font(size: 10, weight: .semibold, relativeTo: .caption2))
+                            .foregroundStyle(RemoteTheme.tertiaryText)
                         Text(to.map(\.name).joined(separator: ", "))
-                            .font(.caption)
+                            .font(RemoteTheme.font(size: 12.5, weight: .medium, relativeTo: .caption))
                             .foregroundStyle(RemoteTheme.secondaryText)
                     }
                 }
-                AgentMessageText(text: text, size: 16)
+                MarkdownView(text, fontSize: messageSize)
             }
-            .padding(.leading, 10)
-            .padding(.vertical, 2)
         }
+        .padding(.vertical, 3)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct RemoteErrorRow: View {
+    let message: String
+    var onRetry: (() -> Void)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
+                    .foregroundStyle(RemoteTheme.danger)
+                Text(message)
+                    .font(RemoteTheme.font(size: 13.5, relativeTo: .footnote))
+                    .foregroundStyle(RemoteTheme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+            }
+            if let onRetry {
+                Button(action: onRetry) {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(RemoteSecondaryButtonStyle())
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(RemoteTheme.danger.opacity(0.09), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(RemoteTheme.danger.opacity(0.32), lineWidth: 1)
+        )
+    }
+}
+
+private struct RemoteNoticeRow: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "info.circle")
+                .font(RemoteTheme.font(size: 12, relativeTo: .caption))
+            Text(text)
+                .font(RemoteTheme.font(size: 12.5, relativeTo: .caption))
+        }
+        .foregroundStyle(RemoteTheme.tertiaryText)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.vertical, 2)
     }
 }

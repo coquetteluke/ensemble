@@ -17,12 +17,16 @@ struct SafetyCheckPanelSection: View {
         let usage = store.safetyCheckUsage(for: session.id)
         let allowed = decisions.filter(\.allowed).count
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Safety check").foregroundStyle(theme.textPrimary)
+            HStack(spacing: theme.z(8)) {
+                Text("Safety check")
+                    .foregroundStyle(theme.textPrimary)
+                    .lineLimit(1)
                 Spacer(minLength: theme.z(8))
                 Text("\(allowed) allowed, \(decisions.count - allowed) asked")
                     .foregroundStyle(theme.textSecondary)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize()
             }
             .font(theme.font(size: 13))
             .frame(height: theme.z(30))
@@ -42,6 +46,7 @@ struct SafetyCheckPanelSection: View {
                     .font(theme.font(size: 11.5))
                     .foregroundStyle(theme.textTertiary)
                     .monospacedDigit()
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, theme.z(4))
                     .help("Safety check usage in this session, estimated from the text sent and received")
             }
@@ -64,7 +69,7 @@ struct SafetyCheckDecisionRow: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(spacing: theme.z(8)) {
+        HStack(spacing: theme.z(11)) {
             Image(systemName: decision.allowed ? "checkmark.shield" : "hand.raised")
                 .font(theme.font(size: 11))
                 .foregroundStyle(decision.allowed ? theme.success : theme.textTertiary)
@@ -78,6 +83,8 @@ struct SafetyCheckDecisionRow: View {
             Text(decision.allowed ? "Allowed" : "Asked")
                 .font(theme.font(size: 12))
                 .foregroundStyle(theme.textSecondary)
+                .lineLimit(1)
+                .fixedSize()
         }
         .frame(height: theme.z(26))
         .contentShape(Rectangle())

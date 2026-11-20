@@ -1,29 +1,58 @@
+import CryptoKit
 import Foundation
 import Observation
+import Synchronization
 
-/// The phone side of the remote: connects to the Mac's `RemoteServer` over WebSocket, trying each pairing
-/// host in order and reconnecting with backoff, and keeps an observable copy of the hub, rooms, usage and
-/// the open chat. Every frame after the handshake is sealed by `RemoteChannel`; one that does not open drops
-/// the connection. Also has an in-process mode that talks straight to a `RemoteHost` (demo and previews).
+/// How the phone reached the Mac on the active connection.
+public enum RemoteConnectionPath: Equatable, Hashable, Sendable {
+    case direct(host: String)
+    case relay
+}
+
+/// The phone side of the remote: connects to the Mac's `RemoteServer` over WebSocket, racing direct pairing
+/// hosts and the cloud relay at once and reconnecting with backoff, and keeps an observable copy of the hub,
+/// rooms, usage and the open chat. Every frame after the handshake is sealed by `RemoteChannel`; one that does
+/// not open drops the connection. Also has an in-process mode that talks straight to a `RemoteHost` (demo and
+/// previews).
 @MainActor @Observable
 public final class RemoteClient {
     public enum ConnectionState: Equatable, Sendable {
         /// Not started, or stopped.
         case idle
-        case connecting(host: String)
-        case connected(host: String)
-        /// All hosts failed; trying again in this many seconds.
+        case connecting
+        case connected(via: RemoteConnectionPath)
+        /// The relay answered, and the Mac is not signed in to its mailbox; trying again in this many seconds.
+        case macOffline(retryIn: Int)
+        /// The relay's daily budget for this mailbox is spent; trying again in this many seconds.
+        case limitReached(retryIn: Int)
+        /// All paths failed; trying again in this many seconds.
         case waiting(retryIn: Int)
-        /// The Mac refused this phone (wrong token or version). Pair again.
+        /// The Mac or relay refused this phone (wrong token or version). Pair again.
         case rejected(String)
 
         public var isConnected: Bool {
             if case .connected = self { return true }
             return false
         }
+
+        public var statusText: String {
+            switch self {
+            case .idle: "Offline"
+            case .connecting: "Connecting"
+            case .connected(via: .direct(let host)): "Connected via \(host)"
+            case .connected(via: .relay): "Connected through the relay"
+            case .macOffline: "Your Mac is not connected to the relay"
+            case .limitReached: "Daily relay limit reached"
+            case .waiting(let s): "Retrying in \(s)s"
+            case .rejected(let why): why
+            }
+        }
     }
 
     public private(set) var state: ConnectionState = .idle
+    public var statusText: String {
+        isInProcess ? "Demo, no Mac" : state.statusText
+    }
     public private(set) var pairing: RemotePairing
     public private(set) var macName: String
     public private(set) var macAppVersion: String?
@@ -35,6 +64,8 @@ public final class RemoteClient {
     /// Prompts known to be answered, by anyone.
     public private(set) var answeredPermissionIDs: Set<String> = []
     public private(set) var rooms: [RemoteRoom] = []
+    public private(set) var availableModels: [RemoteModelOption] = []
+    public private(set) var recentFolders: [String] = []
     public private(set) var usage: RemoteUsageSummary?
     public private(set) var openSessionID: String?
     public private(set) var openTranscript: RemoteTranscript?
@@ -50,31 +81,39 @@ public final class RemoteClient {
     @ObservationIgnored public var requestTimeout: Duration = .seconds(15)
     @ObservationIgnored public var pingInterval: Duration = .seconds(20)
     @ObservationIgnored public var maxBackoffSeconds: Double = 30
+    /// How long to wait for a direct connection after the relay completes its handshake first.
+    @ObservationIgnored public var directGraceWindow: Duration = .milliseconds(300)
     /// Told about everything new that needs the user, as it arrives over the live connection (never for what was
     /// already waiting when the phone connected). The app shows these as local notifications.
     @ObservationIgnored public var onAlert: (@MainActor (RemoteAlert) -> Void)?
+    /// Called when the Mac replaces a session with a new one (for example after a cross-engine restart).
+    @ObservationIgnored public var onSessionReplaced: (@MainActor (String, SessionSummary) -> Void)?
     /// How long a new prompt waits before its alert, so the session or room it belongs to has arrived too.
     @ObservationIgnored public var alertDelay: Duration = .milliseconds(400)
     @ObservationIgnored private var alertedIDs: Set<String> = []
 
     @ObservationIgnored private let urlSession: URLSession
+    @ObservationIgnored private let pairingStore: RemotePairingStore?
     @ObservationIgnored private let localHost: (any RemoteHost)?
     @ObservationIgnored private var socket: URLSessionWebSocketTask?
     /// Seals and opens frames on the current connection.
     @ObservationIgnored private var channel: RemoteChannel?
+    /// The relay the active connection is using, or `nil` when disconnected or connected directly.
+    @ObservationIgnored private var connectedRelay: RemotePairing.Relay?
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     @ObservationIgnored private var pingTask: Task<Void, Never>?
     @ObservationIgnored private var localUpdatesTask: Task<Void, Never>?
     @ObservationIgnored private var pending: [String: CheckedContinuation<RemoteServerMessage, any Error>] = [:]
-    @ObservationIgnored private var requestCounter = 0
+    @ObservationIgnored private var requestCounter = 1
     @ObservationIgnored private var generation = 0
 
     /// A client for a paired Mac.
-    public init(pairing: RemotePairing, deviceName: String, deviceID: String) {
+    public init(pairing: RemotePairing, deviceName: String, deviceID: String, pairingStore: RemotePairingStore? = nil) {
         self.pairing = pairing
         self.macName = pairing.macName
         self.deviceName = deviceName
         self.deviceID = deviceID
+        self.pairingStore = pairingStore
         self.localHost = nil
         self.isInProcess = false
         let config = URLSessionConfiguration.ephemeral
@@ -89,6 +128,7 @@ public final class RemoteClient {
         self.macName = macName
         self.deviceName = "Demo"
         self.deviceID = "demo"
+        self.pairingStore = nil
         self.localHost = host
         self.isInProcess = true
         self.urlSession = URLSession(configuration: .ephemeral)
@@ -100,8 +140,10 @@ public final class RemoteClient {
         client.sessions = data.sessions
         client.permissions = data.permissions
         client.rooms = data.rooms
+        client.availableModels = data.availableModels
+        client.recentFolders = data.recentFolders
         client.usage = data.usage
-        client.state = .connected(host: "demo")
+        client.state = .connected(via: .direct(host: "demo"))
         return client
     }
 
@@ -130,6 +172,7 @@ public final class RemoteClient {
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
         channel = nil
+        connectedRelay = nil
         failAllPending(RemoteError(.failed, "Disconnected"))
         state = .idle
     }
@@ -149,46 +192,81 @@ public final class RemoteClient {
 
     private func isCurrent(_ gen: Int) -> Bool { gen == generation && !Task.isCancelled }
 
+    /// Owns an authenticated WebSocket until the winning path claims it; any losing candidate cancels its socket
+    /// cleanly as soon as it is dropped.
+    private final class SocketBox: Sendable {
+        private let stored: Mutex<URLSessionWebSocketTask?>
+
+        init(_ task: URLSessionWebSocketTask) {
+            self.stored = Mutex(task)
+        }
+
+        func claim() -> URLSessionWebSocketTask? {
+            stored.withLock { slot in
+                defer { slot = nil }
+                return slot
+            }
+        }
+
+        func cancel() {
+            claim()?.cancel(with: .goingAway, reason: nil)
+        }
+
+        deinit {
+            stored.withLock { $0 }?.cancel(with: .goingAway, reason: nil)
+        }
+    }
+
+    private struct ConnectedCandidate: Sendable {
+        let path: RemoteConnectionPath
+        let directIndex: Int?
+        let relay: RemotePairing.Relay?
+        let socket: SocketBox
+        let channel: RemoteChannel
+        let welcome: RemoteWelcome
+    }
+
+    private enum RaceEvent: Sendable {
+        case connected(ConnectedCandidate)
+        case failed(path: RemoteConnectionPath, directIndex: Int?, errorText: String, remoteError: RemoteError?)
+        case directGraceExpired
+        case priorityGraceExpired
+    }
+
+    private enum DialOutcome {
+        case connected(ConnectedCandidate)
+        case failed(refusal: RemoteError?, macOffline: Bool, limit: RemoteError?, lastError: String?)
+    }
+
     private func runLoop(generation gen: Int) async {
         var attempt = 0
         while isCurrent(gen) {
-            var hadConnection = false
-            // A refusal arrives before the host has proved anything, so a fake host could send one. Keep trying
-            // the other hosts and only give up when none of them lets this phone in.
-            var refusal: RemoteError?
-            for host in pairing.hosts {
-                guard isCurrent(gen) else { return }
-                guard let url = RemotePairing.webSocketURL(host: host, port: pairing.port) else { continue }
-                state = .connecting(host: host)
-                let task: URLSessionWebSocketTask
-                let sealedChannel: RemoteChannel
-                do {
-                    (task, sealedChannel) = try await handshake(url: url, host: host)
-                } catch let error as RemoteError where error.code == .unauthorized || error.code == .unsupportedVersion {
-                    guard isCurrent(gen) else { return }
-                    lastError = error.message
-                    refusal = error
-                    continue
-                } catch let error as RemoteError where error.code == .macNotVerified {
-                    // Refuse this host: it does not know the pairing token.
-                    guard isCurrent(gen) else { return }
-                    lastError = "\(host): \(error.message)"
-                    continue
-                } catch {
-                    guard isCurrent(gen) else { return }
-                    lastError = "\(host): \(Self.describe(error))"
-                    continue
-                }
-                guard isCurrent(gen) else {
-                    task.cancel(with: .goingAway, reason: nil)
-                    return
+            switch state {
+            case .macOffline, .limitReached:
+                break
+            default:
+                state = .connecting
+            }
+            let outcome = await dialOnce(pairing: pairing)
+            guard isCurrent(gen) else {
+                if case .connected(let winner) = outcome { winner.socket.cancel() }
+                return
+            }
+            switch outcome {
+            case .connected(let winner):
+                guard let task = winner.socket.claim() else { continue }
+                macName = winner.welcome.macName
+                macAppVersion = winner.welcome.appVersion
+                if let usedRelay = winner.relay, usedRelay == pairing.relay, pairing.previousRelay != nil {
+                    pairing.previousRelay = nil
+                    try? pairingStore?.save(pairing)
                 }
                 socket = task
-                channel = sealedChannel
-                state = .connected(host: host)
+                channel = winner.channel
+                connectedRelay = winner.relay
+                state = .connected(via: winner.path)
                 lastError = nil
                 attempt = 0
-                hadConnection = true
                 startPing(task)
                 loadInitialState()
                 await receiveLoop(task, generation: gen)
@@ -196,99 +274,383 @@ public final class RemoteClient {
                 if socket === task {
                     socket = nil
                     channel = nil
+                    connectedRelay = nil
                 }
                 failAllPending(RemoteError(.failed, "Lost the connection to the Mac"))
-                break
+                guard isCurrent(gen) else { return }
+                state = .waiting(retryIn: 1)
+                try? await Task.sleep(for: .seconds(1))
+
+            case .failed(let refusal, let macOffline, let limit, let errorText):
+                // A refusal on a direct host arrives before the host proves anything, whereas macOffline and limit
+                // from the relay arrive only after the phone proved the access key. Only enter rejected when no path
+                // proved the token is still valid.
+                if !macOffline && limit == nil, let refusal {
+                    lastError = refusal.message
+                    state = .rejected(refusal.message)
+                    return
+                }
+                let delay = min(maxBackoffSeconds, pow(2, Double(attempt)))
+                attempt += 1
+                let retrySeconds = Int(delay.rounded(.up))
+                if macOffline {
+                    lastError = "Your Mac is not connected to the relay"
+                    state = .macOffline(retryIn: retrySeconds)
+                } else if let limit {
+                    lastError = limit.message
+                    state = .limitReached(retryIn: retrySeconds)
+                } else {
+                    lastError = errorText
+                    state = .waiting(retryIn: retrySeconds)
+                }
+                try? await Task.sleep(for: .seconds(delay))
             }
-            guard isCurrent(gen) else { return }
-            if !hadConnection, let refusal {
-                state = .rejected(refusal.message)
-                return
-            }
-            let delay = hadConnection ? 1 : min(maxBackoffSeconds, pow(2, Double(attempt)))
-            attempt += 1
-            state = .waiting(retryIn: Int(delay.rounded(.up)))
-            try? await Task.sleep(for: .seconds(delay))
         }
     }
 
-    private func handshake(url: URL, host: String) async throws -> (URLSessionWebSocketTask, RemoteChannel) {
-        let task = urlSession.webSocketTask(with: url)
+    /// Starts every direct host and the relay together. Takes a direct connection if one completes before or within
+    /// `directGraceWindow` (300 ms) of the relay; otherwise takes the relay and cancels the losers.
+    private func dialOnce(pairing: RemotePairing) async -> DialOutcome {
+        let directTargets: [(index: Int, host: String, url: URL)] = pairing.hosts.enumerated().compactMap { index, host in
+            guard let url = RemotePairing.webSocketURL(host: host, port: pairing.port) else { return nil }
+            return (index, host, url)
+        }
+        let primaryRelay = pairing.relay
+        let fallbackRelay = pairing.previousRelay
+        let hasRelay = primaryRelay != nil || fallbackRelay != nil
+        if directTargets.isEmpty && !hasRelay {
+            return .failed(refusal: nil, macOffline: false, limit: nil,
+                           lastError: "The pairing code has no address for the Mac.")
+        }
+
+        let session = urlSession
+        let token = pairing.token
+        let port = pairing.port
+        let deviceName = self.deviceName
+        let deviceID = self.deviceID
+        let timeout = handshakeTimeout
+        let graceWindow = directGraceWindow
+
+        return await withTaskGroup(of: RaceEvent.self) { group in
+            for target in directTargets {
+                group.addTask {
+                    do {
+                        let candidate = try await Self.dialDirect(
+                            url: target.url, host: target.host, port: port, directIndex: target.index,
+                            token: token, deviceName: deviceName, deviceID: deviceID,
+                            session: session, timeout: timeout)
+                        return .connected(candidate)
+                    } catch let error as RemoteError {
+                        return .failed(path: .direct(host: target.host), directIndex: target.index,
+                                       errorText: "\(target.host): \(error.message)", remoteError: error)
+                    } catch {
+                        return .failed(path: .direct(host: target.host), directIndex: target.index,
+                                       errorText: "\(target.host): \(Self.describe(error))", remoteError: nil)
+                    }
+                }
+            }
+
+            if hasRelay {
+                group.addTask {
+                    do {
+                        let candidate = try await Self.dialRelay(
+                            primary: primaryRelay, fallback: fallbackRelay,
+                            token: token, deviceName: deviceName, deviceID: deviceID,
+                            session: session, timeout: timeout)
+                        return .connected(candidate)
+                    } catch let error as RemoteError {
+                        return .failed(path: .relay, directIndex: nil, errorText: error.message, remoteError: error)
+                    } catch {
+                        return .failed(path: .relay, directIndex: nil, errorText: Self.describe(error), remoteError: nil)
+                    }
+                }
+            }
+
+            var inFlightDirect = Set(directTargets.map(\.index))
+            var inFlightRelay = hasRelay
+            var waitingDirect: ConnectedCandidate?
+            var waitingRelay: ConnectedCandidate?
+            var directGraceStarted = false
+            var priorityGraceStarted = false
+            var refusal: RemoteError?
+            var sawMacOffline = false
+            var limitError: RemoteError?
+            var lastErrorText: String?
+
+            defer {
+                waitingDirect?.socket.cancel()
+                waitingRelay?.socket.cancel()
+            }
+
+            for await event in group {
+                if Task.isCancelled {
+                    if case .connected(let candidate) = event { candidate.socket.cancel() }
+                    group.cancelAll()
+                    break
+                }
+
+                switch event {
+                case .connected(let candidate):
+                    switch candidate.path {
+                    case .direct:
+                        if let idx = candidate.directIndex { inFlightDirect.remove(idx) }
+                        waitingRelay?.socket.cancel()
+                        waitingRelay = nil
+
+                        if let existing = waitingDirect {
+                            if (candidate.directIndex ?? .max) < (existing.directIndex ?? .max) {
+                                existing.socket.cancel()
+                                waitingDirect = candidate
+                            } else {
+                                candidate.socket.cancel()
+                            }
+                        } else {
+                            waitingDirect = candidate
+                        }
+
+                        if let best = waitingDirect,
+                           !inFlightDirect.contains(where: { $0 < (best.directIndex ?? 0) }) {
+                            waitingDirect = nil
+                            group.cancelAll()
+                            return .connected(best)
+                        }
+                        if !priorityGraceStarted {
+                            priorityGraceStarted = true
+                            group.addTask {
+                                try? await Task.sleep(for: .milliseconds(50))
+                                return .priorityGraceExpired
+                            }
+                        }
+
+                    case .relay:
+                        inFlightRelay = false
+                        if waitingDirect != nil {
+                            candidate.socket.cancel()
+                        } else if inFlightDirect.isEmpty {
+                            group.cancelAll()
+                            return .connected(candidate)
+                        } else {
+                            waitingRelay?.socket.cancel()
+                            waitingRelay = candidate
+                            if !directGraceStarted {
+                                directGraceStarted = true
+                                group.addTask {
+                                    try? await Task.sleep(for: graceWindow)
+                                    return .directGraceExpired
+                                }
+                            }
+                        }
+                    }
+
+                case .failed(_, let directIndex, let errorText, let remoteError):
+                    if let idx = directIndex { inFlightDirect.remove(idx) } else { inFlightRelay = false }
+                    if let remoteError {
+                        switch remoteError.code {
+                        case .unauthorized, .unsupportedVersion:
+                            refusal = remoteError
+                            lastErrorText = remoteError.message
+                        case .macOffline:
+                            sawMacOffline = true
+                            lastErrorText = remoteError.message
+                        case .limit:
+                            limitError = remoteError
+                            lastErrorText = remoteError.message
+                        default:
+                            lastErrorText = errorText
+                        }
+                    } else {
+                        lastErrorText = errorText
+                    }
+
+                    if let best = waitingDirect,
+                       !inFlightDirect.contains(where: { $0 < (best.directIndex ?? 0) }) {
+                        waitingDirect = nil
+                        waitingRelay?.socket.cancel()
+                        waitingRelay = nil
+                        group.cancelAll()
+                        return .connected(best)
+                    }
+                    if let relay = waitingRelay, inFlightDirect.isEmpty {
+                        waitingRelay = nil
+                        group.cancelAll()
+                        return .connected(relay)
+                    }
+                    if waitingDirect == nil && waitingRelay == nil && inFlightDirect.isEmpty && !inFlightRelay {
+                        group.cancelAll()
+                        return .failed(refusal: refusal, macOffline: sawMacOffline, limit: limitError,
+                                       lastError: lastErrorText)
+                    }
+
+                case .priorityGraceExpired:
+                    if let best = waitingDirect {
+                        waitingDirect = nil
+                        waitingRelay?.socket.cancel()
+                        waitingRelay = nil
+                        group.cancelAll()
+                        return .connected(best)
+                    }
+
+                case .directGraceExpired:
+                    if let best = waitingDirect {
+                        waitingDirect = nil
+                        waitingRelay?.socket.cancel()
+                        waitingRelay = nil
+                        group.cancelAll()
+                        return .connected(best)
+                    }
+                    if let relay = waitingRelay {
+                        waitingRelay = nil
+                        group.cancelAll()
+                        return .connected(relay)
+                    }
+                }
+            }
+
+            group.cancelAll()
+            return .failed(refusal: refusal, macOffline: sawMacOffline, limit: limitError, lastError: lastErrorText)
+        }
+    }
+
+    private nonisolated static func dialDirect(url: URL, host: String, port: Int, directIndex: Int,
+                                               token: String, deviceName: String, deviceID: String,
+                                               session: URLSession, timeout: Duration) async throws -> ConnectedCandidate {
+        let task = session.webSocketTask(with: url)
         task.maximumMessageSize = 64 << 20
         task.resume()
-        let timeout = handshakeTimeout
+        let (box, channel, welcome) = try await handshake(
+            over: task, token: token, deviceName: deviceName, deviceID: deviceID,
+            dialedHost: host, dialedPort: port, timeout: timeout)
+        return ConnectedCandidate(path: .direct(host: host), directIndex: directIndex, relay: nil, socket: box,
+                                  channel: channel, welcome: welcome)
+    }
+
+    private nonisolated static func dialRelay(primary: RemotePairing.Relay?, fallback: RemotePairing.Relay?,
+                                              token: String, deviceName: String, deviceID: String,
+                                              session: URLSession, timeout: Duration) async throws -> ConnectedCandidate {
+        var relays: [RemotePairing.Relay] = []
+        if let primary { relays.append(primary) }
+        if let fallback, fallback != primary { relays.append(fallback) }
+        var lastError: (any Error)?
+        for relay in relays {
+            try Task.checkCancellation()
+            do {
+                guard let relayURL = URL(string: relay.url) else {
+                    throw RemoteError(.badRequest, "The relay address must start with wss://.")
+                }
+                let task = try await RelayDialer.connect(relay: relay, token: token, session: session, timeout: timeout)
+                let dialedHost = RelayIdentity.channelHost(relayURL: relayURL, mailboxID: relay.mailbox)
+                let (box, channel, welcome) = try await handshake(
+                    over: task, token: token, deviceName: deviceName, deviceID: deviceID,
+                    dialedHost: dialedHost, dialedPort: RelayIdentity.channelPort, timeout: timeout)
+                return ConnectedCandidate(path: .relay, directIndex: nil, relay: relay, socket: box,
+                                          channel: channel, welcome: welcome)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? RemoteError(.failed, "Could not reach the relay.")
+    }
+
+    private nonisolated static func handshake(over task: URLSessionWebSocketTask, token: String,
+                                              deviceName: String, deviceID: String,
+                                              dialedHost: String, dialedPort: Int,
+                                              timeout: Duration) async throws -> (SocketBox, RemoteChannel, RemoteWelcome) {
         let timer = Task {
             try? await Task.sleep(for: timeout)
             if !Task.isCancelled { task.cancel(with: .goingAway, reason: nil) }
         }
         defer { timer.cancel() }
-        do {
-            // 1. The Mac speaks first with a fresh nonce.
-            let first = try Self.decode(try await task.receive())
-            let challenge: RemoteChallenge
-            switch first.message {
-            case .challenge(let c): challenge = c
-            case .error(let error): throw error
-            default: throw RemoteError(.badRequest, "The Mac did not start the pairing check")
-            }
-            guard first.version >= remoteMinimumProtocolVersion, challenge.protocolVersion >= remoteMinimumProtocolVersion else {
-                throw RemoteError(.unsupportedVersion, "Update Ensemble on your Mac to connect from this iPhone.")
-            }
-            guard let serverNonce = RemoteHandshake.decode(challenge.serverNonce, expectedCount: RemoteHandshake.nonceByteCount) else {
-                throw RemoteError(.macNotVerified, "The host sent an invalid pairing challenge.")
-            }
+        return try await withTaskCancellationHandler {
+            do {
+                // 1. The Mac speaks first with a fresh nonce.
+                //    Read the version first: an older Mac's challenge has no ephemeral key and would not decode, so the
+                //    phone must refuse it by version before it decodes the rest.
+                let firstMessage = try await task.receive()
+                if let header = try? JSONDecoder().decode(RemoteFrameHeader.self, from: data(firstMessage)),
+                   header.version < remoteMinimumProtocolVersion {
+                    throw RemoteError(.unsupportedVersion, "Update Ensemble on your Mac to connect from this iPhone.")
+                }
+                let first = try decode(firstMessage)
+                let challenge: RemoteChallenge
+                switch first.message {
+                case .challenge(let c): challenge = c
+                case .error(let error): throw error
+                default: throw RemoteError(.badRequest, "The Mac did not start the pairing check")
+                }
+                guard first.version >= remoteMinimumProtocolVersion, challenge.protocolVersion >= remoteMinimumProtocolVersion else {
+                    throw RemoteError(.unsupportedVersion, "Update Ensemble on your Mac to connect from this iPhone.")
+                }
+                guard let serverNonce = RemoteHandshake.decode(challenge.serverNonce, expectedCount: RemoteHandshake.nonceByteCount) else {
+                    throw RemoteError(.macNotVerified, "The host sent an invalid pairing challenge.")
+                }
 
-            // 2. Prove the token without sending it.
-            let clientNonce = RemoteHandshake.makeNonce()
-            let proof = RemoteHandshake.clientProof(token: pairing.token, serverNonce: serverNonce, clientNonce: clientNonce)
-            let hello = RemoteHello(deviceName: deviceName, deviceID: deviceID,
-                                    clientNonce: RemoteHandshake.encode(clientNonce), proof: RemoteHandshake.encode(proof),
-                                    dialedHost: host, dialedPort: pairing.port)
-            try await task.send(.string(try Self.encode(RemoteClientFrame(.hello(hello), id: nextRequestID()))))
+                guard let macKey = RemoteHandshake.decode(challenge.ephemeralKey, expectedCount: RemoteHandshake.keyByteCount) else {
+                    throw RemoteError(.macNotVerified, "The host sent an invalid pairing challenge.")
+                }
 
-            // 3. The Mac must prove it knows the token too. Its welcome is the first sealed frame; a host without
-            //    the token (or a relay that changed the hello) cannot seal it, and a plaintext welcome is refused.
-            var sealedChannel = RemoteChannel(token: pairing.token, serverNonce: serverNonce, clientNonce: clientNonce,
-                                              dialedHost: host, dialedPort: pairing.port, role: .client,
-                                              protocolVersion: min(remoteProtocolVersion, challenge.protocolVersion))
-            let reply: RemoteServerFrame
-            switch try await task.receive() {
-            case .data(let sealed):
-                guard let plaintext = try? sealedChannel.open(sealed) else {
+                // 2. Prove the token without sending it. The phone's key pair lives for this handshake only: it is a
+                //    local that goes out of scope with the shared secret taken from it.
+                let clientNonce = RemoteHandshake.makeNonce()
+                let phoneKeyPair = RemoteHandshake.makeKeyPair()
+                let phoneKey = phoneKeyPair.publicKey.rawRepresentation
+                guard let sharedSecret = RemoteHandshake.sharedSecret(privateKey: phoneKeyPair, peerKey: macKey) else {
+                    throw RemoteError(.macNotVerified, "The host sent an invalid pairing challenge.")
+                }
+                let proof = RemoteHandshake.clientProof(token: token, serverNonce: serverNonce, clientNonce: clientNonce,
+                                                        macKey: macKey, phoneKey: phoneKey)
+                let hello = RemoteHello(deviceName: deviceName, deviceID: deviceID,
+                                        clientNonce: RemoteHandshake.encode(clientNonce), ephemeralKey: RemoteHandshake.encode(phoneKey),
+                                        proof: RemoteHandshake.encode(proof), dialedHost: dialedHost, dialedPort: dialedPort)
+                try await task.send(.string(try encode(RemoteClientFrame(.hello(hello), id: "1"))))
+
+                // 3. The Mac must prove it knows the token too. Its welcome is the first sealed frame; a host without
+                //    the token (or a relay that changed the hello) cannot seal it, and a plaintext welcome is refused.
+                var sealedChannel = RemoteChannel(token: token, sharedSecret: sharedSecret, serverNonce: serverNonce,
+                                                  clientNonce: clientNonce, dialedHost: dialedHost, dialedPort: dialedPort,
+                                                  role: .client,
+                                                  protocolVersion: min(remoteProtocolVersion, challenge.protocolVersion))
+                let reply: RemoteServerFrame
+                switch try await task.receive() {
+                case .data(let sealed):
+                    guard let plaintext = try? sealedChannel.open(sealed) else {
+                        throw RemoteError(.macNotVerified, "This host could not prove it is your Mac, so the iPhone did not connect.")
+                    }
+                    reply = try RemoteCoding.decode(RemoteServerFrame.self, from: plaintext)
+                case .string(let text):
+                    // Only a refusal may come in plaintext.
+                    let frame = try RemoteCoding.decode(RemoteServerFrame.self, from: Data(text.utf8))
+                    if case .error(let error) = frame.message { throw error }
                     throw RemoteError(.macNotVerified, "This host could not prove it is your Mac, so the iPhone did not connect.")
+                @unknown default:
+                    throw RemoteError(.badRequest, "Unexpected message from the Mac")
                 }
-                reply = try RemoteCoding.decode(RemoteServerFrame.self, from: plaintext)
-            case .string(let text):
-                // Only a refusal may come in plaintext.
-                let frame = try RemoteCoding.decode(RemoteServerFrame.self, from: Data(text.utf8))
-                if case .error(let error) = frame.message { throw error }
-                throw RemoteError(.macNotVerified, "This host could not prove it is your Mac, so the iPhone did not connect.")
-            @unknown default:
-                throw RemoteError(.badRequest, "Unexpected message from the Mac")
-            }
-            switch reply.message {
-            case .welcome(let welcome):
-                guard let serverProof = RemoteHandshake.decode(welcome.serverProof, expectedCount: 32),
-                      RemoteHandshake.isValidServerProof(serverProof, token: pairing.token, serverNonce: serverNonce,
-                                                         clientNonce: clientNonce) else {
-                    throw RemoteError(.macNotVerified, "This host could not prove it is your Mac, so the iPhone did not connect.")
+                switch reply.message {
+                case .welcome(let welcome):
+                    guard let serverProof = RemoteHandshake.decode(welcome.serverProof, expectedCount: 32),
+                          RemoteHandshake.isValidServerProof(serverProof, token: token, serverNonce: serverNonce,
+                                                             clientNonce: clientNonce, macKey: macKey, phoneKey: phoneKey) else {
+                        throw RemoteError(.macNotVerified, "This host could not prove it is your Mac, so the iPhone did not connect.")
+                    }
+                    // The sealed welcome echoes the device ID the Mac read from the plaintext hello; a mismatch means
+                    // the hello was changed on the way.
+                    guard welcome.deviceID == deviceID else {
+                        throw RemoteError(.macNotVerified, "The pairing check was changed on the way to the Mac, so the iPhone did not connect.")
+                    }
+                    try Task.checkCancellation()
+                    return (SocketBox(task), sealedChannel, welcome)
+                case .error(let error):
+                    throw error
+                default:
+                    throw RemoteError(.badRequest, "The Mac answered hello with \(reply.message.typeName)")
                 }
-                // The sealed welcome echoes the device ID the Mac read from the plaintext hello; a mismatch means
-                // the hello was changed on the way.
-                guard welcome.deviceID == deviceID else {
-                    throw RemoteError(.macNotVerified, "The pairing check was changed on the way to the Mac, so the iPhone did not connect.")
-                }
-                macName = welcome.macName
-                macAppVersion = welcome.appVersion
-                return (task, sealedChannel)
-            case .error(let error):
+            } catch {
+                task.cancel(with: .goingAway, reason: nil)
                 throw error
-            default:
-                throw RemoteError(.badRequest, "The Mac answered hello with \(reply.message.typeName)")
             }
-        } catch {
+        } onCancel: {
             task.cancel(with: .goingAway, reason: nil)
-            throw error
         }
     }
 
@@ -298,7 +660,13 @@ public final class RemoteClient {
             do {
                 message = try await task.receive()
             } catch {
-                if isCurrent(gen) { lastError = Self.describe(error) }
+                if isCurrent(gen) {
+                    if task.closeCode.rawValue == Int(RelayWire.CloseCode.limit) {
+                        lastError = "Daily relay limit reached."
+                    } else {
+                        lastError = Self.describe(error)
+                    }
+                }
                 return
             }
             guard isCurrent(gen) else { return }
@@ -356,11 +724,11 @@ public final class RemoteClient {
     // MARK: In-process mode
 
     private func startInProcess(_ host: any RemoteHost, generation gen: Int) {
-        state = .connecting(host: "demo")
+        state = .connecting
         localUpdatesTask = Task { [weak self] in
             let stream = await host.updates()
             guard let self, self.isCurrent(gen) else { return }
-            self.state = .connected(host: "demo")
+            self.state = .connected(via: .direct(host: "demo"))
             self.loadInitialState()
             for await update in stream {
                 guard self.isCurrent(gen) else { return }
@@ -430,9 +798,13 @@ public final class RemoteClient {
 
     private func handle(_ frame: RemoteServerFrame) {
         switch frame.message {
+        case .relayDetails(let relay):
+            applyRelayDetails(relay)
         case .hub(let hub):
             sessions = hub.sessions
             permissions = hub.permissions
+            availableModels = hub.availableModels
+            recentFolders = hub.recentFolders
         case .transcript(let t):
             if t.sessionID == openSessionID { openTranscript = t }
         case .rooms(let r):
@@ -441,6 +813,12 @@ public final class RemoteClient {
             usage = u
         case .update(let u):
             apply(u)
+        case .sessionCreated(let s):
+            if let i = sessions.firstIndex(where: { $0.id == s.id }) { sessions[i] = s } else { sessions.insert(s, at: 0) }
+        case .roomCreated(let r):
+            if let i = rooms.firstIndex(where: { $0.id == r.id }) { rooms[i] = r } else { rooms.insert(r, at: 0) }
+        case .sessionDiff:
+            break
         case .challenge, .welcome, .ack, .error:
             break
         }
@@ -451,6 +829,26 @@ public final class RemoteClient {
                 resolve(re, with: .success(frame.message))
             }
         }
+    }
+
+    private func applyRelayDetails(_ incoming: RemotePairing.Relay) {
+        guard !isInProcess,
+              let url = URL(string: incoming.url), RelayDialer.isAllowed(url),
+              RelayWire.isMailboxID(incoming.mailbox) else { return }
+        if pairing.relay == incoming {
+            if connectedRelay == incoming, pairing.previousRelay != nil {
+                pairing.previousRelay = nil
+                try? pairingStore?.save(pairing)
+            }
+            return
+        }
+        if connectedRelay == incoming || pairing.previousRelay == incoming {
+            pairing.previousRelay = nil
+        } else if pairing.previousRelay == nil, let old = pairing.relay {
+            pairing.previousRelay = old
+        }
+        pairing.relay = incoming
+        try? pairingStore?.save(pairing)
     }
 
     // MARK: - Actions
@@ -518,6 +916,63 @@ public final class RemoteClient {
         answeredDecisionIDs.insert(decision.id)
     }
 
+    /// Switches or stages a model in `sessionID` (cross-engine switches take effect on the next sent message).
+    public func changeModel(sessionID: String, providerID: String, modelID: String) async throws {
+        try await request(.changeModel(RemoteChangeModel(sessionID: sessionID, providerID: providerID, modelID: modelID)))
+    }
+
+    /// Starts a new solo session on the Mac and returns its Hub summary.
+    @discardableResult
+    public func createSession(directory: String, providerID: String, modelID: String, title: String? = nil) async throws -> SessionSummary {
+        let reply = try await request(.createSession(RemoteCreateSession(
+            directory: directory, providerID: providerID, modelID: modelID, title: title
+        )))
+        guard case .sessionCreated(let summary) = reply else {
+            throw RemoteError(.failed, "Unexpected response from Mac when creating session")
+        }
+        return summary
+    }
+
+    /// Starts a new multi-agent room on the Mac and returns it.
+    @discardableResult
+    public func createRoom(directory: String, title: String, mode: RoomMode, agents: [RemoteNewRoomAgent]) async throws -> RemoteRoom {
+        let reply = try await request(.createRoom(RemoteCreateRoom(
+            directory: directory, title: title, mode: mode, agents: agents
+        )))
+        guard case .roomCreated(let room) = reply else {
+            throw RemoteError(.failed, "Unexpected response from Mac when creating room")
+        }
+        return room
+    }
+
+    /// Loads the working-tree git diff for `sessionID`.
+    public func sessionDiff(sessionID: String) async throws -> RemoteSessionDiff {
+        let reply = try await request(.sessionDiff(sessionID: sessionID))
+        guard case .sessionDiff(let diff) = reply else {
+            throw RemoteError(.failed, "Unexpected response from Mac when loading changes")
+        }
+        return diff
+    }
+
+    /// Asks another model for an inline second opinion on a completed assistant reply.
+    public func requestSecondOpinion(sessionID: String, itemID: String, replyText: String, providerID: String, modelID: String) async throws {
+        try await request(.secondOpinion(RemoteSecondOpinionRequest(
+            sessionID: sessionID, itemID: itemID, replyText: replyText, providerID: providerID, modelID: modelID
+        )))
+    }
+
+    /// Display name for a `(providerID, modelID)` pair using `availableModels`.
+    public func modelName(providerID: String?, modelID: String?) -> String? {
+        guard let modelID, !modelID.isEmpty else { return nil }
+        if let providerID, let exact = availableModels.first(where: { $0.providerID == providerID && $0.modelID == modelID }) {
+            return exact.name
+        }
+        if let byModel = availableModels.first(where: { $0.modelID == modelID }) {
+            return byModel.name
+        }
+        return modelID
+    }
+
     // MARK: - Lookups for the UI
 
     public func pendingPermissions(for sessionID: String) -> [PermissionRequest] {
@@ -567,14 +1022,18 @@ public final class RemoteClient {
             guard openTranscript?.sessionID == sid else { return }
             upsertTranscriptItem(item)
         case .textDelta(let sid, let itemID, let delta):
-            guard openTranscript?.sessionID == sid, let i = openTranscript?.items.firstIndex(where: { $0.id == itemID }) else { return }
-            switch openTranscript?.items[i] {
-            case .agentText(let id, let text, let agentID, _)?:
-                openTranscript?.items[i] = .agentText(id: id, text: text + delta, agentID: agentID, streaming: true)
-            case .reasoning(let id, let text, _)?:
-                openTranscript?.items[i] = .reasoning(id: id, text: text + delta, streaming: true)
-            default:
-                break
+            guard openTranscript?.sessionID == sid else { return }
+            if let i = openTranscript?.items.firstIndex(where: { $0.id == itemID }) {
+                switch openTranscript?.items[i] {
+                case .agentText(let id, let text, let agentID, _)?:
+                    openTranscript?.items[i] = .agentText(id: id, text: text + delta, agentID: agentID, streaming: true)
+                case .reasoning(let id, let text, _)?:
+                    openTranscript?.items[i] = .reasoning(id: id, text: text + delta, streaming: true)
+                default:
+                    break
+                }
+            } else {
+                openTranscript?.items.append(.agentText(id: itemID, text: delta, agentID: nil, streaming: true))
             }
         case .activity(let sid, let activity):
             if let i = sessions.firstIndex(where: { $0.id == sid }) { sessions[i].activity = activity }
@@ -621,6 +1080,37 @@ public final class RemoteClient {
             rooms.removeAll { $0.id == id }
         case .usageSummary(let summary):
             usage = summary
+        case .hubUpdated(let hub):
+            sessions = hub.sessions
+            permissions = hub.permissions
+            availableModels = hub.availableModels
+            recentFolders = hub.recentFolders
+        case .transcriptUpdated(let t):
+            if t.sessionID == openSessionID { openTranscript = t }
+        case .sessionReplaced(let oldSessionID, let newSession):
+            sessions.removeAll { $0.id == oldSessionID }
+            if let i = sessions.firstIndex(where: { $0.id == newSession.id }) {
+                sessions[i] = newSession
+            } else {
+                sessions.insert(newSession, at: 0)
+            }
+            if openSessionID == oldSessionID {
+                Task { @MainActor [weak self] in
+                    guard let self, self.openSessionID == oldSessionID else { return }
+                    _ = try? await self.request(.closeSession(sessionID: oldSessionID))
+                    guard self.openSessionID == oldSessionID else { return }
+                    self.openSessionID = newSession.id
+                    if var t = self.openTranscript, t.sessionID == oldSessionID {
+                        t.sessionID = newSession.id
+                        t.modelProviderID = newSession.modelProviderID
+                        t.modelID = newSession.modelID
+                        t.pendingModelName = newSession.pendingModelName
+                        self.openTranscript = t
+                    }
+                    _ = try? await self.open(sessionID: newSession.id)
+                }
+            }
+            onSessionReplaced?(oldSessionID, newSession)
         }
     }
 
@@ -684,14 +1174,17 @@ public final class RemoteClient {
         String(decoding: try RemoteCoding.encode(frame), as: UTF8.self)
     }
 
-    private nonisolated static func decode(_ message: URLSessionWebSocketTask.Message) throws -> RemoteServerFrame {
-        let data: Data
+    private nonisolated static func data(_ message: URLSessionWebSocketTask.Message) -> Data {
         switch message {
-        case .string(let s): data = Data(s.utf8)
-        case .data(let d): data = d
-        @unknown default: throw RemoteWireError.notText
+        case .string(let s): Data(s.utf8)
+        case .data(let d): d
+        @unknown default: Data()
         }
-        return try RemoteCoding.decode(RemoteServerFrame.self, from: data)
+    }
+
+    private nonisolated static func decode(_ message: URLSessionWebSocketTask.Message) throws -> RemoteServerFrame {
+        guard !data(message).isEmpty else { throw RemoteWireError.notText }
+        return try RemoteCoding.decode(RemoteServerFrame.self, from: data(message))
     }
 
     private nonisolated static func describe(_ error: any Error) -> String {

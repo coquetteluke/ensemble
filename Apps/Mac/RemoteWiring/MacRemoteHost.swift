@@ -31,10 +31,19 @@ final class MacRemoteHost: RemoteHost {
     private let store: SessionStore
     /// The app's rooms. `AppEngine` sets this right after it makes the rooms controller.
     weak var rooms: RoomsController?
+    private var updateContinuations: [UUID: AsyncStream<RemoteUpdate>.Continuation] = [:]
+    /// Tracks reasoning item ids already announced via `.transcriptUpsert`, keyed by primary session id.
+    private var seenReasoningItems: [String: Set<String>] = [:]
 
     init(store: SessionStore, rooms: RoomsController? = nil) {
         self.store = store
         self.rooms = rooms
+    }
+
+    private func broadcast(_ update: RemoteUpdate) {
+        for continuation in updateContinuations.values {
+            continuation.yield(update)
+        }
     }
 
     // MARK: Snapshots
@@ -45,6 +54,7 @@ final class MacRemoteHost: RemoteHost {
             return nil
         }.first
         let asked = lastText.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?") } ?? false
+        let staged = store.stagedModel(for: s.id)
         return SessionSummary(
             id: s.id,
             title: s.title,
@@ -55,12 +65,126 @@ final class MacRemoteHost: RemoteHost {
             pendingPermissions: s.pendingPermissions.count,
             endedWithQuestion: s.activity != .working && asked,
             archived: s.info.archived,
-            usage: s.usage
+            usage: s.usage,
+            modelProviderID: s.info.model?.providerID,
+            modelID: s.info.model?.id,
+            pendingModelName: staged.map { store.modelName($0) }
+        )
+    }
+
+    private func availableModelOptions() -> [RemoteModelOption] {
+        let folders = ModelCatalog.folders(store.models, billing: nil)
+        var out: [RemoteModelOption] = []
+        var seen = Set<String>()
+        for folder in folders {
+            for choice in folder.all where choice.available {
+                guard let route = choice.primary else { continue }
+                let key = "\(route.ref.providerID)/\(route.ref.id)"
+                guard seen.insert(key).inserted else { continue }
+                out.append(RemoteModelOption(
+                    providerID: route.ref.providerID,
+                    modelID: route.ref.id,
+                    name: choice.name,
+                    makerName: folder.maker.name,
+                    engineLabel: route.providerName
+                ))
+            }
+        }
+        return out
+    }
+
+    private func isHiddenSession(_ id: String) -> Bool {
+        store.isSideQuestionSession(id)
+            || store.hiddenSessionIDs.contains(id)
+            || store.hiddenLinkedSessionIDs.contains(id)
+    }
+
+    private func recentFolders() -> [String] {
+        var dirs: [String] = []
+        var seen = Set<String>()
+        let sortedSessions = store.sessions.sorted { $0.info.updated > $1.info.updated }
+        for s in sortedSessions where !s.isSubagent && !isHiddenSession(s.id) {
+            let folder = store.projectFolder(for: s)
+            if !folder.isEmpty, seen.insert(folder).inserted {
+                dirs.append(folder)
+                if dirs.count >= 16 { return dirs }
+            }
+        }
+        if let rooms, rooms.isLoaded {
+            for state in rooms.rooms {
+                let folder = state.spec.directory
+                if !folder.isEmpty, seen.insert(folder).inserted {
+                    dirs.append(folder)
+                    if dirs.count >= 16 { return dirs }
+                }
+            }
+        }
+        return dirs
+    }
+
+    private func remoteSecondOpinions(for sessionID: String) -> [RemoteSecondOpinion] {
+        AgentToolsCenter.shared.secondOpinions.opinions(for: sessionID).values
+            .flatMap { $0 }
+            .sorted { $0.created < $1.created }
+            .map { opinion in
+            let status: String
+            let error: String?
+            switch opinion.status {
+            case .loading:
+                status = "running"
+                error = nil
+            case .answered:
+                status = "ready"
+                error = nil
+            case .failed(let message):
+                status = "failed"
+                error = message
+            }
+            return RemoteSecondOpinion(
+                id: opinion.id,
+                itemID: opinion.itemID,
+                modelName: opinion.modelName,
+                makerName: opinion.makerName,
+                status: status,
+                verdict: opinion.status == .answered ? opinion.verdict.label : nil,
+                summary: opinion.summary.isEmpty ? nil : opinion.summary,
+                concerns: opinion.concerns,
+                details: opinion.fullText.isEmpty ? nil : opinion.fullText,
+                error: error
+            )
+        }
+    }
+
+    private func remotePermission(_ request: PermissionRequest) -> PermissionRequest {
+        let primaryID = store.primarySessionID(for: request.sessionID)
+        guard primaryID != request.sessionID else { return request }
+        var mapped = request
+        mapped.sessionID = primaryID
+        return mapped
+    }
+
+    private func remoteTranscript(for s: SessionModel) -> RemoteTranscript {
+        let staged = store.stagedModel(for: s.id)
+        let mappedItems = s.items.map { item -> TranscriptItem in
+            if case .permission(let p) = item { return .permission(remotePermission(p)) }
+            return item
+        }
+        return RemoteTranscript(
+            sessionID: s.id,
+            title: s.title,
+            items: mappedItems,
+            activity: s.activity,
+            permissionMode: s.permissionMode,
+            modelProviderID: s.info.model?.providerID,
+            modelID: s.info.model?.id,
+            pendingModelName: staged.map { store.modelName($0) },
+            secondOpinions: remoteSecondOpinions(for: s.id)
         )
     }
 
     private func session(_ id: String) -> SessionModel? {
-        store.sessions.first { $0.id == id }
+        let primaryID = store.primarySessionID(for: id)
+        return store.sessions.first { $0.id == primaryID }
     }
 
     /// The Hub row's line for what the session waits on.
@@ -71,8 +195,10 @@ final class MacRemoteHost: RemoteHost {
     /// The open request `requestID` of `sessionID` as the store holds it. A request id from another session is never
     /// found, so an answer only ever reaches the session that asked.
     private func openRequest(_ requestID: String, in sessionID: String) throws -> PermissionRequest {
-        guard let session = session(sessionID) else { throw MacRemoteHostError.sessionNotFound }
-        guard let request = session.pendingPermissions.first(where: { $0.id == requestID }), request.sessionID == sessionID else {
+        let primaryID = store.primarySessionID(for: sessionID)
+        guard let session = session(primaryID) else { throw MacRemoteHostError.sessionNotFound }
+        guard let request = session.pendingPermissions.first(where: { $0.id == requestID }),
+              store.primarySessionID(for: request.sessionID) == primaryID else {
             throw MacRemoteHostError.requestNotOpen
         }
         return request
@@ -86,20 +212,30 @@ final class MacRemoteHost: RemoteHost {
 
     func hubSnapshot() async -> RemoteHubSnapshot {
         let hidden = roomAgentSessionIDs
-        let roots = store.sessions.filter { !$0.isSubagent && !store.isSideQuestionSession($0.id) && !hidden.contains($0.id) }
-        var permissions = store.sessions.flatMap(\.pendingPermissions)
+        let roots = store.sessions.filter { !$0.isSubagent && !isHiddenSession($0.id) && !hidden.contains($0.id) }
+        var permissions = store.sessions
+            .filter { !isHiddenSession($0.id) }
+            .flatMap(\.pendingPermissions)
+            .map(remotePermission)
         let known = Set(permissions.map(\.id))
         // Prompts the rooms know about that the session list has not loaded (subagents of room agents).
-        permissions += (rooms?.permissions.values.flatMap { $0 } ?? []).filter { !known.contains($0.id) }
-        return RemoteHubSnapshot(sessions: roots.map(summary) + remoteRooms().map(\.row), permissions: permissions)
+        // Prompts held or filtered out by the store's safety check for loaded sessions must stay hidden.
+        permissions += (rooms?.permissions.values.flatMap { $0 } ?? []).filter {
+            !known.contains($0.id) && session($0.sessionID) == nil && !store.safetyCheck.isHolding($0.id)
+        }
+        return RemoteHubSnapshot(
+            sessions: roots.map(summary) + remoteRooms().map(\.row),
+            permissions: permissions,
+            availableModels: availableModelOptions(),
+            recentFolders: recentFolders()
+        )
     }
 
     func transcript(sessionID: String) async throws -> RemoteTranscript {
         if let mapped = remoteRoom(sessionID: sessionID) { return RemoteRoomBridge.transcript(mapped.state, room: mapped.room) }
         guard let s = session(sessionID) else { throw MacRemoteHostError.sessionNotFound }
         if !s.transcriptLoaded { await store.loadSession(sessionID) }
-        return RemoteTranscript(sessionID: s.id, title: s.title, items: s.items, activity: s.activity,
-                                permissionMode: s.permissionMode)
+        return remoteTranscript(for: s)
     }
 
     func rooms() async -> [RemoteRoom] { remoteRooms().map(\.room) }
@@ -114,13 +250,33 @@ final class MacRemoteHost: RemoteHost {
     }
 
     private func remoteRoom(_ state: RoomState, rooms: RoomsController) -> RemoteRoom {
+        var permissions: [PermissionRequest] = []
+        var visibleRootIDs = Set<String>()
+        for sid in state.sessions.values {
+            let visible = (rooms.permissions[sid] ?? []).filter { !isSuppressedRoomPermission($0) }
+            if !visible.isEmpty { visibleRootIDs.insert(sid) }
+            permissions += visible
+        }
         var activity: [UUID: AgentActivity] = [:]
         // Saved rooms that are not open have no live engine: their agents are idle (or capped).
         if let engine = rooms.engines[state.id] {
-            for agent in state.spec.agents { activity[agent.id] = rooms.activity(of: agent.id, in: engine) }
+            for agent in state.spec.agents {
+                var current = rooms.activity(of: agent.id, in: engine)
+                if current == .waitingForPermission, let sid = state.sessions[agent.id], !visibleRootIDs.contains(sid) {
+                    current = .working
+                }
+                activity[agent.id] = current
+            }
         }
-        let permissions = state.sessions.values.flatMap { rooms.permissions[$0] ?? [] }
         return RemoteRoomBridge.room(state, activity: activity, permissions: permissions, running: rooms.isRunning(state.id))
+    }
+
+    private func isSuppressedRoomPermission(_ request: PermissionRequest) -> Bool {
+        if store.safetyCheck.isHolding(request.id) { return true }
+        if let session = session(request.sessionID) {
+            return !session.pendingPermissions.contains { $0.id == request.id }
+        }
+        return false
     }
 
     /// The room whose Hub row or transcript id this is.
@@ -132,7 +288,7 @@ final class MacRemoteHost: RemoteHost {
     func usageSummary() async -> RemoteUsageSummary {
         let today = Calendar.current.startOfDay(for: Date())
         let weekAgo = Date().addingTimeInterval(-7 * 24 * 3600)
-        let all = store.sessions.filter { !$0.isSubagent && !store.isSideQuestionSession($0.id) }
+        let all = store.sessions.filter { !$0.isSubagent && !isHiddenSession($0.id) }
         let todayUsage = all.filter { $0.info.updated >= today }.map(\.usage).reduce(.zero, +)
         let weekUsage = all.filter { $0.info.updated >= weekAgo }.map(\.usage).reduce(.zero, +)
         var byProvider: [String: Usage] = [:]
@@ -149,7 +305,10 @@ final class MacRemoteHost: RemoteHost {
 
     func updates() async -> AsyncStream<RemoteUpdate> {
         let events = store.engine.events()
+        let visiblePermissions = store.safetyCheck.visiblePermissions()
         return AsyncStream { continuation in
+            let streamID = UUID()
+            updateContinuations[streamID] = continuation
             let eventTask = Task { @MainActor [weak self] in
                 for await event in events {
                     guard let self else { break }
@@ -162,13 +321,58 @@ final class MacRemoteHost: RemoteHost {
                 }
                 continuation.finish()
             }
+            let permissionTask = Task { @MainActor [weak self] in
+                for await request in visiblePermissions {
+                    guard let self else { break }
+                    let mapped = self.remotePermission(request)
+                    continuation.yield(.permissionAsked(request: mapped))
+                    if let s = self.session(mapped.sessionID),
+                       !s.isSubagent,
+                       !self.isHiddenSession(s.id),
+                       !self.roomAgentSessionIDs.contains(s.id) {
+                        continuation.yield(.sessionUpserted(session: self.summary(s)))
+                    }
+                }
+            }
             let roomTask = Task { @MainActor [weak self] in
                 await self?.watchRooms { continuation.yield($0) }
             }
-            continuation.onTermination = { _ in
-                eventTask.cancel()
-                roomTask.cancel()
+            let opinionsTask = Task { @MainActor [weak self] in
+                await self?.watchSecondOpinions { continuation.yield($0) }
             }
+            continuation.onTermination = { [weak self] _ in
+                Task { @MainActor in self?.updateContinuations[streamID] = nil }
+                eventTask.cancel()
+                permissionTask.cancel()
+                roomTask.cancel()
+                opinionsTask.cancel()
+            }
+        }
+    }
+
+    private func secondOpinionsSnapshot() -> [String: [RemoteSecondOpinion]] {
+        var result: [String: [RemoteSecondOpinion]] = [:]
+        for s in store.sessions {
+            let opinions = remoteSecondOpinions(for: s.id)
+            if !opinions.isEmpty { result[s.id] = opinions }
+        }
+        return result
+    }
+
+    private func watchSecondOpinions(_ yield: @escaping @MainActor (RemoteUpdate) -> Void) async {
+        var last = secondOpinionsSnapshot()
+        while !Task.isCancelled {
+            await Self.waitForChange(timeout: .seconds(5)) { [weak self] in _ = self?.secondOpinionsSnapshot() }
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            let next = secondOpinionsSnapshot()
+            let changedIDs = Set(last.keys).union(next.keys).filter { last[$0] != next[$0] }
+            for sid in changedIDs {
+                if let s = session(sid) {
+                    yield(.transcriptUpdated(transcript: remoteTranscript(for: s)))
+                }
+            }
+            last = next
         }
     }
 
@@ -230,42 +434,75 @@ final class MacRemoteHost: RemoteHost {
     /// Lets the store apply the same event first, then reads its updated summary.
     private func refreshedSummary(_ sessionID: String) async -> SessionSummary? {
         try? await Task.sleep(for: .milliseconds(80))
-        return session(sessionID).map(summary)
+        let primaryID = store.primarySessionID(for: sessionID)
+        guard !isHiddenSession(primaryID) else { return nil }
+        return session(primaryID).map(summary)
     }
 
     private func translate(_ event: EngineEvent) async -> [RemoteUpdate] {
         switch event {
-        case .textDelta(let sid, let item, let delta), .reasoningDelta(let sid, let item, let delta):
-            return [.textDelta(sessionID: sid, itemID: item, delta: delta)]
+        case .textDelta(let sid, let item, let delta):
+            let primaryID = store.primarySessionID(for: sid)
+            return [.textDelta(sessionID: primaryID, itemID: item, delta: delta)]
+        case .reasoningDelta(let sid, let item, let delta):
+            let primaryID = store.primarySessionID(for: sid)
+            if seenReasoningItems[primaryID, default: []].insert(item).inserted {
+                if (seenReasoningItems[primaryID]?.count ?? 0) > 128 {
+                    seenReasoningItems[primaryID] = [item]
+                }
+                return [.transcriptUpsert(sessionID: primaryID, item: .reasoning(id: item, text: delta, streaming: true))]
+            }
+            return [.textDelta(sessionID: primaryID, itemID: item, delta: delta)]
         case .textEnded(let sid, let item, let text):
-            return [.transcriptUpsert(sessionID: sid, item: .agentText(id: item, text: text, agentID: nil, streaming: false))]
+            let primaryID = store.primarySessionID(for: sid)
+            return [.transcriptUpsert(sessionID: primaryID, item: .agentText(id: item, text: text, agentID: nil, streaming: false))]
         case .toolUpdated(let sid, let tool):
-            return [.transcriptUpsert(sessionID: sid, item: .tool(tool))]
+            let primaryID = store.primarySessionID(for: sid)
+            return [.transcriptUpsert(sessionID: primaryID, item: .tool(tool))]
         case .permissionAsked(let request):
-            let summary = await refreshedSummary(request.sessionID)
-            // The store's copy, with what it adds (the mode a plan's Proceed switches to).
-            let shown = session(request.sessionID)?.pendingPermissions.first { $0.id == request.id } ?? request
-            var out: [RemoteUpdate] = [.permissionAsked(request: shown)]
+            let primaryID = store.primarySessionID(for: request.sessionID)
+            let summary = await refreshedSummary(primaryID)
+            // Prompts for sessions managed by SessionStore arrive via `visiblePermissions()` after the safety check.
+            if store.isListening, session(primaryID) != nil { return [] }
+            guard !store.safetyCheck.isHolding(request.id) else { return [] }
+            if let s = session(primaryID) {
+                guard let shown = s.pendingPermissions.first(where: { $0.id == request.id }) else { return [] }
+                return [.permissionAsked(request: remotePermission(shown))] + (summary.map { [.sessionUpserted(session: $0)] } ?? [])
+            }
+            var out: [RemoteUpdate] = [.permissionAsked(request: remotePermission(request))]
             if let summary { out.append(.sessionUpserted(session: summary)) }
             return out
         case .permissionReplied(let sid, let rid):
-            var out: [RemoteUpdate] = [.permissionReplied(sessionID: sid, requestID: rid, decision: nil)]
-            if let s = await refreshedSummary(sid) { out.append(.sessionUpserted(session: s)) }
+            let primaryID = store.primarySessionID(for: sid)
+            var out: [RemoteUpdate] = [.permissionReplied(sessionID: primaryID, requestID: rid, decision: nil)]
+            if let s = await refreshedSummary(primaryID) { out.append(.sessionUpserted(session: s)) }
             return out
         case .activity(let sid, let activity):
-            var out: [RemoteUpdate] = [.activity(sessionID: sid, activity: activity)]
-            if let s = await refreshedSummary(sid) { out.append(.sessionUpserted(session: s)) }
+            let primaryID = store.primarySessionID(for: sid)
+            let summary = await refreshedSummary(primaryID)
+            if activity == .waitingForPermission, let s = session(primaryID), s.pendingPermissions.isEmpty {
+                return []
+            }
+            var out: [RemoteUpdate] = [.activity(sessionID: primaryID, activity: activity)]
+            if let summary { out.append(.sessionUpserted(session: summary)) }
             return out
         case .usageUpdated(let sid, let usage):
-            return [.usage(sessionID: sid, usage: usage)]
+            let primaryID = store.primarySessionID(for: sid)
+            return [.usage(sessionID: primaryID, usage: session(primaryID)?.usage ?? usage)]
         case .executionEnded(let sid, _, _):
-            var out: [RemoteUpdate] = [.activity(sessionID: sid, activity: .idle)]
-            if let s = await refreshedSummary(sid) { out.append(.sessionUpserted(session: s)) }
+            let primaryID = store.primarySessionID(for: sid)
+            seenReasoningItems.removeValue(forKey: primaryID)
+            var out: [RemoteUpdate] = [.activity(sessionID: primaryID, activity: .idle)]
+            if let s = await refreshedSummary(primaryID) { out.append(.sessionUpserted(session: s)) }
             return out
         case .sessionCreated(let info), .sessionUpdated(let info):
-            guard info.parentID == nil, let s = await refreshedSummary(info.id) else { return [] }
+            guard info.parentID == nil, !isHiddenSession(info.id) else { return [] }
+            let primaryID = store.primarySessionID(for: info.id)
+            guard !isHiddenSession(primaryID), let s = await refreshedSummary(primaryID) else { return [] }
             return [.sessionUpserted(session: s)]
         case .sessionDeleted(let sid):
+            seenReasoningItems.removeValue(forKey: sid)
+            guard !isHiddenSession(sid) else { return [] }
             return [.sessionRemoved(sessionID: sid)]
         case .filesChanged, .connectorsChanged, .other:
             return []
@@ -292,8 +529,10 @@ final class MacRemoteHost: RemoteHost {
                 try await sendToRoom(mapped.room.id, text: text, agent: agent)
                 return
             }
-            guard session(id) != nil else { throw MacRemoteHostError.sessionNotFound }
-            await store.send(text, to: id)
+            guard let s = session(id) else { throw MacRemoteHostError.sessionNotFound }
+            await store.send(text, to: s.id)
+            broadcast(.transcriptUpdated(transcript: remoteTranscript(for: s)))
+            broadcast(.sessionUpserted(session: summary(s)))
         }
     }
 
@@ -315,11 +554,13 @@ final class MacRemoteHost: RemoteHost {
         if let request = session(sessionID)?.pendingPermissions.first(where: { $0.id == requestID }) {
             if request.isInteraction, decision != .reject { throw MacRemoteHostError.needsOwnAnswer(plan: request.isPlan) }
             await store.reply(to: request, decision: decision)
-        } else if let rooms, let request = rooms.permissions.values.flatMap({ $0 }).first(where: { $0.id == requestID && $0.sessionID == sessionID }) {
+        } else if let rooms, let request = rooms.permissions.values.flatMap({ $0 }).first(where: {
+            $0.id == requestID && $0.sessionID == sessionID && !isSuppressedRoomPermission($0)
+        }) {
             // A room agent's subagent the session list has not loaded.
             await rooms.reply(to: request, decision: decision)
         } else {
-            try await store.engine.replyPermission(sessionID: sessionID, requestID: requestID, decision: decision, message: nil)
+            throw MacRemoteHostError.requestNotOpen
         }
     }
 
@@ -343,7 +584,8 @@ final class MacRemoteHost: RemoteHost {
                 try await roomEngine(mapped.room.id).pause()
                 return
             }
-            try await store.engine.interrupt(id)
+            guard let s = session(id) else { throw MacRemoteHostError.sessionNotFound }
+            await store.stop(s.id)
         }
     }
 
@@ -377,6 +619,232 @@ final class MacRemoteHost: RemoteHost {
         guard request.isPlan else { throw MacRemoteHostError.requestNotOpen }
         // The store also refuses a mode the plan card does not offer.
         guard await store.respondToPlan(request, decision: decision) else { throw MacRemoteHostError.notAnswered(store.lastError) }
+    }
+
+    /// Validates a folder requested by the phone before creating a session or room in it.
+    /// Rejects broad, system, or sensitive dot-directories and requires the folder to be trusted or already known.
+    private func validatedRemoteFolder(_ raw: String) throws -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw RemoteError(.badRequest, "Pick a project folder first.") }
+        guard let resolved = WorkspaceTrust.resolvedPath(trimmed) else {
+            throw RemoteError(.badRequest, "That folder does not exist on this Mac.")
+        }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved, isDirectory: &isDir), isDir.boolValue else {
+            throw RemoteError(.badRequest, "That folder does not exist on this Mac.")
+        }
+
+        let resolvedParts = resolved.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        let home = WorkspaceTrust.resolvedPath(NSHomeDirectory()) ?? WorkspaceTrust.shared.homeFolder
+        let homeParts = home.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        let isRootOrHomeAncestor = resolved == "/"
+            || resolved == home
+            || (resolvedParts.count <= homeParts.count && Array(homeParts.prefix(resolvedParts.count)) == resolvedParts)
+        let blockedRoots = ["/System", "/Library", "/etc", "/private/etc"]
+        let isBlockedRoot = blockedRoots.contains { resolved == $0 || resolved.hasPrefix($0 + "/") }
+        let sensitiveDotDirs: Set<String> = [".ssh", ".gnupg", ".aws", ".claude", ".config"]
+        let hasSensitiveDotDir = resolvedParts.contains { sensitiveDotDirs.contains($0) }
+        guard !isRootOrHomeAncestor, !isBlockedRoot, !hasSensitiveDotDir else {
+            throw RemoteError(.badRequest, "That folder cannot be used from the iPhone.")
+        }
+
+        var knownFolders = Set<String>()
+        for s in store.sessions where !s.isSubagent && !isHiddenSession(s.id) {
+            if let r = WorkspaceTrust.resolvedPath(store.projectFolder(for: s)) {
+                knownFolders.insert(r)
+            }
+        }
+        if let rooms, rooms.isLoaded {
+            for state in rooms.rooms {
+                if let r = WorkspaceTrust.resolvedPath(state.spec.directory) {
+                    knownFolders.insert(r)
+                }
+            }
+        }
+        guard WorkspaceTrust.shared.isTrusted(resolved) || knownFolders.contains(resolved) else {
+            throw RemoteError(.badRequest, "Choose a trusted or existing project folder on your Mac.")
+        }
+        return resolved
+    }
+
+    func changeModel(_ request: RemoteChangeModel) async throws {
+        if remoteRoom(sessionID: request.sessionID) != nil {
+            throw RemoteError(.badRequest, "Switch models for individual agents inside the room on your Mac.")
+        }
+        guard let targetSession = session(request.sessionID) else { throw MacRemoteHostError.sessionNotFound }
+        let ref = ModelRef(providerID: request.providerID, id: request.modelID)
+        let result = await store.changeModel(ref, for: targetSession.id)
+        switch result {
+        case .switched, .stagedForNextMessage:
+            if let updated = session(targetSession.id) {
+                broadcast(.sessionUpserted(session: summary(updated)))
+                broadcast(.transcriptUpdated(transcript: remoteTranscript(for: updated)))
+            }
+        case .restarted(let from, let to):
+            if let replacement = session(to) {
+                broadcast(.sessionReplaced(oldSessionID: from, newSession: summary(replacement)))
+                broadcast(.hubUpdated(hub: await hubSnapshot()))
+            }
+        case .needsNewSession, .failed:
+            throw RemoteError(.failed, store.lastError ?? "Could not switch model for this session.")
+        }
+    }
+
+    func createSession(_ request: RemoteCreateSession) async throws -> SessionSummary {
+        let dir = try validatedRemoteFolder(request.directory)
+        let ref = ModelRef(providerID: request.providerID, id: request.modelID)
+        let created = try await store.newSession(directory: dir, model: ref, permissionMode: .ask)
+        let customTitle = String((request.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        if !customTitle.isEmpty {
+            await store.rename(created.id, to: customTitle)
+        }
+        let row = summary(created)
+        broadcast(.sessionUpserted(session: row))
+        broadcast(.hubUpdated(hub: await hubSnapshot()))
+        return row
+    }
+
+    func createRoom(_ request: RemoteCreateRoom) async throws -> RemoteRoom {
+        guard let rooms, rooms.isLoaded else {
+            throw RemoteError(.failed, "Rooms are not ready on this Mac yet.")
+        }
+        let dir = try validatedRemoteFolder(request.directory)
+        let title = String(request.title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
+        guard !title.isEmpty else { throw RemoteError(.badRequest, "Give the room a title.") }
+        guard request.agents.count >= 2 && request.agents.count <= 6 else {
+            throw RemoteError(.badRequest, "A room needs between 2 and 6 agents.")
+        }
+        let palette = ["#D97757", "#6A9BCC", "#788C5D", "#9B7BD4"]
+        let specs: [AgentSpec] = request.agents.enumerated().map { idx, agent in
+            let rawName = agent.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = String((rawName.isEmpty ? "Agent \(idx + 1)" : rawName).prefix(48))
+            let role = String(agent.role.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240))
+            return AgentSpec(
+                name: name,
+                model: ModelRef(providerID: agent.providerID, id: agent.modelID),
+                role: role,
+                colorHex: palette[idx % palette.count]
+            )
+        }
+        let spec = RoomSpec(
+            title: title,
+            directory: dir,
+            agents: specs,
+            mode: request.mode,
+            leadAgentID: request.mode == .debate ? nil : specs.first?.id,
+            permissionMode: .ask
+        )
+        let engine = try await rooms.create(spec: spec)
+        rooms.syncAgents(into: store)
+        let remote = remoteRoom(engine.state, rooms: rooms)
+        let row = RemoteRoomBridge.hubRow(remote)
+        broadcast(.roomUpserted(room: remote))
+        broadcast(.sessionUpserted(session: row))
+        broadcast(.hubUpdated(hub: await hubSnapshot()))
+        return remote
+    }
+
+    func sessionDiff(sessionID: String) async throws -> RemoteSessionDiff {
+        let directory: String
+        if let mapped = remoteRoom(sessionID: sessionID) {
+            directory = mapped.state.spec.directory
+        } else if let s = session(sessionID) {
+            directory = s.directory
+        } else {
+            throw MacRemoteHostError.sessionNotFound
+        }
+        let service = GitReviewService()
+        let root: String
+        do {
+            guard let repoRoot = try service.trustedRepository(directory) else {
+                return RemoteSessionDiff(sessionID: sessionID, directory: directory, files: [], truncated: false)
+            }
+            root = repoRoot
+        } catch is GitUntrustedError {
+            throw RemoteError(.badRequest, "Trust this folder on your Mac before inspecting git diffs.")
+        }
+        let base: String
+        if let head = await service.head(root) {
+            base = head
+        } else {
+            base = await service.emptyTree(root)
+        }
+        let target = try await service.snapshotTree(root)
+        let rawDiffs = try await service.diff(from: base, to: target, root: root)
+        let maxFiles = 200
+        let byteBudget = 120_000
+        var usedBytes = 0
+        var truncated = false
+        var files: [RemoteDiffFile] = []
+        for diff in rawDiffs {
+            if files.count >= maxFiles {
+                truncated = true
+                break
+            }
+            let patchText: String
+            if diff.isBinary {
+                patchText = "(Binary file changed)"
+                usedBytes += patchText.utf8.count
+            } else {
+                let remaining = max(0, byteBudget - usedBytes)
+                if remaining == 0 {
+                    truncated = true
+                    break
+                }
+                let patchBytes = diff.patch.utf8.count
+                if patchBytes <= remaining {
+                    patchText = diff.patch
+                    usedBytes += patchBytes
+                } else {
+                    truncated = true
+                    patchText = String(decoding: diff.patch.utf8.prefix(remaining), as: UTF8.self) + "\n... (diff truncated)"
+                    usedBytes = byteBudget
+                }
+            }
+            files.append(RemoteDiffFile(
+                path: diff.path,
+                status: diff.kind.label,
+                additions: diff.additions,
+                deletions: diff.deletions,
+                diffText: patchText
+            ))
+            if usedBytes >= byteBudget {
+                if files.count < rawDiffs.count { truncated = true }
+                break
+            }
+        }
+        return RemoteSessionDiff(sessionID: sessionID, directory: root, files: files, truncated: truncated)
+    }
+
+    func requestSecondOpinion(_ request: RemoteSecondOpinionRequest) async throws {
+        if remoteRoom(sessionID: request.sessionID) != nil {
+            throw RemoteError(.badRequest, "Second opinions are only available in solo sessions.")
+        }
+        guard let s = session(request.sessionID) else { throw MacRemoteHostError.sessionNotFound }
+        if !s.transcriptLoaded { await store.loadSession(s.id) }
+        let authoritativeReply: String? = s.items.compactMap { item -> String? in
+            guard case .agentText(let id, let text, _, let streaming) = item, id == request.itemID, !streaming else {
+                return nil
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }.first
+        guard let replyText = authoritativeReply else {
+            throw RemoteError(.badRequest, "That assistant reply is not available for a second opinion.")
+        }
+        let ref = ModelRef(providerID: request.providerID, id: request.modelID)
+        let beforeCount = AgentToolsCenter.shared.secondOpinions.opinions(for: s.id)[request.itemID]?.count ?? 0
+        AgentToolsCenter.shared.requestSecondOpinion(
+            in: s,
+            itemID: request.itemID,
+            replyText: replyText,
+            model: ref
+        )
+        let afterCount = AgentToolsCenter.shared.secondOpinions.opinions(for: s.id)[request.itemID]?.count ?? 0
+        guard afterCount > beforeCount else {
+            throw RemoteError(.failed, "Second opinions are not ready on this Mac yet.")
+        }
+        broadcast(.transcriptUpdated(transcript: remoteTranscript(for: s)))
     }
 }
 

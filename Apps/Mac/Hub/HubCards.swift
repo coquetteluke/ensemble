@@ -69,7 +69,7 @@ struct HubSessionCard: View {
                 if !preview.isEmpty {
                     Text(preview)
                         .font(theme.font(size: 12.5))
-                        .foregroundStyle(theme.textTertiary)
+                        .foregroundStyle(theme.textSecondary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -105,27 +105,27 @@ struct HubSessionCard: View {
         case .permission(let request):
             if HubSorter.allowsQuickApproval(request) {
                 HubCommandBox(text: request.title)
-                HStack(spacing: theme.z(8)) {
+                FlowRow(spacing: theme.z(8)) {
                     Button("Allow once") { Task { await store.reply(to: request, decision: .once) } }
                         .buttonStyle(PrimaryButtonStyle())
                         .help("Allow this once")
                     Button("Reject") { Task { await store.reply(to: request, decision: .reject) } }
                         .buttonStyle(SecondaryButtonStyle())
                     replyButton
-                    Spacer(minLength: 0)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else {
-                HStack(spacing: theme.z(8)) {
+                FlowRow(spacing: theme.z(8)) {
                     Button("Review in session", action: onOpen)
                         .buttonStyle(PrimaryButtonStyle())
                         .help("Long or multi-line requests open in the session so you can read all of it")
                     replyButton
-                    Spacer(minLength: 0)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         case .plan(let request):
             let mode = request.plan?.allowedProceedModes.first ?? .acceptEdits
-            HStack(spacing: theme.z(8)) {
+            FlowRow(spacing: theme.z(8)) {
                 Button("Proceed in \(mode.shortLabel)") {
                     Task { await store.respondToPlan(request, decision: .proceed(mode)) }
                 }
@@ -137,8 +137,8 @@ struct HubSessionCard: View {
                 .buttonStyle(SecondaryButtonStyle())
                 Button("Read plan", action: onOpen)
                     .buttonStyle(SecondaryButtonStyle())
-                Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         case .question(let request):
             QuestionCardView(
                 request: request,
@@ -148,10 +148,10 @@ struct HubSessionCard: View {
         case .failed, .askedQuestion:
             // Replying is how these get answered, so the button sits in the card; elsewhere it is an icon.
             if !replyOpen {
-                HStack(spacing: theme.z(8)) {
+                FlowRow(spacing: theme.z(8)) {
                     replyButton
-                    Spacer(minLength: 0)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         default:
             EmptyView()
@@ -307,19 +307,19 @@ struct HubRoomCard: View {
         switch item.reason {
         case .permission(let request) where HubSorter.allowsQuickApproval(request):
             HubCommandBox(text: request.title)
-            HStack(spacing: theme.z(8)) {
+            FlowRow(spacing: theme.z(8)) {
                 Button("Allow once") { Task { await rooms.reply(to: request, decision: .once) } }
                     .buttonStyle(PrimaryButtonStyle())
                 Button("Reject") { Task { await rooms.reply(to: request, decision: .reject) } }
                     .buttonStyle(SecondaryButtonStyle())
-                Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         case .permission, .plan, .question, .roomDecision, .roomPaused:
-            HStack(spacing: theme.z(8)) {
+            FlowRow(spacing: theme.z(8)) {
                 Button("Open room", action: onOpen)
                     .buttonStyle(PrimaryButtonStyle())
-                Spacer(minLength: 0)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         default:
             EmptyView()
         }
@@ -349,14 +349,17 @@ struct HubOldRow: View {
                 .font(theme.font(size: 11))
                 .foregroundStyle(theme.textTertiary)
                 .frame(width: theme.z(20))
-            Text(title)
-                .font(theme.font(size: 13))
-                .foregroundStyle(item.reason == .archived ? theme.textTertiary : theme.textSidebar)
-                .lineLimit(1)
-            Text(Format.folderName(directory))
-                .font(theme.font(size: 12))
-                .foregroundStyle(theme.textTertiary)
-                .lineLimit(1)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: theme.z(8)) {
+                    titleText
+                    Text(Format.folderName(directory))
+                        .font(theme.font(size: 12))
+                        .foregroundStyle(theme.textTertiary)
+                        .lineLimit(1)
+                }
+                .fixedSize()
+                titleText
+            }
             Spacer(minLength: theme.z(8))
             if hovering || selected {
                 if let onArchive {
@@ -370,6 +373,7 @@ struct HubOldRow: View {
             Text(Format.relative(date, now: now))
                 .font(theme.font(size: 11.5).monospacedDigit())
                 .foregroundStyle(theme.textTertiary)
+                .lineLimit(1)
                 .fixedSize()
         }
         .padding(.horizontal, theme.z(10))
@@ -384,6 +388,13 @@ struct HubOldRow: View {
         .onTapGesture { onSelect() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(title), \(Format.folderName(directory))")
+    }
+
+    private var titleText: some View {
+        Text(title)
+            .font(theme.font(size: 13))
+            .foregroundStyle(item.reason == .archived ? theme.textTertiary : theme.textSidebar)
+            .lineLimit(1)
     }
 
     private var symbol: String {
@@ -438,6 +449,7 @@ struct HubReplyBox: View {
             Text("\u{2318}\u{21A9}")
                 .font(theme.font(size: 11))
                 .foregroundStyle(theme.textTertiary)
+                .fixedSize()
                 .padding(.bottom, theme.z(6))
                 .help("Command-Return sends")
             Button(action: send) {
@@ -488,7 +500,7 @@ struct HubCardFrame<Content: View>: View {
         .background(RoundedRectangle(cornerRadius: theme.z(12), style: .continuous).fill(theme.elevated))
         .overlay(
             RoundedRectangle(cornerRadius: theme.z(12), style: .continuous)
-                .strokeBorder(selected ? theme.accent.opacity(0.75) : theme.border, lineWidth: selected ? 1.5 : 1)
+                .strokeBorder(selected ? theme.accent.opacity(0.75) : theme.border, lineWidth: selected ? theme.z(1.5) : 1)
         )
         .contentShape(Rectangle())
         .simultaneousGesture(TapGesture().onEnded { onSelect() })
@@ -507,6 +519,7 @@ struct HubStatusIcon: View {
             switch reason {
             case .permission, .plan, .question, .roomDecision, .roomPaused:
                 CountBadge(max(count, 1))
+                    .fixedSize()
             case .askedQuestion:
                 Image(systemName: "questionmark")
                     .font(theme.font(size: 9, weight: .bold))
@@ -546,18 +559,28 @@ struct HubMetaLine: View {
                 .font(theme.font(size: 10.5))
             Text(Format.folderName(directory))
                 .lineLimit(1)
+                .truncationMode(.tail)
                 .help(Format.abbreviatedPath(directory))
             if !agents.isEmpty || model != nil {
                 Text("\u{00B7}")
+                    .fixedSize()
             }
-            ForEach(agents.prefix(5)) { agent in
+            ForEach(agents.prefix(4)) { agent in
                 HStack(spacing: theme.z(4)) {
                     Circle().fill(Color(hexString: agent.colorHex)).frame(width: theme.z(7), height: theme.z(7))
                     Text(agent.name).lineLimit(1)
                 }
+                .fixedSize()
             }
-            if agents.count > 5 { Text("+\(agents.count - 5)") }
-            if let model { Text(model).lineLimit(1) }
+            if agents.count > 4 {
+                Text("+\(agents.count - 4)")
+                    .fixedSize()
+            }
+            if let model {
+                Text(model)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
         }
         .font(theme.font(size: 12))
         .foregroundStyle(theme.textTertiary)
@@ -601,7 +624,7 @@ struct HubCommandBox: View {
             .padding(.horizontal, theme.z(10))
             .padding(.vertical, theme.z(7))
             .background(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).fill(theme.codeBackground))
-            .overlay(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).strokeBorder(theme.border.opacity(0.7)))
+            .overlay(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).strokeBorder(theme.border))
             .selectableText()
     }
 }

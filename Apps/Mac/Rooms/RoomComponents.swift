@@ -102,15 +102,16 @@ struct AgentDot: View {
 struct AgentDots: View {
     let colors: [String]
     var size: CGFloat = 7
+    var maxCount: Int = 6
     var ring: Color
     @Environment(\.theme) private var theme
     var body: some View {
         HStack(spacing: theme.z(-2)) {
-            ForEach(Array(colors.prefix(6).enumerated()), id: \.offset) { _, hex in
+            ForEach(Array(colors.prefix(maxCount).enumerated()), id: \.offset) { _, hex in
                 Circle()
                     .fill(Color(hexString: hex))
                     .frame(width: theme.z(size), height: theme.z(size))
-                    .overlay(Circle().stroke(ring, lineWidth: 1.5))
+                    .overlay(Circle().stroke(ring, lineWidth: theme.z(1.5)))
             }
         }
     }
@@ -126,9 +127,11 @@ struct RoomTag: View {
         Text(text)
             .font(theme.font(size: 10.5, weight: .semibold))
             .foregroundStyle(color ?? theme.textSecondary)
+            .lineLimit(1)
             .padding(.horizontal, theme.z(6))
             .frame(height: theme.z(17))
             .background(RoundedRectangle(cornerRadius: theme.z(4.5), style: .continuous).fill((color ?? theme.textSecondary).opacity(0.13)))
+            .fixedSize()
     }
 }
 
@@ -143,11 +146,14 @@ struct RoomSectionTitle: View {
             Text(text)
                 .font(theme.font(size: 13, weight: .semibold))
                 .foregroundStyle(theme.textPrimary)
-            Spacer(minLength: 4)
+                .lineLimit(1)
+            Spacer(minLength: theme.z(4))
             if let trailing {
                 Text(trailing)
                     .font(theme.font(size: 11.5).monospacedDigit())
                     .foregroundStyle(theme.textTertiary)
+                    .lineLimit(1)
+                    .fixedSize()
             }
         }
     }
@@ -174,11 +180,13 @@ struct ChoiceChip<Value: Hashable>: View {
             HStack(spacing: theme.z(6)) {
                 if let dotHex { AgentDot(hex: dotHex, size: 8) }
                 if let symbol { Image(systemName: symbol).font(theme.font(size: 11.5)) }
-                Text(title)
-                    .font(theme.font(size: 12.5))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: maxWidth, alignment: .leading)
+                if !title.isEmpty {
+                    Text(title)
+                        .font(theme.font(size: 12.5))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: maxWidth.map { theme.z($0) }, alignment: .leading)
+                }
                 Image(systemName: "chevron.down")
                     .font(theme.font(size: 8, weight: .bold))
                     .opacity(0.7)
@@ -270,7 +278,7 @@ struct RoomTextEditor: View {
                 Text(text.isEmpty ? placeholder : text)
                     .font(font)
                     .foregroundStyle(text.isEmpty ? theme.textTertiary : theme.textPrimary)
-                    .frame(maxWidth: .infinity, minHeight: minHeight, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, minHeight: theme.z(minHeight), alignment: .topLeading)
                     .padding(.horizontal, theme.z(10))
                     .padding(.vertical, theme.z(8))
             } else {
@@ -288,7 +296,7 @@ struct RoomTextEditor: View {
                     .scrollContentBackground(.hidden)
                     .padding(.horizontal, theme.z(5))
                     .padding(.vertical, theme.z(8))
-                    .frame(minHeight: minHeight, maxHeight: maxHeight)
+                    .frame(minHeight: theme.z(minHeight), maxHeight: theme.z(maxHeight))
             }
         }
         .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(theme.isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.035)))
@@ -316,7 +324,12 @@ struct RoomHeaderButton: View {
         Button(action: action) {
             HStack(spacing: theme.z(5)) {
                 Image(systemName: symbol).font(theme.font(size: 11, weight: .medium))
-                if !compact { Text(title).font(theme.font(size: 12.5, weight: .medium)) }
+                if !compact {
+                    Text(title)
+                        .font(theme.font(size: 12.5, weight: .medium))
+                        .lineLimit(1)
+                        .fixedSize()
+                }
             }
             .foregroundStyle(tint ?? theme.textPrimary)
             .padding(.horizontal, theme.z(10))

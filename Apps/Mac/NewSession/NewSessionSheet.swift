@@ -8,6 +8,7 @@ struct NewSessionSheet: View {
     @Bindable var window: WindowState
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.isSnapshot) private var isSnapshot
 
     @State private var directory = ""
     @State private var modelID = ""
@@ -16,6 +17,7 @@ struct NewSessionSheet: View {
     @State private var error: String?
     /// "Work in a copy (git worktree)", for folders in a git repository.
     @State private var inWorktree = false
+    @State private var modelBilling: [String: ModelBilling]?
 
     /// `initialDirectory` presets the folder (snapshots); otherwise it is chosen when the sheet appears. `initialWorktree`
     /// presets the copy switch (snapshots).
@@ -78,11 +80,19 @@ struct NewSessionSheet: View {
 
             VStack(alignment: .leading, spacing: theme.z(8)) {
                 label("Model")
+                let folders = ModelCatalog.folders(store.models, billing: modelBilling)
+                let selected = ModelRef(string: modelID)
                 Picker("Model", selection: $modelID) {
-                    ForEach(store.models) { model in
-                        Text("\(model.name)  (\(model.providerName))")
-                            .tag(model.ref.description)
-                            .disabled(!model.available)
+                    ForEach(folders) { folder in
+                        Section(folder.maker.name) {
+                            ForEach(folder.all) { choice in
+                                if let route = ModelCatalog.pickerRoute(for: choice, selected: selected) {
+                                    Text("\(choice.name)  (\(route.providerName))")
+                                        .tag(route.ref.description)
+                                        .disabled(!choice.available)
+                                }
+                            }
+                        }
                     }
                 }
                 .labelsHidden()
@@ -125,11 +135,24 @@ struct NewSessionSheet: View {
             guard !directory.isEmpty else { return }
             await store.checkWorktreeAvailability(directory)
         }
+        .task(id: store.models.count) {
+            guard !isSnapshot, let billing = store.engine as? any EngineModelBilling else { return }
+            modelBilling = try? await billing.modelBilling()
+            let folders = ModelCatalog.folders(store.models, billing: modelBilling)
+            if let current = ModelRef(string: modelID),
+               let resolved = ModelCatalog.resolvedRef(for: current, in: folders)?.description {
+                modelID = resolved
+            }
+        }
         .onAppear {
             if directory.isEmpty {
                 directory = window.newSessionDirectory ?? store.selected?.directory ?? recentFolders.first ?? ""
             }
-            modelID = (store.defaultModel ?? store.models.first(where: \.available)?.ref)?.description ?? ""
+            let folders = ModelCatalog.folders(store.models, billing: modelBilling)
+            let fallback = folders.lazy.flatMap(\.all).first(where: \.available)?.primary?.ref
+                ?? store.models.first(where: \.available)?.ref
+            let seed = store.defaultModel ?? fallback
+            modelID = ModelCatalog.resolvedRef(for: seed, in: folders)?.description ?? ""
             mode = store.defaultPermissionMode
         }
     }

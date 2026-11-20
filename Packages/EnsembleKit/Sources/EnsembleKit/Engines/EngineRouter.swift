@@ -152,6 +152,8 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
         var untrustedID: String?
         /// Providers the untrusted-folder engine cannot serve (browser sign-ins it does not have).
         var providersNeedingTrust: Set<String> = []
+        /// Primary session id to its currently active cross-engine backing session id.
+        var activeBackingSessions: [String: String] = [:]
     }
 
     private let state: Mutex<State>
@@ -263,6 +265,45 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
         throw EngineRouterError.signInNeedsTrustedFolder(providerID: model.providerID)
     }
 
+    /// Re-checks folder trust and sign-in requirements for `directory` and `model` (same checks as `createSession`).
+    public func validateTrust(directory: String, model: ModelRef?) throws {
+        let target = registration(forNewSessionIn: directory, model: model)
+        try checkSignIn(target, model: model)
+        if let acp = target.engine as? ACPEngine, acp.agent.requiresTrustedFolder, !trust.isTrusted(directory) {
+            throw ACPEngineError.folderNotTrusted(directory)
+        }
+    }
+
+    /// True when `sessionID` belongs to the exact engine allowed for `directory` and `model` right now, so a session
+    /// created on a trusted-only engine is never reused after folder trust is revoked.
+    public func canReuseSession(_ sessionID: String, in directory: String, model: ModelRef) async -> Bool {
+        guard let current = await registration(forSession: sessionID) else { return false }
+        let target = registration(forNewSessionIn: directory, model: model)
+        return current.id == target.id
+    }
+
+    /// Registers or clears the active cross-engine backing session for `primaryID` so turn-scoped controls follow it.
+    public func setActiveBackingSession(_ backingID: String?, forPrimary primaryID: String) {
+        state.withLock { state in
+            if let backingID, backingID != primaryID {
+                state.activeBackingSessions[primaryID] = backingID
+            } else {
+                state.activeBackingSessions.removeValue(forKey: primaryID)
+            }
+        }
+    }
+
+    /// Replaces the full primary-to-active-backing map so unlinked or rolled-back entries cannot remain stale.
+    public func setActiveBackingSessions(_ map: [String: String]) {
+        state.withLock { state in
+            state.activeBackingSessions = map.filter { $0.key != $0.value }
+        }
+    }
+
+    func activeBackingOrSelf(_ sessionID: String) -> String {
+        state.withLock { $0.activeBackingSessions[sessionID] ?? sessionID }
+    }
+
     /// The id of the engine known to own a session, without asking the engines (nil when not known yet).
     public func ownerID(ofSession sessionID: String) -> String? { knownOwner(sessionID)?.id }
 
@@ -324,7 +365,13 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
         case .sessionCreated(let session), .sessionUpdated(let session):
             record(session.id, owner: engineID)
         case .sessionDeleted(let sessionID):
-            state.withLock { _ = $0.sessionOwners.removeValue(forKey: sessionID) }
+            state.withLock { state in
+                state.sessionOwners.removeValue(forKey: sessionID)
+                state.activeBackingSessions.removeValue(forKey: sessionID)
+                for (primary, backing) in state.activeBackingSessions where backing == sessionID {
+                    state.activeBackingSessions.removeValue(forKey: primary)
+                }
+            }
         case .permissionAsked(let request):
             state.withLock { state in
                 if state.sessionOwners[request.sessionID] == nil { state.sessionOwners[request.sessionID] = engineID }
@@ -436,7 +483,13 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
 
     public func deleteSession(_ sessionID: String) async throws {
         try await owner(of: sessionID).engine.deleteSession(sessionID)
-        state.withLock { _ = $0.sessionOwners.removeValue(forKey: sessionID) }
+        state.withLock { state in
+            state.sessionOwners.removeValue(forKey: sessionID)
+            state.activeBackingSessions.removeValue(forKey: sessionID)
+            for (primary, backing) in state.activeBackingSessions where backing == sessionID {
+                state.activeBackingSessions.removeValue(forKey: primary)
+            }
+        }
     }
 
     public func renameSession(_ sessionID: String, title: String) async throws {
@@ -459,6 +512,7 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
         guard Self.sameEngine(current: current, target: target, untrustedID: untrustedFolderRegistration?.id) else {
             throw EngineRouterError.engineMismatch(sessionEngine: current.name, modelEngine: target.name, model: model.description)
         }
+        try checkSignIn(current, model: model)
         try await current.engine.switchModel(sessionID, model: model)
     }
 
@@ -486,7 +540,8 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
     }
 
     public func interrupt(_ sessionID: String) async throws {
-        try await owner(of: sessionID).engine.interrupt(sessionID)
+        let resolvedID = activeBackingOrSelf(sessionID)
+        try await owner(of: resolvedID).engine.interrupt(resolvedID)
     }
 
     public func replyPermission(sessionID: String, requestID: String, decision: PermissionDecision, message: String?) async throws {
@@ -737,15 +792,17 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
     }
 
     public func setEffort(_ sessionID: String, effort: EffortLevel?) async throws {
-        let registration = try await owner(of: sessionID)
+        let resolvedID = activeBackingOrSelf(sessionID)
+        let registration = try await owner(of: resolvedID)
         let control = try capability((any EngineModelOptionsControl).self, of: registration, feature: "change effort")
-        try await control.setEffort(sessionID, effort: effort)
+        try await control.setEffort(resolvedID, effort: effort)
     }
 
     public func setFastMode(_ sessionID: String, enabled: Bool) async throws {
-        let registration = try await owner(of: sessionID)
+        let resolvedID = activeBackingOrSelf(sessionID)
+        let registration = try await owner(of: resolvedID)
         let control = try capability((any EngineModelOptionsControl).self, of: registration, feature: "use fast mode")
-        try await control.setFastMode(sessionID, enabled: enabled)
+        try await control.setFastMode(resolvedID, enabled: enabled)
     }
 
     // MARK: Slash commands and skills
@@ -764,15 +821,17 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
 
     /// The commands and skills of the engine that owns the session.
     public func commands(directory: String?, forSession sessionID: String) async throws -> [EngineCommand] {
-        let registration = try await owner(of: sessionID)
+        let resolvedID = activeBackingOrSelf(sessionID)
+        let registration = try await owner(of: resolvedID)
         let control = try capability((any EngineCommandsControl).self, of: registration, feature: "run slash commands")
         return try await control.commands(directory: directory)
     }
 
     public func runCommand(_ sessionID: String, name: String, arguments: String) async throws {
-        let registration = try await owner(of: sessionID)
+        let resolvedID = activeBackingOrSelf(sessionID)
+        let registration = try await owner(of: resolvedID)
         let control = try capability((any EngineCommandsControl).self, of: registration, feature: "run slash commands")
-        try await control.runCommand(sessionID, name: name, arguments: arguments)
+        try await control.runCommand(resolvedID, name: name, arguments: arguments)
     }
 }
 
@@ -780,17 +839,20 @@ public final class EngineRouter: OpenCodeAPI, EngineHistoryControl, EngineModelO
 
 extension EngineRouter: EngineSteeringControl, EngineForkAvailability {
     public func steer(_ sessionID: String, text: String, files: [URL]) async throws {
-        let registration = try await owner(of: sessionID)
+        let resolvedID = activeBackingOrSelf(sessionID)
+        let registration = try await owner(of: resolvedID)
         let control = try capability((any EngineSteeringControl).self, of: registration, feature: "take messages during a turn")
-        try await control.steer(sessionID, text: text, files: files)
+        try await control.steer(resolvedID, text: text, files: files)
     }
 
     public func canSteer(_ sessionID: String) -> Bool {
-        (knownOwner(sessionID)?.engine as? any EngineSteeringControl)?.canSteer(sessionID) ?? false
+        let resolvedID = activeBackingOrSelf(sessionID)
+        return (knownOwner(resolvedID)?.engine as? any EngineSteeringControl)?.canSteer(resolvedID) ?? false
     }
 
     public func queuedDelivery(for sessionID: String) -> QueuedDelivery {
-        (knownOwner(sessionID)?.engine as? any EngineSteeringControl)?.queuedDelivery(for: sessionID) ?? .inOrder
+        let resolvedID = activeBackingOrSelf(sessionID)
+        return (knownOwner(resolvedID)?.engine as? any EngineSteeringControl)?.queuedDelivery(for: resolvedID) ?? .inOrder
     }
 
     public func canFork(_ sessionID: String) -> Bool {
