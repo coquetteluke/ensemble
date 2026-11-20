@@ -133,7 +133,7 @@ private struct AgentTextRow: View {
             }
             MarkdownView(text, fontSize: messageSize, streaming: streaming)
             if streaming {
-                ConstellationSpinner(size: 13)
+                ConstellationSpinner(size: 18)
                     .padding(.top, 2)
             } else if hasText {
                 HStack(spacing: 8) {
@@ -268,7 +268,7 @@ private struct RemoteReasoningRow: View {
                         .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
                         .foregroundStyle(RemoteTheme.secondaryText)
                     if streaming {
-                        Spinner(size: 10)
+                        ConstellationSpinner(size: 18)
                     }
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right")

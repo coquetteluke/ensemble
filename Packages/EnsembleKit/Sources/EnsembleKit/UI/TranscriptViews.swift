@@ -983,7 +983,7 @@ public struct ReasoningRow: View {
                     Text(streaming ? "Thinking" : "Thought")
                         .font(theme.font(size: 13))
                         .foregroundStyle(theme.textSecondary)
-                    if streaming { Spinner(size: 10) }
+                    if streaming { ConstellationSpinner(size: 18) }
                     Image(systemName: "chevron.right")
                         .font(theme.font(size: 9, weight: .semibold))
                         .foregroundStyle(theme.textTertiary)

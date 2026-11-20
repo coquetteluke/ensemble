@@ -693,7 +693,7 @@ struct HubRowHeader: View {
                 .font(.system(size: 17))
                 .foregroundStyle(RemoteTheme.warning)
         case .running:
-            ConstellationSpinner(size: 16)
+            ConstellationSpinner(size: 19)
         case .finished:
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 16))
