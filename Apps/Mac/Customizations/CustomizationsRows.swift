@@ -105,7 +105,7 @@ struct CustomizationTags: View {
                     .lineLimit(1)
                     .padding(.horizontal, theme.z(5))
                     .padding(.vertical, theme.z(1.5))
-                    .background(RoundedRectangle(cornerRadius: theme.z(4), style: .continuous).fill(theme.hover))
+                    .background(RoundedRectangle(cornerRadius: theme.z(4), style: .continuous).fill(theme.raisedFill))
             }
         }
     }

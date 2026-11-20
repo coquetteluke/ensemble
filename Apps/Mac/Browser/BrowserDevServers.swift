@@ -122,7 +122,7 @@ struct DevServersPopover: View {
             if !servers.trust.isTrusted(page.folder) {
                 trustNotice
             }
-            HLine()
+            HLine(color: theme.border)
             content
         }
         .frame(width: theme.z(Self.width))
@@ -175,7 +175,7 @@ struct DevServersPopover: View {
                 }
                 ForEach(config.entries) { entry in
                     DevServerRow(page: page, entry: entry, servers: servers, onAction: close)
-                    HLine()
+                    HLine(color: theme.border)
                 }
                 ForEach(config.problems, id: \.self) { problem in
                     Label { Text(problem).fixedSize(horizontal: false, vertical: true) } icon: { Image(systemName: "exclamationmark.triangle") }

@@ -116,7 +116,7 @@ private struct CommandRow: View {
         }
         .padding(.horizontal, theme.z(10))
         .frame(height: theme.z(34))
-        .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(selected ? theme.selection : (hovering ? theme.hover : .clear)))
+        .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(selected ? theme.raisedSelection : (hovering ? theme.raisedHover : .clear)))
         .padding(.horizontal, theme.z(8))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }

@@ -262,7 +262,8 @@ public struct WorkingRow: View {
                             .foregroundStyle(theme.warning)
                             .frame(width: theme.z(16))
                     } else {
-                        ConstellationSpinner(size: 20).frame(width: theme.z(20))
+                        // Drawn larger than its 16 pt column, so the row's text stays in line with the rows above it.
+                        ConstellationSpinner(size: 20).frame(width: theme.z(16))
                     }
                     Text(Self.currentStep(items, waiting: waitingForPermission, baseDirectory: baseDirectory))
                         .font(theme.font(size: 13))

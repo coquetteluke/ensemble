@@ -155,7 +155,8 @@ struct SlashCommandMenu: View {
                 }
                 .padding(.bottom, theme.z(6))
             }
-            .frame(maxHeight: theme.z(320))
+            // Ten 30 pt rows and the bottom padding, so the list never ends through the middle of a row.
+            .frame(maxHeight: theme.z(306))
             .fixedSize(horizontal: false, vertical: true)
             .clipped()
             .onChange(of: selection) {

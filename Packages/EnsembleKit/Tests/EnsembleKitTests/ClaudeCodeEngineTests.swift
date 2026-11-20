@@ -304,6 +304,9 @@ struct ClaudeCodeLaunchTests {
             #expect(ClaudeModels.contextLimit(for: id, observed: [:]) == 1_000_000)
         }
         #expect(ClaudeModels.contextLimit(for: "claude-sonnet-4-6", observed: [:]) == 200_000)
+        // "default" is the model the CLI picks for the account: it must not come back with no window ("46k / 0").
+        #expect(ClaudeModels.contextLimit(for: "default", observed: [:]) == 1_000_000)
+        #expect(ClaudeModels.contextLimit(for: "default", observed: ["claude-opus-5-5": 400_000]) == 400_000)
         #expect(ClaudeModels.contextLimit(for: "claude-sonnet-4-6[1m]", observed: [:]) == 1_000_000)
         #expect(ClaudeModels.contextLimit(for: "claude-haiku-4-5-20251001", observed: [:]) == 200_000)
         #expect(ClaudeModels.contextLimit(for: "claude-unknown-9", observed: [:]) == nil)

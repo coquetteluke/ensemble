@@ -62,7 +62,8 @@ struct ClaudeImportSheet: View {
             Button("Cancel", action: onClose)
                 .buttonStyle(SecondaryButtonStyle())
                 .keyboardShortcut(.cancelAction)
-                .padding(theme.z(18))
+                .padding(.horizontal, theme.z(22))
+                .padding(.vertical, theme.z(18))
         }
     }
 
@@ -385,7 +386,7 @@ struct ClaudeImportSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .padding(.leading, theme.z(21))
+                .padding(.leading, theme.z(23))
             }
             HStack {
                 Spacer()

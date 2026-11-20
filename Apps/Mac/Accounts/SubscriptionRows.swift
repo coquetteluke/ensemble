@@ -175,21 +175,27 @@ struct BrowserSignInRow: View {
                     .disabled(busy)
             }
             let others = methods.filter { $0.methodID != primary?.methodID }
-            if !others.isEmpty, !integration.isSignedIn, isSnapshot {
-                Image(systemName: "ellipsis").foregroundStyle(theme.textSecondary)
-            } else if !others.isEmpty, !integration.isSignedIn {
-                Menu {
-                    ForEach(others) { method in
-                        Button(method.label ?? method.methodID ?? "Sign in") { choose(method) }
+            // Every row keeps this slot, with or without the menu, so the buttons line up down the list.
+            Group {
+                if !others.isEmpty, !integration.isSignedIn, isSnapshot {
+                    Image(systemName: "ellipsis").foregroundStyle(theme.textSecondary)
+                } else if !others.isEmpty, !integration.isSignedIn {
+                    Menu {
+                        ForEach(others) { method in
+                            Button(method.label ?? method.methodID ?? "Sign in") { choose(method) }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis")
                     }
-                } label: {
-                    Image(systemName: "ellipsis")
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Other ways to sign in")
+                } else {
+                    Color.clear.frame(height: 1)
                 }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help("Other ways to sign in")
             }
+            .frame(width: theme.z(22))
         }
     }
 

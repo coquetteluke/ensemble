@@ -18,11 +18,11 @@ struct SideQuestionPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            HLine()
+            HLine(color: theme.border)
             content
                 .padding(.horizontal, theme.z(16))
                 .padding(.vertical, theme.z(12))
-            HLine()
+            HLine(color: theme.border)
             footer
         }
         .frame(maxWidth: .infinity, alignment: .leading)

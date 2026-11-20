@@ -176,6 +176,15 @@ public struct Theme: Sendable {
     /// A length (padding, row height, corner radius, icon size) times the zoom.
     public func z(_ value: CGFloat) -> CGFloat { value * scale }
 
+    /// Fills for things that sit on a raised surface (a popover or a card). The plain `hover`, `selection` and
+    /// `track` are tuned for the window background and the sidebar. In dark mode they are within a shade of the
+    /// raised surfaces, so there they cannot be seen.
+    public var raisedFill: Color { isDark ? Color.white.opacity(0.07) : hover }
+    public var raisedHover: Color { isDark ? Color.white.opacity(0.05) : hover }
+    public var raisedSelection: Color { isDark ? Color.white.opacity(0.10) : selection }
+    /// The track of a switch that is off, visible on a card as well as on the window background.
+    public var switchOffTrack: Color { isDark ? Color.white.opacity(0.16) : track }
+
     /// Colour for a context category key (see `ContextBreakdown.Category.key`).
     public func contextColor(for key: String) -> Color {
         switch key {

@@ -173,7 +173,7 @@ struct EnsembleApp: App {
         Window("Ensemble", id: "main") {
             Group {
                 if let store = app.store {
-                    MainView(store: store, window: window, rooms: app.rooms, search: search)
+                    MainView(store: store, window: window, rooms: app.rooms, search: search, remote: app.remote)
                 } else {
                     EngineStatusView(status: app.status, retry: app.retry)
                 }

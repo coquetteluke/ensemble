@@ -322,6 +322,8 @@ struct CustomizationsTrustSection: View {
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             }
+            // The row is as tall as its tallest card and the others stretch to it, so the bottoms line up.
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -368,7 +370,7 @@ struct CustomizationsTrustSection: View {
             }
         }
         .padding(theme.z(12))
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).fill(theme.elevated))
         .overlay(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).strokeBorder(theme.border, lineWidth: 1))
     }

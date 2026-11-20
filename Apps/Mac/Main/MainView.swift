@@ -11,10 +11,11 @@ struct MainView: View {
     var rooms: RoomsController?
     /// Search, command palette, shortcut list and file links for this window (the app passes its own).
     var search = SearchCenter()
-    /// Snapshots pass a fixed value; the app uses the stored setting.
+    /// Remote Control for the iPhone app; nil before the app has made the controller.
+    var remote: RemoteControlController?
+    /// Snapshots pass a fixed value; the app shows and changes the real switch.
     var remoteControlOverride: Bool?
 
-    @AppStorage("remoteControlEnabled") private var remoteControl = false
     @AppStorage(Zoom.storageKey) private var zoom = 1.0
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
@@ -354,9 +355,12 @@ struct MainView: View {
         return store.selected?.title ?? "Ensemble"
     }
 
+    /// The panel's Remote Control switch is the same switch as the one in Settings: it reads whether the Mac is
+    /// accepting the iPhone app right now and turns that on or off.
     private var remoteControlBinding: Binding<Bool> {
         if let remoteControlOverride { return .constant(remoteControlOverride) }
-        return $remoteControl
+        guard let remote else { return .constant(false) }
+        return Binding(get: { remote.isOn }, set: { on in Task { await remote.setEnabled(on) } })
     }
 
     private var errorShown: Binding<Bool> {

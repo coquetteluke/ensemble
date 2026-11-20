@@ -117,22 +117,29 @@ struct ContextPanelView: View {
         return VStack(alignment: .leading, spacing: 0) {
             sectionHeader("Context")
             HStack(spacing: theme.z(8)) {
-                Text("\(Format.wholePercent(breakdown.fractionUsed)) used")
+                // A model whose window is not known has no share to show: say how much is used and leave it there.
+                Text(breakdown.limitTokens > 0
+                     ? "\(Format.wholePercent(breakdown.fractionUsed)) used"
+                     : "\(Format.tokens(breakdown.usedTokens)) used")
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
                 Spacer(minLength: theme.z(8))
-                Text("\(Format.tokens(breakdown.usedTokens)) / \(Format.tokens(breakdown.limitTokens))")
-                    .foregroundStyle(theme.textSecondary)
-                    .lineLimit(1)
-                    .fixedSize()
+                if breakdown.limitTokens > 0 {
+                    Text("\(Format.tokens(breakdown.usedTokens)) / \(Format.tokens(breakdown.limitTokens))")
+                        .foregroundStyle(theme.textSecondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
             }
             .font(theme.font(size: 13))
             .monospacedDigit()
             .frame(height: theme.z(26))
 
-            ContextBar(breakdown: breakdown)
-                .padding(.top, theme.z(1))
-                .padding(.bottom, theme.z(6))
+            if breakdown.limitTokens > 0 {
+                ContextBar(breakdown: breakdown)
+                    .padding(.top, theme.z(1))
+                    .padding(.bottom, theme.z(6))
+            }
 
             ForEach(main) { category in
                 breakdownRow(category, limit: breakdown.limitTokens)
@@ -184,11 +191,13 @@ struct ContextPanelView: View {
                 .foregroundStyle(theme.textSecondary)
                 .lineLimit(1)
                 .fixedSize()
-            Text(Format.percent(category.tokens, of: limit))
-                .foregroundStyle(theme.textPrimary)
-                .lineLimit(1)
-                .fixedSize()
-                .frame(minWidth: theme.z(54), alignment: .trailing)
+            if limit > 0 {
+                Text(Format.percent(category.tokens, of: limit))
+                    .foregroundStyle(theme.textPrimary)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(minWidth: theme.z(54), alignment: .trailing)
+            }
         }
         .font(theme.font(size: 13))
         .monospacedDigit()

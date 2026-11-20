@@ -54,7 +54,7 @@ public struct CompactSwitchStyle: ToggleStyle {
                 Spacer(minLength: 0)
                 ZStack(alignment: configuration.isOn ? .trailing : .leading) {
                     Capsule()
-                        .fill(configuration.isOn ? theme.accent : theme.track)
+                        .fill(configuration.isOn ? theme.accent : theme.switchOffTrack)
                     Circle()
                         .fill(Color.white)
                         .shadow(color: .black.opacity(0.25), radius: theme.z(0.5), y: theme.z(0.5))
@@ -93,7 +93,8 @@ public struct PrimaryButtonStyle: ButtonStyle {
         var body: some View {
             configuration.label
                 .font(theme.font(size: 12.5, weight: .medium))
-                .foregroundStyle(theme.onAccent)
+                // A disabled button dims its label as well as its fill, so it does not read as ready to press.
+                .foregroundStyle(theme.onAccent.opacity(isEnabled ? 1 : 0.55))
                 .padding(.horizontal, theme.z(12))
                 .frame(height: theme.z(28))
                 .background(

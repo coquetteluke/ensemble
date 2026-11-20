@@ -108,7 +108,7 @@ struct BackgroundListView: View {
             }
             .padding(.horizontal, theme.z(14))
             .frame(height: theme.z(38))
-            HLine()
+            HLine(color: theme.border)
             if groups.isEmpty {
                 Text("Nothing is running in the background")
                     .font(theme.font(size: 13))
@@ -219,10 +219,13 @@ struct BackgroundRow: View {
             .help(item.title)
             Spacer(minLength: theme.z(6))
             timeText
+            // In the full list every row keeps both slots, used or not, so the times and the buttons form columns.
             if let sessionID = item.openSessionID, sessionID != shownSessionID {
                 RowIconButton(symbol: "arrow.up.forward.app", help: openHelp) {
                     onOpen(sessionID)
                 }
+            } else if !compact {
+                Color.clear.frame(width: theme.z(22), height: theme.z(22))
             }
             if item.scheduledTaskID != nil, !store.isStopping(item) {
                 let running = store.scheduledTaskIsRunning(item)
@@ -231,6 +234,8 @@ struct BackgroundRow: View {
                 }
                 .disabled(running)
                 .opacity(running ? 0.4 : 1)
+            } else if !compact {
+                Color.clear.frame(width: theme.z(22), height: theme.z(22))
             }
             if store.isStopping(item) {
                 Spinner(size: 10)
@@ -244,7 +249,7 @@ struct BackgroundRow: View {
         }
         .padding(.horizontal, theme.z(8))
         .frame(minHeight: theme.z(compact ? 28 : 38))
-        .background(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).fill(hovering ? theme.hover : .clear))
+        .background(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).fill(hovering ? theme.raisedHover : .clear))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture(count: 2) { if let id = item.openSessionID { onOpen(id) } }

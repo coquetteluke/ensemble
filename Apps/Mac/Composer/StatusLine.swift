@@ -108,7 +108,8 @@ struct StatusLine: View {
 
     private func contextButton(_ level: StatusLineLevel) -> some View {
         let context = store.contextBreakdown(for: session)
-        let percent = Format.wholePercent(context.fractionUsed)
+        // Without a known window there is no share: show the tokens used instead of "0%".
+        let percent = context.limitTokens > 0 ? Format.wholePercent(context.fractionUsed) : Format.tokens(context.usedTokens)
         return Button {
             if !window.showContextPanel { window.toggleContextPanel() }
         } label: {

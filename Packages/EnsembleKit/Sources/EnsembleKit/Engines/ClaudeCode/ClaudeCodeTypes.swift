@@ -190,12 +190,14 @@ public enum ClaudeModels {
     }
 
     /// Context window for a model id or alias when known: what a turn reported (`observed`, from the CLI's
-    /// `modelUsage.contextWindow`), else the catalog. An id ending in `[1m]` asks for 1M.
+    /// `modelUsage.contextWindow`), else the catalog. An id ending in `[1m]` asks for 1M. `default` is whatever the
+    /// CLI picks for the account, which is the first model it lists.
     static func contextLimit(for id: String, observed: [String: Int]) -> Int? {
         let base = id.hasSuffix("[1m]") ? String(id.dropLast(4)) : id
         if let value = observed[id] { return value }
         if base != id { return 1_000_000 }
         if let value = observed[base] { return value }
+        if base == "default", let first = catalog.first { return contextLimit(for: first.id, observed: observed) }
         if let entry = catalog.first(where: { $0.id == base }) {
             if let resolved = entry.resolves, let value = observed[resolved] { return value }
             return entry.contextLimit

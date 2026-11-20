@@ -584,7 +584,7 @@ struct ComposerView: View {
                     .font(theme.font(size: 13, weight: .bold))
                     .foregroundStyle(hasText ? theme.onAccent : theme.textTertiary)
                     .frame(width: theme.z(30), height: theme.z(30))
-                    .background(Circle().fill(hasText ? theme.accent : theme.hover))
+                    .background(Circle().fill(hasText ? theme.accent : theme.raisedFill))
             }
             .buttonStyle(.plain)
             .disabled(!hasText)

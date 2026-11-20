@@ -409,6 +409,6 @@ struct DictationProblemRow: View {
         }
         .padding(.horizontal, theme.z(10))
         .padding(.vertical, theme.z(7))
-        .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(theme.hover))
+        .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(theme.raisedFill))
     }
 }

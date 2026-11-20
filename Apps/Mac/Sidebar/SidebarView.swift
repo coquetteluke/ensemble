@@ -305,12 +305,14 @@ struct SidebarView: View {
                         .font(theme.font(size: 13))
                         .foregroundStyle(theme.textSidebar)
                         .lineLimit(1)
+                        .fixedSize()
                 }
                 .padding(.horizontal, theme.z(8))
                 .frame(height: theme.z(30))
             }
             .buttonStyle(RowButtonStyle(cornerRadius: theme.z(7)))
             .help("Settings (Command-,)")
+            .layoutPriority(1)
 
             Spacer(minLength: theme.z(4))
 
@@ -321,7 +323,6 @@ struct SidebarView: View {
                     .foregroundStyle(theme.textTertiary)
                     .lineLimit(1)
             }
-            .fixedSize()
             .help(store.isPreview ? "Using built-in sample data. No engine is connected." : "OpenCode engine")
             .padding(.trailing, theme.z(6))
         }

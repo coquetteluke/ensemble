@@ -117,10 +117,12 @@ struct RoomSidebarRow: View {
         Button(action: action) {
             HStack(spacing: theme.z(6)) {
                 // The icon column lines the title up with session titles in the sections below.
+                // Scaled to fit: the three-person symbol is wider than the column and used to spill out of it.
                 Image(systemName: room.spec.mode.symbolName)
-                    .font(theme.font(size: 10.5))
+                    .resizable()
+                    .scaledToFit()
                     .foregroundStyle(selected ? theme.textPrimary : theme.textTertiary)
-                    .frame(width: theme.z(14))
+                    .frame(width: theme.z(14), height: theme.z(11))
                 Text(room.spec.title)
                     .font(theme.font(size: 13))
                     .foregroundStyle(selected ? theme.textPrimary : theme.textSidebar)
