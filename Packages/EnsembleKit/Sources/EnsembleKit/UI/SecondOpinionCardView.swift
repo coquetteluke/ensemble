@@ -5,18 +5,25 @@ public struct SecondOpinionCardView: View {
     let opinion: SecondOpinion
     let onRetry: () -> Void
     let onDismiss: () -> Void
+    public var onUseModel: ((ModelRef) -> Void)?
 
     @Environment(\.theme) private var theme
     @State private var showFullText = false
+    @State private var retryHovered = false
+    @State private var dismissHovered = false
+    @State private var toggleReviewHovered = false
+    @State private var continueHovered = false
 
     public init(
         opinion: SecondOpinion,
         onRetry: @escaping () -> Void,
-        onDismiss: @escaping () -> Void
+        onDismiss: @escaping () -> Void,
+        onUseModel: ((ModelRef) -> Void)? = nil
     ) {
         self.opinion = opinion
         self.onRetry = onRetry
         self.onDismiss = onDismiss
+        self.onUseModel = onUseModel
     }
 
     public var body: some View {
@@ -102,11 +109,17 @@ public struct SecondOpinionCardView: View {
                 Button(action: onRetry) {
                     Image(systemName: "arrow.clockwise")
                         .font(theme.font(size: 11, weight: .medium))
-                        .foregroundStyle(theme.textSecondary)
+                        .foregroundStyle(retryHovered ? theme.textPrimary : theme.textSecondary)
                         .frame(width: theme.z(22), height: theme.z(22))
+                        .background(
+                            RoundedRectangle(cornerRadius: theme.z(5), style: .continuous)
+                                .fill(retryHovered ? theme.hover : .clear)
+                        )
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .onHover { retryHovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: retryHovered)
                 .help("Retry second opinion")
                 .accessibilityLabel("Retry second opinion")
             }
@@ -114,11 +127,17 @@ public struct SecondOpinionCardView: View {
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
                     .font(theme.font(size: 10.5, weight: .medium))
-                    .foregroundStyle(theme.textTertiary)
+                    .foregroundStyle(dismissHovered ? theme.textPrimary : theme.textTertiary)
                     .frame(width: theme.z(22), height: theme.z(22))
+                    .background(
+                        RoundedRectangle(cornerRadius: theme.z(5), style: .continuous)
+                            .fill(dismissHovered ? theme.hover : .clear)
+                    )
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .onHover { dismissHovered = $0 }
+            .animation(.easeOut(duration: 0.12), value: dismissHovered)
             .help("Dismiss")
             .accessibilityLabel("Dismiss second opinion")
         }
@@ -168,12 +187,19 @@ public struct SecondOpinionCardView: View {
 
         if hasExtraDetails {
             VStack(alignment: .leading, spacing: theme.z(6)) {
-                Button(showFullText ? "Hide full review" : "Show full review") {
+                Button {
                     withAnimation(.easeOut(duration: 0.15)) { showFullText.toggle() }
+                } label: {
+                    Text(showFullText ? "Hide full review" : "Show full review")
+                        .font(theme.font(size: 11.5, weight: .medium))
+                        .foregroundStyle(theme.accent)
+                        .underline(toggleReviewHovered)
+                        .padding(.vertical, theme.z(2))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .font(theme.font(size: 11.5, weight: .medium))
-                .foregroundStyle(theme.accent)
+                .onHover { toggleReviewHovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: toggleReviewHovered)
 
                 if showFullText {
                     MarkdownView(opinion.fullText, streaming: false)
@@ -184,6 +210,41 @@ public struct SecondOpinionCardView: View {
                         .overlay(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).strokeBorder(theme.separator))
                 }
             }
+        }
+
+        if let onUseModel {
+            HStack(spacing: theme.z(8)) {
+                Button {
+                    onUseModel(opinion.model)
+                } label: {
+                    HStack(spacing: theme.z(5)) {
+                        Image(systemName: "arrow.right.circle")
+                            .font(theme.font(size: 11.5, weight: .medium))
+                            .foregroundStyle(continueHovered ? theme.accent : theme.textSecondary)
+                        Text("Continue with \(opinion.modelName)")
+                            .font(theme.font(size: 11.5, weight: .medium))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(continueHovered ? theme.textPrimary : theme.textSecondary)
+                    .padding(.horizontal, theme.z(9))
+                    .padding(.vertical, theme.z(4))
+                    .background(
+                        Capsule()
+                            .fill(continueHovered ? theme.elevatedHover : theme.codeBackground)
+                    )
+                    .overlay(
+                        Capsule()
+                            .strokeBorder(continueHovered ? theme.accent.opacity(0.45) : theme.border, lineWidth: 1)
+                    )
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .onHover { continueHovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: continueHovered)
+                .help("Continue this conversation with \(opinion.modelName)")
+                Spacer(minLength: 0)
+            }
+            .padding(.top, theme.z(2))
         }
     }
 
@@ -226,7 +287,8 @@ public struct SecondOpinionCardView: View {
                 fullText: "VERDICT: MIXED\nSUMMARY: The direction works, though error propagation and cleanup on task cancellation need explicit coverage.\nDETAILS:\nAdd a detached cleanup step and verify with PreviewEngine."
             ),
             onRetry: {},
-            onDismiss: {}
+            onDismiss: {},
+            onUseModel: { _ in }
         )
         SecondOpinionCardView(
             opinion: SecondOpinion(

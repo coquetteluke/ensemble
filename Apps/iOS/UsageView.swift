@@ -125,6 +125,7 @@ private struct UsageTotalTile: View {
                 .font(RemoteTheme.font(size: 12, relativeTo: .caption).monospacedDigit())
                 .foregroundStyle(RemoteTheme.tertiaryText)
                 .lineLimit(1)
+                .minimumScaleFactor(0.75)
         }
         .remoteCard()
     }

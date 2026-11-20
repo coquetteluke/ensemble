@@ -51,6 +51,18 @@ struct ConversationView: View {
         RoomsController.live ?? AgentToolsCenter.shared.rooms
     }
 
+    private var retryLastMessage: (() -> Void)? {
+        guard !session.isWorking else { return nil }
+        guard let text = session.items.reversed().compactMap({ item -> String? in
+            guard case .user(_, let text, _) = item else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : text
+        }).first else { return nil }
+        return {
+            Task { await store.send(text, to: session.id) }
+        }
+    }
+
     private var enrichedTranscriptActions: TranscriptActions {
         var updated = parentActions
         let session = self.session
@@ -91,7 +103,15 @@ struct ConversationView: View {
             if session.isSubagent, let parentID = session.info.parentID {
                 SubagentBanner(store: store, parentID: parentID, window: window)
             }
-            TranscriptList(items: session.items, resolutions: session.resolutions, agents: store.agents)
+            TranscriptList(
+                items: session.items,
+                resolutions: session.resolutions,
+                agents: store.agents,
+                onRetry: retryLastMessage,
+                onContinueWithModel: { ref in
+                    Task { _ = await store.changeModel(ref, for: session.id) }
+                }
+            )
             ProposalCardsHost(session: session)
             if let todos = TodoParser.latest(in: session.items), !todos.isEmpty,
                session.isWorking || todos.contains(where: { $0.status == .pending || $0.status == .inProgress }) {

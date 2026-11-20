@@ -15,6 +15,11 @@ struct ChatView: View {
     @State private var showMembers = false
     @State private var showModelPicker = false
     @State private var showDiffSheet = false
+    @State private var showJumpToLatest = false
+    @State private var copiedTranscript = false
+    @State private var sendHaptic = 0
+    @State private var stopPauseHaptic = 0
+    @State private var modelSwitchHaptic = 0
     /// Where the reader was when this view appeared (nil: the end).
     @State private var startAnchor: String??
     @FocusState private var composerFocused: Bool
@@ -33,9 +38,21 @@ struct ChatView: View {
     private var activeModelID: String? { transcript?.modelID ?? summary?.modelID }
     private var activeModelName: String? { client.modelName(providerID: activeProviderID, modelID: activeModelID) }
     private var pendingModelName: String? { transcript?.pendingModelName ?? summary?.pendingModelName }
+    private var sessionDirectory: String? { summary?.directory ?? room?.directory }
+    private var sessionFolderName: String? { sessionDirectory.map(RemoteFormat.folderName) }
     private var hasHistory: Bool { !(transcript?.items.isEmpty ?? true) }
     private var agents: [UUID: RemoteAgent] {
         Dictionary((transcript?.agents ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+    private var agentSpecs: [UUID: AgentSpec] {
+        agents.mapValues { agent in
+            AgentSpec(
+                id: agent.id,
+                name: agent.name,
+                model: ModelRef(string: agent.model) ?? ModelRef(providerID: "remote", id: agent.model),
+                colorHex: agent.colorHex
+            )
+        }
     }
 
     // Kept in RemoteAppModel so drafts, addressees, and scroll position survive Duo fold/unfold transitions.
@@ -76,28 +93,48 @@ struct ChatView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if let transcript {
-                        ForEach(transcript.items) { item in
-                            TranscriptRow(
-                                item: item,
-                                agents: agents,
-                                client: client,
-                                secondOpinions: transcript.secondOpinions,
-                                availableModels: room == nil ? client.availableModels : [],
-                                currentModelID: activeModelID,
-                                onRequestSecondOpinion: room == nil ? { itemID, replyText, option in
-                                    act {
-                                        try await client.requestSecondOpinion(
-                                            sessionID: sessionID,
-                                            itemID: itemID,
-                                            replyText: replyText,
-                                            providerID: option.providerID,
-                                            modelID: option.modelID
-                                        )
-                                    }
-                                } : nil,
-                                onError: { actionError = $0 }
+                        if transcript.items.isEmpty && decision == nil && activity != .working {
+                            EmptySessionView(
+                                folderName: sessionFolderName,
+                                modelName: room == nil ? (pendingModelName ?? activeModelName) : room?.mode.label,
+                                permissionMode: currentMode
                             )
-                            .id(item.id)
+                        } else {
+                            let attribution = modelLabels(in: transcript.items)
+                            let retryTarget = retryableError(in: transcript.items)
+                            ForEach(transcript.items) { item in
+                                TranscriptRow(
+                                    item: item,
+                                    agents: agents,
+                                    client: client,
+                                    modelLabel: attribution[item.id],
+                                    secondOpinions: transcript.secondOpinions,
+                                    availableModels: room == nil ? client.availableModels : [],
+                                    currentModelID: activeModelID,
+                                    onRequestSecondOpinion: room == nil ? { itemID, replyText, option in
+                                        act {
+                                            try await client.requestSecondOpinion(
+                                                sessionID: sessionID,
+                                                itemID: itemID,
+                                                replyText: replyText,
+                                                providerID: option.providerID,
+                                                modelID: option.modelID
+                                            )
+                                        }
+                                    } : nil,
+                                    retrySecondOpinion: room == nil ? { opinion, replyText in
+                                        retryOpinionAction(for: opinion, replyText: replyText)
+                                    } : nil,
+                                    continueWithOpinionModel: room == nil ? { opinion in
+                                        continueWithOpinionAction(for: opinion)
+                                    } : nil,
+                                    onRetryError: retryTarget?.errorID == item.id ? {
+                                        if let text = retryTarget?.text { retrySend(text) }
+                                    } : nil,
+                                    onError: { actionError = $0 }
+                                )
+                                .id(item.id)
+                            }
                         }
                         if let room, let decision {
                             RoomDecisionCard(
@@ -119,11 +156,19 @@ struct ChatView: View {
                             .id(Self.workingID)
                         }
                     } else if let loadError {
-                        Label(loadError, systemImage: "exclamationmark.triangle")
-                            .font(RemoteTheme.font(size: 13.5, relativeTo: .footnote))
-                            .foregroundStyle(RemoteTheme.danger)
-                            .padding(.top, 48)
-                            .frame(maxWidth: .infinity)
+                        VStack(spacing: 12) {
+                            Label(loadError, systemImage: "exclamationmark.triangle")
+                                .font(RemoteTheme.font(size: 13.5, relativeTo: .footnote))
+                                .foregroundStyle(RemoteTheme.danger)
+                                .multilineTextAlignment(.center)
+                            Button("Try again") {
+                                Task { await open() }
+                            }
+                            .buttonStyle(RemoteSecondaryButtonStyle())
+                            .disabled(!client.state.isConnected)
+                        }
+                        .padding(.top, 48)
+                        .frame(maxWidth: .infinity)
                     } else {
                         ProgressView()
                             .frame(maxWidth: .infinity)
@@ -139,8 +184,46 @@ struct ChatView: View {
                 .frame(maxWidth: .infinity)
             }
             .scrollPosition(id: scrollAnchor, anchor: .bottom)
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentSize.height - geometry.visibleRect.maxY > 120
+            } action: { _, away in
+                withAnimation(.easeOut(duration: 0.16)) {
+                    showJumpToLatest = away
+                }
+            }
+            .refreshable {
+                await open()
+            }
             .remoteScreen()
             .scrollDismissesKeyboard(.interactively)
+            .overlay(alignment: .bottom) {
+                if showJumpToLatest && hasHistory {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            proxy.scrollTo(Self.bottomID, anchor: .bottom)
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.down")
+                                .font(RemoteTheme.font(size: 12, weight: .semibold, relativeTo: .caption))
+                            Text("Jump to latest")
+                                .font(RemoteTheme.font(size: 12.5, weight: .semibold, relativeTo: .caption))
+                        }
+                        .foregroundStyle(RemoteTheme.primaryText)
+                        .padding(.horizontal, 13)
+                        .frame(minHeight: 36)
+                        .background(RemoteTheme.cardRaised, in: Capsule())
+                        .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 1))
+                        .shadow(color: .black.opacity(0.22), radius: 8, y: 3)
+                        .frame(minHeight: RemoteTheme.minTapTarget)
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, 8)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .accessibilityLabel("Jump to latest")
+                }
+            }
             .onChange(of: transcript?.items.last) { old, _ in
                 let anchor = model.scrollAnchors[sessionID]
                 let atEnd = anchor == nil || anchor == Self.bottomID || anchor == Self.workingID
@@ -197,10 +280,22 @@ struct ChatView: View {
                 onTapModel: {
                     showModelPicker = true
                 },
+                onClearPendingModel: (activeProviderID != nil && activeModelID != nil) ? {
+                    guard let providerID = activeProviderID, let modelID = activeModelID else { return }
+                    modelSwitchHaptic += 1
+                    act {
+                        try await client.changeModel(
+                            sessionID: sessionID,
+                            providerID: providerID,
+                            modelID: modelID
+                        )
+                    }
+                } : nil,
                 onControlRoom: { action in
                     if action == .stop { confirmStop = true } else { control(action) }
                 },
                 onInterrupt: {
+                    stopPauseHaptic += 1
                     act { try await client.interrupt(target) }
                 },
                 onSend: send
@@ -220,6 +315,7 @@ struct ChatView: View {
                 pendingModelName: pendingModelName,
                 hasHistory: hasHistory
             ) { option in
+                modelSwitchHaptic += 1
                 act {
                     try await client.changeModel(
                         sessionID: sessionID,
@@ -239,6 +335,9 @@ struct ChatView: View {
         .toolbar { toolbar }
         .task(id: "\(sessionID)-\(client.state.isConnected)") { await open() }
         .actionErrorAlert($actionError)
+        .sensoryFeedback(.impact(weight: .light), trigger: sendHaptic)
+        .sensoryFeedback(.impact(weight: .medium), trigger: stopPauseHaptic)
+        .sensoryFeedback(.selection, trigger: modelSwitchHaptic)
         .confirmationDialog("Stop \(room?.title ?? "the room")?", isPresented: $confirmStop, titleVisibility: .visible) {
             Button("Stop the room", role: .destructive) { control(.stop) }
         } message: {
@@ -283,43 +382,177 @@ struct ChatView: View {
             .disabled(!client.state.isConnected)
             .accessibilityLabel("Changes")
 
-            if let room, !room.members.isEmpty || !room.agents.isEmpty {
-                Button {
-                    showMembers = true
-                } label: {
-                    Image(systemName: "person.2")
-                        .font(RemoteTheme.font(size: 14, weight: .medium, relativeTo: .body))
-                        .foregroundStyle(RemoteTheme.secondaryText)
-                        .frame(minWidth: 36, minHeight: 36)
-                }
-                .accessibilityLabel("Members")
-            }
-
-            if activity == .working {
-                Button {
-                    if room != nil {
-                        confirmStop = true
-                    } else {
-                        act { try await client.interrupt(target) }
+            Menu {
+                if let room, !room.members.isEmpty || !room.agents.isEmpty {
+                    Button {
+                        showMembers = true
+                    } label: {
+                        Label("Members", systemImage: "person.2")
                     }
-                } label: {
-                    Label("Stop", systemImage: "stop.circle.fill")
-                        .font(RemoteTheme.font(size: 14, weight: .semibold, relativeTo: .subheadline))
-                        .foregroundStyle(RemoteTheme.danger)
                 }
-                .accessibilityLabel(room == nil ? "Stop" : "Stop room")
+                if let transcript, !transcript.items.isEmpty {
+                    Button {
+                        copyTranscriptMarkdown(transcript)
+                    } label: {
+                        Label(
+                            copiedTranscript ? "Copied Markdown" : "Copy as Markdown",
+                            systemImage: copiedTranscript ? "checkmark" : "doc.on.doc"
+                        )
+                    }
+                    ShareLink(
+                        item: exportedMarkdown(for: transcript),
+                        subject: Text(displayTitle)
+                    ) {
+                        Label("Share transcript", systemImage: "square.and.arrow.up")
+                    }
+                }
+                Button {
+                    Task { await open() }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .disabled(!client.state.isConnected)
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(RemoteTheme.font(size: 15, weight: .medium, relativeTo: .body))
+                    .foregroundStyle(RemoteTheme.secondaryText)
+                    .frame(minWidth: 36, minHeight: 36)
+            }
+            .accessibilityLabel("More actions")
+        }
+    }
+
+    private func exportedMarkdown(for transcript: RemoteTranscript) -> String {
+        TranscriptExport.markdown(
+            title: displayTitle,
+            directory: sessionDirectory,
+            modelName: activeModelName,
+            items: transcript.items,
+            agents: agentSpecs
+        )
+    }
+
+    private func copyTranscriptMarkdown(_ transcript: RemoteTranscript) {
+        copyToPasteboard(exportedMarkdown(for: transcript))
+        modelSwitchHaptic += 1
+        copiedTranscript = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            copiedTranscript = false
+        }
+    }
+
+    private func modelLabels(in items: [TranscriptItem]) -> [String: String] {
+        var result: [String: String] = [:]
+        var pendingModel: String?
+        for item in items {
+            switch item {
+            case .notice(_, let text):
+                if let switched = TranscriptExport.switchedModelName(fromNotice: text) {
+                    pendingModel = switched
+                }
+            case .agentText(let id, _, let agentID, _):
+                if agentID == nil, let model = pendingModel {
+                    result[id] = model
+                }
+                pendingModel = nil
+            default:
+                break
+            }
+        }
+        return result
+    }
+
+    private func retryableError(in items: [TranscriptItem]) -> (errorID: String, text: String)? {
+        guard client.state.isConnected, !sending, activity != .working else { return nil }
+        var latestErrorIndex: Int?
+        for i in items.indices.reversed() {
+            switch items[i] {
+            case .error:
+                latestErrorIndex = i
+            case .user, .agentText:
+                return nil
+            default:
+                continue
+            }
+            if latestErrorIndex != nil { break }
+        }
+        guard let errorIndex = latestErrorIndex else { return nil }
+        for item in items[..<errorIndex].reversed() {
+            if case .user(_, let text, _) = item {
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return (items[errorIndex].id, trimmed)
+                }
+            }
+        }
+        return nil
+    }
+
+    private func matchingModelOption(for opinion: RemoteSecondOpinion) -> RemoteModelOption? {
+        if let exact = client.availableModels.first(where: {
+            $0.name.caseInsensitiveCompare(opinion.modelName) == .orderedSame
+                && (opinion.makerName.isEmpty || $0.makerName.caseInsensitiveCompare(opinion.makerName) == .orderedSame)
+        }) {
+            return exact
+        }
+        if let byName = client.availableModels.first(where: {
+            $0.name.caseInsensitiveCompare(opinion.modelName) == .orderedSame
+        }) {
+            return byName
+        }
+        return client.availableModels.first(where: {
+            $0.modelID.caseInsensitiveCompare(opinion.modelName) == .orderedSame
+                || $0.name.localizedCaseInsensitiveContains(opinion.modelName)
+        })
+    }
+
+    private func retryOpinionAction(for opinion: RemoteSecondOpinion, replyText: String) -> (() -> Void)? {
+        guard opinion.status == "failed",
+              client.state.isConnected,
+              let option = matchingModelOption(for: opinion) else { return nil }
+        return {
+            act {
+                try await client.requestSecondOpinion(
+                    sessionID: sessionID,
+                    itemID: opinion.itemID,
+                    replyText: replyText,
+                    providerID: option.providerID,
+                    modelID: option.modelID
+                )
+            }
+        }
+    }
+
+    private func continueWithOpinionAction(for opinion: RemoteSecondOpinion) -> (() -> Void)? {
+        guard opinion.status == "ready",
+              client.state.isConnected,
+              let option = matchingModelOption(for: opinion) else { return nil }
+        if option.providerID == activeProviderID && option.modelID == activeModelID && pendingModelName == nil {
+            return nil
+        }
+        return {
+            modelSwitchHaptic += 1
+            act {
+                try await client.changeModel(
+                    sessionID: sessionID,
+                    providerID: option.providerID,
+                    modelID: option.modelID
+                )
             }
         }
     }
 
     private func control(_ action: RemoteRoomAction) {
         guard let id = roomID else { return }
+        if action == .pause || action == .stop { stopPauseHaptic += 1 }
         act { try await client.controlRoom(id, action: action) }
     }
 
     private func send() {
         let text = (model.drafts[sessionID] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        sendHaptic += 1
         sending = true
         let to = target
         let agent = model.addressees[sessionID]
@@ -334,9 +567,78 @@ struct ChatView: View {
         }
     }
 
+    private func retrySend(_ text: String) {
+        guard !text.isEmpty else { return }
+        sendHaptic += 1
+        sending = true
+        let to = target
+        let agent = model.addressees[sessionID]
+        Task {
+            do {
+                try await client.send(text, to: to, agent: agent)
+            } catch {
+                actionError = error.localizedDescription
+            }
+            sending = false
+        }
+    }
+
     private func act(_ work: @escaping () async throws -> Void) {
         Task {
             do { try await work() } catch { actionError = error.localizedDescription }
+        }
+    }
+}
+
+// MARK: - Empty Session View
+
+private struct EmptySessionView: View {
+    let folderName: String?
+    let modelName: String?
+    let permissionMode: PermissionMode?
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ConstellationSpinner(size: 36, frozenAt: 1.1)
+            if let folderName, !folderName.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder")
+                        .font(RemoteTheme.font(size: 13, weight: .medium, relativeTo: .footnote))
+                        .foregroundStyle(RemoteTheme.secondaryText)
+                    Text(folderName)
+                        .font(RemoteTheme.font(size: 15, weight: .semibold, relativeTo: .subheadline))
+                        .foregroundStyle(RemoteTheme.primaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            if modelName != nil || permissionMode != nil {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) {
+                        metadataChips
+                    }
+                    VStack(spacing: 8) {
+                        metadataChips
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 72)
+        .padding(.bottom, 24)
+    }
+
+    @ViewBuilder
+    private var metadataChips: some View {
+        if let modelName, !modelName.isEmpty {
+            Chip(text: modelName, color: RemoteTheme.accent, symbol: "cpu")
+        }
+        if let permissionMode {
+            Chip(
+                text: permissionMode.label,
+                color: permissionMode.isDangerous ? RemoteTheme.danger : RemoteTheme.secondaryText,
+                symbol: permissionMode.symbolName
+            )
         }
     }
 }
@@ -357,6 +659,7 @@ private struct RemoteComposerCard: View {
     let connected: Bool
     let onSelectMode: (PermissionMode) -> Void
     let onTapModel: () -> Void
+    let onClearPendingModel: (() -> Void)?
     let onControlRoom: (RemoteRoomAction) -> Void
     let onInterrupt: () -> Void
     let onSend: () -> Void
@@ -388,9 +691,23 @@ private struct RemoteComposerCard: View {
                             .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption))
                             .foregroundStyle(RemoteTheme.primaryText)
                             .lineLimit(1)
+                            .truncationMode(.tail)
+                        if let onClearPendingModel {
+                            Button(action: onClearPendingModel) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(RemoteTheme.font(size: 14, relativeTo: .caption))
+                                    .foregroundStyle(RemoteTheme.secondaryText)
+                                    .frame(minWidth: 28, minHeight: 28)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!connected)
+                            .accessibilityLabel("Cancel model switch")
+                        }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
+                    .padding(.leading, 10)
+                    .padding(.trailing, onClearPendingModel == nil ? 10 : 4)
+                    .padding(.vertical, onClearPendingModel == nil ? 5 : 2)
                     .background(RemoteTheme.accent.opacity(0.12), in: Capsule())
                     .overlay(Capsule().strokeBorder(RemoteTheme.accent.opacity(0.32), lineWidth: 0.75))
                 }
@@ -403,32 +720,36 @@ private struct RemoteComposerCard: View {
                     .padding(.horizontal, 4)
 
                 HStack(spacing: 8) {
-                    if let room {
-                        modeBadge(room.permissionMode)
-                        if room.state == .paused {
-                            roomActionPill("Resume", systemImage: "play.fill", tint: RemoteTheme.accent) {
-                                onControlRoom(.resume)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            if let room {
+                                modeBadge(room.permissionMode)
+                                if room.state == .paused {
+                                    roomActionPill("Resume", systemImage: "play.fill", tint: RemoteTheme.accent) {
+                                        onControlRoom(.resume)
+                                    }
+                                } else if room.state == .running {
+                                    roomActionPill("Pause", systemImage: "pause.fill", tint: RemoteTheme.secondaryText) {
+                                        onControlRoom(.pause)
+                                    }
+                                }
+                                if room.isRunActive {
+                                    roomActionPill("Stop", systemImage: "stop.fill", tint: RemoteTheme.danger) {
+                                        onControlRoom(.stop)
+                                    }
+                                }
+                            } else {
+                                if let mode {
+                                    PermissionModeMenuCapsule(current: mode, onSelect: onSelectMode)
+                                }
+                                if canSwitchModel {
+                                    modelPickerCapsule
+                                }
                             }
-                        } else if room.state == .running {
-                            roomActionPill("Pause", systemImage: "pause.fill", tint: RemoteTheme.secondaryText) {
-                                onControlRoom(.pause)
-                            }
                         }
-                        if room.isRunActive {
-                            roomActionPill("Stop", systemImage: "stop.fill", tint: RemoteTheme.danger) {
-                                onControlRoom(.stop)
-                            }
-                        }
-                    } else {
-                        if let mode {
-                            PermissionModeMenuCapsule(current: mode, onSelect: onSelectMode)
-                        }
-                        if canSwitchModel {
-                            modelPickerCapsule
-                        }
+                        .padding(.vertical, 1)
                     }
-
-                    Spacer(minLength: 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                     actionCircleButton
                 }
@@ -614,7 +935,8 @@ private struct AddresseeChipStrip: View {
                 Capsule()
                     .strokeBorder(isSelected ? color.opacity(0.6) : RemoteTheme.border, lineWidth: 0.75)
             )
-            .contentShape(Capsule())
+            .frame(minHeight: RemoteTheme.minTapTarget)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

@@ -14,6 +14,7 @@ struct PairingView: View {
     @State private var pasted = ""
     @State private var error: String?
     @State private var cameraDenied = false
+    @State private var scanSuccessHaptic = 0
 
     private var scannerAvailable: Bool { DataScannerViewController.isSupported }
 
@@ -25,6 +26,7 @@ struct PairingView: View {
                 if scanning {
                     PairingScannerCard(
                         onCode: { code in
+                            scanSuccessHaptic += 1
                             scanning = false
                             submit(code)
                         },
@@ -99,6 +101,7 @@ struct PairingView: View {
             )
             .remoteThemeEnvironment()
         }
+        .sensoryFeedback(.success, trigger: scanSuccessHaptic)
     }
 
     private func startScanning() async {
@@ -235,7 +238,8 @@ private struct PastePairingSheet: View {
             }
             .onAppear { focused = true }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }
 

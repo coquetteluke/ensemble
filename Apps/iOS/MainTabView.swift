@@ -68,6 +68,7 @@ private struct CompactChatDestination: View {
 
     var body: some View {
         ChatView(client: client, sessionID: route.sessionID, title: route.title)
+            .id(route.sessionID)
             .toolbar(.hidden, for: .tabBar)
     }
 }
@@ -169,16 +170,17 @@ private struct SplitSidebarView: View {
             }
 
             Group {
+                let activeSessionID = (model.tab == .hub || model.tab == .rooms) ? model.selectedChat?.sessionID : nil
                 if model.listTab == .rooms {
                     RoomsListContent(
                         client: client,
-                        selectedSessionID: model.selectedChat?.sessionID,
+                        selectedSessionID: activeSessionID,
                         open: { onOpenRoute($0, .rooms) }
                     )
                 } else {
                     HubBoardContent(
                         client: client,
-                        selectedSessionID: model.selectedChat?.sessionID,
+                        selectedSessionID: activeSessionID,
                         open: { onOpenRoute($0, .hub) }
                     )
                 }
@@ -231,6 +233,11 @@ private struct SplitSidebarHeader: View {
                 .buttonStyle(.plain)
                 .disabled(!client.state.isConnected || client.availableModels.isEmpty)
                 .accessibilityLabel(model.listTab == .rooms ? "New room" : "New session")
+                .accessibilityHint(
+                    !client.state.isConnected
+                        ? "Connect to your Mac first"
+                        : (client.availableModels.isEmpty ? "Loading available models from your Mac" : "")
+                )
             }
 
             HStack(spacing: 4) {

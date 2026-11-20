@@ -15,6 +15,7 @@ struct ContextPanelView: View {
     var backgroundNow: Date?
 
     @Environment(\.theme) private var theme
+    @Environment(\.openSettings) private var openSettings
     @State private var showAllOutputs = false
     @State private var connectorsExpanded: Bool?
     @State private var showAllConnectors = false
@@ -68,13 +69,6 @@ struct ContextPanelView: View {
                 Text("This computer")
                     .foregroundStyle(theme.textPrimary)
                     .lineLimit(1)
-            } trailing: {
-                Button("Save") {}
-                    .buttonStyle(.plain)
-                    .underline()
-                    .foregroundStyle(theme.textPrimary)
-                    .fixedSize()
-                    .help("Save this environment")
             }
             .help("Local session, \(Self.hostName)")
 
@@ -404,7 +398,10 @@ struct ContextPanelView: View {
             Spacer(minLength: theme.z(8))
             switch connector.state {
             case .needsAuth:
-                Button("Authenticate") {}
+                Button("Authenticate") {
+                    CustomizationsFocus.shared.show(folder: session?.directory)
+                    openSettings()
+                }
                     .buttonStyle(.plain)
                     .font(theme.font(size: 12.5, weight: .medium))
                     .foregroundStyle(theme.warning)

@@ -167,6 +167,8 @@ struct RoomPromptRow: View {
     var open: () -> Void
     var onError: (String) -> Void
     @State private var busy = false
+    @State private var allowHaptic = 0
+    @State private var rejectHaptic = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -207,6 +209,8 @@ struct RoomPromptRow: View {
                 .buttonStyle(RemoteSecondaryButtonStyle())
             }
         }
+        .sensoryFeedback(.success, trigger: allowHaptic)
+        .sensoryFeedback(.warning, trigger: rejectHaptic)
     }
 
     private var summary: String {
@@ -216,6 +220,7 @@ struct RoomPromptRow: View {
     }
 
     private func reply(_ decision: PermissionDecision) {
+        if decision == .reject { rejectHaptic += 1 } else { allowHaptic += 1 }
         busy = true
         Task {
             do { try await client.reply(to: request, decision: decision) } catch { onError(error.localizedDescription) }
@@ -272,7 +277,8 @@ struct RoomDecisionCard: View {
                     }
                     .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
                     .foregroundStyle(RemoteTheme.secondaryText)
-                    .frame(minHeight: 36)
+                    .frame(minHeight: RemoteTheme.minTapTarget)
+                    .contentShape(Rectangle())
                 }
             }
 
@@ -427,6 +433,7 @@ struct RoomControls: View {
     let client: RemoteClient
     var onError: (String) -> Void
     @State private var confirmStop = false
+    @State private var stopPauseHaptic = 0
 
     var body: some View {
         if room.state == .running || room.state == .paused || room.isRunActive {
@@ -453,10 +460,12 @@ struct RoomControls: View {
             } message: {
                 Text("Ends the run. The sessions and the board stay, and a new message starts another run.")
             }
+            .sensoryFeedback(.impact(weight: .medium), trigger: stopPauseHaptic)
         }
     }
 
     private func control(_ action: RemoteRoomAction) {
+        if action == .pause || action == .stop { stopPauseHaptic += 1 }
         Task {
             do { try await client.controlRoom(room.id, action: action) } catch { onError(error.localizedDescription) }
         }

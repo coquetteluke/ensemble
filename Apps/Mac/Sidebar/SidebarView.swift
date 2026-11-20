@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import EnsembleKit
 
 /// Left sidebar: New session, Session Hub, Scheduled, search, pinned sessions, rooms, the session list (grouped by
@@ -262,6 +263,22 @@ struct SidebarView: View {
             Button("Mark as completed") { attention.setCompleted(id, true) }
         }
         Divider()
+        Button("Copy as Markdown") {
+            let id = session.id
+            Task {
+                if !session.transcriptLoaded { await store.loadSession(id) }
+                guard let current = store.session(id) else { return }
+                let markdown = TranscriptExport.markdown(
+                    title: current.title,
+                    directory: current.directory,
+                    modelName: store.modelName(current.info.model),
+                    items: current.items,
+                    agents: store.agents
+                )
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(markdown, forType: .string)
+            }
+        }
         Button("Reveal in Finder") {
             NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: session.directory)
         }
@@ -435,7 +452,7 @@ struct SessionRow: View {
                 trailing
                     .fixedSize()
             }
-            .padding(.leading, theme.z(30))
+            .padding(.leading, theme.z(35))
             .padding(.trailing, theme.z(10))
             .frame(height: theme.z(30))
         }

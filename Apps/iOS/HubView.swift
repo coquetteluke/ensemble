@@ -9,6 +9,12 @@ struct HubView: View {
 
     @State private var showNewSession = false
 
+    private var newSessionAccessibilityHint: String {
+        if !client.state.isConnected { return "Connect to your Mac to start a session" }
+        if client.availableModels.isEmpty { return "Loading available models from your Mac" }
+        return "Start a new session"
+    }
+
     var body: some View {
         HubBoardContent(client: client, selectedSessionID: selectedSessionID, open: open)
             .navigationTitle("Session Hub")
@@ -25,6 +31,7 @@ struct HubView: View {
                     }
                     .disabled(!client.state.isConnected || client.availableModels.isEmpty)
                     .accessibilityLabel("New session")
+                    .accessibilityHint(newSessionAccessibilityHint)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     StatusPill(client: client, inToolbar: true)
@@ -132,7 +139,7 @@ struct HubConnectionBanner: View {
             Spacer(minLength: 8)
 
             Button("Reconnect") { client.reconnectNow() }
-                .buttonStyle(RemoteSecondaryButtonStyle(minHeight: 38))
+                .buttonStyle(RemoteSecondaryButtonStyle())
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -367,11 +374,13 @@ struct HubRowHeader: View {
                         Image(systemName: session.roomID != nil ? "person.2.fill" : "folder")
                             .font(RemoteTheme.font(size: 10.5, weight: .medium, relativeTo: .caption2))
                         Text(RemoteFormat.folderName(session.directory))
+                            .lineLimit(1)
                     }
                     .foregroundStyle(RemoteTheme.secondaryText)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2.5)
                     .background(RemoteTheme.inlineCodeBackground, in: Capsule())
+                    .layoutPriority(1)
 
                     if !session.agentNames.isEmpty {
                         Text(session.agentNames.joined(separator: ", "))
@@ -436,41 +445,53 @@ private struct HubQuickActions: View {
     let onAct: (@escaping () async throws -> Void) -> Void
     let onError: (String) -> Void
 
-    var body: some View {
-        if let roomID = session.roomID, let room = client.room(id: roomID) {
-            HubRoomQuickActions(room: room, client: client, open: open, onAct: onAct, onError: onError)
-        } else if let ask = client.pendingPermissions(for: session.id).first, ask.isInteraction {
-            HubInteractionQuickActions(ask: ask, session: session, client: client, open: open, onAct: onAct)
-        } else if let ask = client.pendingPermissions(for: session.id).first, PermissionDisplay.fitsQuickApproval(ask) {
-            VStack(alignment: .leading, spacing: 10) {
-                // Never truncated: everything a one-tap approval covers is on screen.
-                RemoteCommandBox(text: ask.title)
-                HStack(spacing: 10) {
-                    Button("Allow once") {
-                        onAct { try await client.reply(to: ask, decision: .once) }
-                    }
-                    .buttonStyle(RemotePrimaryButtonStyle())
+    @State private var allowHaptic = 0
+    @State private var rejectHaptic = 0
+    @State private var stopHaptic = 0
 
-                    Button("Reject", role: .destructive) {
-                        onAct { try await client.reply(to: ask, decision: .reject) }
-                    }
-                    .buttonStyle(
-                        RemoteSecondaryButtonStyle(
-                            foreground: RemoteTheme.danger,
-                            border: RemoteTheme.danger.opacity(0.4)
+    var body: some View {
+        Group {
+            if let roomID = session.roomID, let room = client.room(id: roomID) {
+                HubRoomQuickActions(room: room, client: client, open: open, onAct: onAct, onError: onError)
+            } else if let ask = client.pendingPermissions(for: session.id).first, ask.isInteraction {
+                HubInteractionQuickActions(ask: ask, session: session, client: client, open: open, onAct: onAct)
+            } else if let ask = client.pendingPermissions(for: session.id).first, PermissionDisplay.fitsQuickApproval(ask) {
+                VStack(alignment: .leading, spacing: 10) {
+                    // Never truncated: everything a one-tap approval covers is on screen.
+                    RemoteCommandBox(text: ask.title)
+                    HStack(spacing: 10) {
+                        Button("Allow once") {
+                            allowHaptic += 1
+                            onAct { try await client.reply(to: ask, decision: .once) }
+                        }
+                        .buttonStyle(RemotePrimaryButtonStyle())
+
+                        Button("Reject", role: .destructive) {
+                            rejectHaptic += 1
+                            onAct { try await client.reply(to: ask, decision: .reject) }
+                        }
+                        .buttonStyle(
+                            RemoteSecondaryButtonStyle(
+                                foreground: RemoteTheme.danger,
+                                border: RemoteTheme.danger.opacity(0.4)
+                            )
                         )
-                    )
+                    }
                 }
+            } else if bucket == .running {
+                let target: RemoteTarget = session.roomID.map { .room($0) } ?? .session(session.id)
+                Button {
+                    stopHaptic += 1
+                    onAct { try await client.interrupt(target) }
+                } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                }
+                .buttonStyle(RemoteSecondaryButtonStyle())
             }
-        } else if bucket == .running {
-            let target: RemoteTarget = session.roomID.map { .room($0) } ?? .session(session.id)
-            Button {
-                onAct { try await client.interrupt(target) }
-            } label: {
-                Label("Stop", systemImage: "stop.fill")
-            }
-            .buttonStyle(RemoteSecondaryButtonStyle())
         }
+        .sensoryFeedback(.success, trigger: allowHaptic)
+        .sensoryFeedback(.warning, trigger: rejectHaptic)
+        .sensoryFeedback(.impact(weight: .medium), trigger: stopHaptic)
     }
 }
 
@@ -481,27 +502,33 @@ private struct HubRoomQuickActions: View {
     let onAct: (@escaping () async throws -> Void) -> Void
     let onError: (String) -> Void
 
+    @State private var pauseHaptic = 0
+
     var body: some View {
         let route = ChatRoute(sessionID: room.sessionID, title: room.title)
-        if let decision = client.openDecision(inRoom: room.id), decision.needsYou {
-            Button(RoomText.openLabel(decision)) { open(route) }
-                .buttonStyle(RemotePrimaryButtonStyle())
-        } else if let request = client.pendingPermissions(inRoom: room.id).first {
-            RoomPromptRow(
-                request: request,
-                agent: room.agents.first { $0.sessionID == request.sessionID },
-                client: client,
-                open: { open(route) },
-                onError: onError
-            )
-        } else if room.state == .running {
-            Button {
-                onAct { try await client.controlRoom(room.id, action: .pause) }
-            } label: {
-                Label("Pause", systemImage: "pause.fill")
+        Group {
+            if let decision = client.openDecision(inRoom: room.id), decision.needsYou {
+                Button(RoomText.openLabel(decision)) { open(route) }
+                    .buttonStyle(RemotePrimaryButtonStyle())
+            } else if let request = client.pendingPermissions(inRoom: room.id).first {
+                RoomPromptRow(
+                    request: request,
+                    agent: room.agents.first { $0.sessionID == request.sessionID },
+                    client: client,
+                    open: { open(route) },
+                    onError: onError
+                )
+            } else if room.state == .running {
+                Button {
+                    pauseHaptic += 1
+                    onAct { try await client.controlRoom(room.id, action: .pause) }
+                } label: {
+                    Label("Pause", systemImage: "pause.fill")
+                }
+                .buttonStyle(RemoteSecondaryButtonStyle())
             }
-            .buttonStyle(RemoteSecondaryButtonStyle())
         }
+        .sensoryFeedback(.impact(weight: .medium), trigger: pauseHaptic)
     }
 }
 
@@ -512,44 +539,54 @@ private struct HubInteractionQuickActions: View {
     let open: (ChatRoute) -> Void
     let onAct: (@escaping () async throws -> Void) -> Void
 
+    @State private var allowHaptic = 0
+    @State private var rejectHaptic = 0
+
     var body: some View {
-        if let plan = ask.plan {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(plan.title)
-                    .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
-                    .foregroundStyle(RemoteTheme.primaryText)
-                    .lineLimit(3)
-                PlanButtons(plan: plan) { decision in
-                    onAct { try await client.respond(to: ask, decision: decision) }
-                }
-            }
-        } else if let questions = ask.questions, questions.count == 1, let question = questions.first,
-                  !question.multiSelect, !question.options.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(question.text)
-                    .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
-                    .foregroundStyle(RemoteTheme.primaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                FlowButtons(labels: question.options.map(\.label)) { label in
-                    onAct {
-                        try await client.answer(ask, answers: [AgentQuestionAnswer(questionID: question.id, selected: [label])])
+        Group {
+            if let plan = ask.plan {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(plan.title)
+                        .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
+                        .foregroundStyle(RemoteTheme.primaryText)
+                        .lineLimit(3)
+                    PlanButtons(plan: plan) { decision in
+                        if case .proceed = decision { allowHaptic += 1 } else { rejectHaptic += 1 }
+                        onAct { try await client.respond(to: ask, decision: decision) }
                     }
                 }
-                if question.allowsOther {
-                    Button("Type an answer") { open(ChatRoute(sessionID: session.id, title: session.title)) }
-                        .font(RemoteTheme.font(size: 13, weight: .medium, relativeTo: .footnote))
-                        .foregroundStyle(RemoteTheme.secondaryText)
-                        .frame(minHeight: 36)
+            } else if let questions = ask.questions, questions.count == 1, let question = questions.first,
+                      !question.multiSelect, !question.options.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(question.text)
+                        .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
+                        .foregroundStyle(RemoteTheme.primaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    FlowButtons(labels: question.options.map(\.label)) { label in
+                        allowHaptic += 1
+                        onAct {
+                            try await client.answer(ask, answers: [AgentQuestionAnswer(questionID: question.id, selected: [label])])
+                        }
+                    }
+                    if question.allowsOther {
+                        Button("Type an answer") { open(ChatRoute(sessionID: session.id, title: session.title)) }
+                            .font(RemoteTheme.font(size: 13, weight: .medium, relativeTo: .footnote))
+                            .foregroundStyle(RemoteTheme.secondaryText)
+                            .frame(minHeight: RemoteTheme.minTapTarget)
+                            .contentShape(Rectangle())
+                    }
                 }
+            } else {
+                Button {
+                    open(ChatRoute(sessionID: session.id, title: session.title))
+                } label: {
+                    Label("Answer", systemImage: "questionmark.bubble")
+                }
+                .buttonStyle(RemotePrimaryButtonStyle())
             }
-        } else {
-            Button {
-                open(ChatRoute(sessionID: session.id, title: session.title))
-            } label: {
-                Label("Answer", systemImage: "questionmark.bubble")
-            }
-            .buttonStyle(RemotePrimaryButtonStyle())
         }
+        .sensoryFeedback(.success, trigger: allowHaptic)
+        .sensoryFeedback(.warning, trigger: rejectHaptic)
     }
 }
 
@@ -562,7 +599,7 @@ struct FlowButtons: View {
         FlowRow(spacing: 8, lineSpacing: 8) {
             ForEach(labels, id: \.self) { label in
                 Button(label) { onTap(label) }
-                    .buttonStyle(RemoteSecondaryButtonStyle(minHeight: 40))
+                    .buttonStyle(RemoteSecondaryButtonStyle(minHeight: RemoteTheme.minTapTarget))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

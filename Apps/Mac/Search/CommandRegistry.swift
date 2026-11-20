@@ -87,10 +87,10 @@ struct AppShortcut: Hashable {
 /// Every command the app has. The order is the palette's order when nothing is typed.
 enum AppCommandID: String, CaseIterable, Identifiable {
     case newSession, newRoom, searchTranscripts, keyboardShortcuts, commandPalette, settings, customizations, pairIPhone
-    case sendMessage, stopAgent, openHub, openScheduled, archiveSession, forkSession, compactConversation, revealFolder
+    case sendMessage, stopAgent, openHub, openScheduled, promoteToRoom, archiveSession, forkSession, compactConversation, revealFolder
     case switchModel, switchMode, modeAsk, modeAcceptEdits, modeAuto, modePlan, modeBypass, changeEffort, toggleFastMode, sideQuestion, focusComposer
     case allowOnce, alwaysAllow, reject
-    case nextTranscriptView, viewNormal, viewThinking, viewVerbose
+    case nextTranscriptView, viewNormal, viewThinking, viewVerbose, copyTranscriptMarkdown
     case toggleSidebar, toggleContextPanel, toggleBrowser, closeFileViewer, zoomIn, zoomOut, actualSize
     case openInSplit, closePane, nextPane, previousPane, equalizePanes, closeSplit
     case toggleTerminal, newTerminalTab
@@ -113,6 +113,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .stopAgent: "Stop the agent"
         case .openHub: "Open Session Hub"
         case .openScheduled: "Open Scheduled"
+        case .promoteToRoom: "Add agents to a room"
         case .archiveSession: "Archive session"
         case .forkSession: "Fork session"
         case .compactConversation: "Compact conversation"
@@ -135,6 +136,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .viewNormal: "Transcript view: Normal"
         case .viewThinking: "Transcript view: Thinking"
         case .viewVerbose: "Transcript view: Verbose"
+        case .copyTranscriptMarkdown: "Copy transcript as Markdown"
         case .toggleSidebar: "Show or hide the sidebar"
         case .toggleContextPanel: "Show or hide the context panel"
         case .toggleBrowser: "Show or hide the browser"
@@ -160,11 +162,11 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         switch self {
         case .newSession, .newRoom, .settings, .customizations, .pairIPhone: .general
         case .searchTranscripts, .keyboardShortcuts, .commandPalette: .search
-        case .sendMessage, .stopAgent, .openHub, .openScheduled, .archiveSession, .forkSession, .compactConversation, .revealFolder: .sessions
+        case .sendMessage, .stopAgent, .openHub, .openScheduled, .promoteToRoom, .archiveSession, .forkSession, .compactConversation, .revealFolder: .sessions
         case .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass, .changeEffort, .toggleFastMode, .sideQuestion,
              .focusComposer: .composer
         case .allowOnce, .alwaysAllow, .reject: .permissions
-        case .nextTranscriptView, .viewNormal, .viewThinking, .viewVerbose: .transcript
+        case .nextTranscriptView, .viewNormal, .viewThinking, .viewVerbose, .copyTranscriptMarkdown: .transcript
         case .toggleSidebar, .toggleContextPanel, .toggleBrowser, .closeFileViewer, .zoomIn, .zoomOut, .actualSize,
              .appearanceDark, .appearanceLight, .appearanceSystem: .view
         case .openInSplit, .closePane, .nextPane, .previousPane, .equalizePanes, .closeSplit: .split
@@ -184,8 +186,9 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .pairIPhone: "iphone"
         case .sendMessage: "arrow.up"
         case .stopAgent: "stop.circle"
-        case .openHub: "tray.2"
+        case .openHub: "square.grid.2x2"
         case .openScheduled: "clock"
+        case .promoteToRoom: "person.badge.plus"
         case .archiveSession: "archivebox"
         case .forkSession: "arrow.triangle.branch"
         case .compactConversation: "arrow.down.right.and.arrow.up.left"
@@ -198,7 +201,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .modePlan: PermissionMode.plan.symbolName
         case .modeBypass: PermissionMode.bypass.symbolName
         case .changeEffort: "gauge.with.dots.needle.50percent"
-        case .toggleFastMode: "hare"
+        case .toggleFastMode: "bolt"
         case .sideQuestion: "questionmark.bubble"
         case .focusComposer: "text.cursor"
         case .allowOnce: "checkmark"
@@ -208,6 +211,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .viewNormal: TranscriptViewMode.normal.symbol
         case .viewThinking: TranscriptViewMode.thinking.symbol
         case .viewVerbose: TranscriptViewMode.verbose.symbol
+        case .copyTranscriptMarkdown: "doc.on.clipboard"
         case .toggleSidebar: "sidebar.left"
         case .toggleContextPanel: "sidebar.right"
         case .toggleBrowser: "globe"
@@ -241,7 +245,10 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .pairIPhone: AppShortcut("p", [.command, .shift, .option])
         case .sendMessage: AppShortcut(.return, .command)
         case .stopAgent: AppShortcut(.escape)
+        case .openHub: AppShortcut("h", [.command, .shift])
+        case .switchModel: AppShortcut("m", [.command, .shift])
         case .sideQuestion: AppShortcut(";")
+        case .focusComposer: AppShortcut("l")
         case .allowOnce: AppShortcut("y")
         case .alwaysAllow: AppShortcut("y", [.command, .option])
         case .reject: AppShortcut(".")
@@ -273,11 +280,13 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .stopAgent: ["interrupt", "cancel"]
         case .openHub: ["needs you", "inbox"]
         case .openScheduled: ["schedules", "cron"]
+        case .promoteToRoom: ["room", "agents", "multi-agent", "promote", "team", "debate"]
         case .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass: ["permissions", "mode"]
         case .switchModel: ["model", "provider"]
         case .changeEffort: ["thinking", "reasoning"]
         case .sideQuestion: ["btw", "aside"]
         case .nextTranscriptView, .viewNormal, .viewThinking, .viewVerbose: ["detail", "tools", "thinking", "verbose"]
+        case .copyTranscriptMarkdown: ["export", "markdown", "copy", "clipboard", "share", "transcript"]
         case .toggleSidebar: ["sessions list"]
         case .toggleContextPanel: ["context", "usage", "connectors"]
         case .toggleBrowser: ["web", "page", "preview", "dev server", "localhost", "launch.json", "console"]
@@ -409,6 +418,17 @@ enum CommandRegistry {
         case .alwaysAllow: return false
         case .closeFileViewer: return context.search.filePreview != nil
         case .openHub, .openScheduled: return store != nil
+        case .promoteToRoom:
+            guard let store, let session, !session.isSubagent,
+                  store.sessionAgentIDs[session.id] == nil else { return false }
+            let activeRooms = context.search.rooms ?? RoomsController.live ?? AgentToolsCenter.shared.rooms
+            return activeRooms != nil && store.models.filter(\.available).count >= 2
+        case .copyTranscriptMarkdown:
+            if context.window.route == .room {
+                let activeRooms = context.search.rooms ?? RoomsController.live ?? AgentToolsCenter.shared.rooms
+                return activeRooms?.selectedEngine != nil
+            }
+            return session != nil
         case .openInSplit:
             guard let store, store.selected != nil else { return false }
             return context.window.split.isActive ? !context.window.split.isFull : store.sessions.contains { !$0.isSubagent && !$0.info.archived && $0.id != store.selectedSessionID }
@@ -443,6 +463,8 @@ enum CommandRegistry {
         case .stopAgent: if let store { Task { await store.stop() } }
         case .openHub: window.route = .hub
         case .openScheduled: window.route = .scheduled
+        case .promoteToRoom:
+            NotificationCenter.default.post(name: .ensemblePromoteToRoom, object: nil)
         case .archiveSession: if let store, let session { Task { await store.archive(session.id) } }
         case .forkSession:
             if let store, let session {
@@ -478,6 +500,8 @@ enum CommandRegistry {
         case .viewNormal: UserDefaults.standard.set(TranscriptViewMode.normal.rawValue, forKey: TranscriptViewMode.storageKey)
         case .viewThinking: UserDefaults.standard.set(TranscriptViewMode.thinking.rawValue, forKey: TranscriptViewMode.storageKey)
         case .viewVerbose: UserDefaults.standard.set(TranscriptViewMode.verbose.rawValue, forKey: TranscriptViewMode.storageKey)
+        case .copyTranscriptMarkdown:
+            NotificationCenter.default.post(name: .ensembleCopyTranscriptMarkdown, object: nil)
         case .toggleSidebar: window.toggleSidebar()
         case .toggleContextPanel: window.toggleContextPanel()
         case .toggleBrowser: window.toggleBrowser()
@@ -520,6 +544,11 @@ enum CommandRegistry {
         guard decision != .always, let store = context.store, let request = visiblePrompt(context) else { return }
         Task { await store.reply(to: request, decision: decision) }
     }
+}
+
+extension Notification.Name {
+    static let ensemblePromoteToRoom = Notification.Name("ensemble.promoteToRoom")
+    static let ensembleCopyTranscriptMarkdown = Notification.Name("ensemble.copyTranscriptMarkdown")
 }
 
 extension View {

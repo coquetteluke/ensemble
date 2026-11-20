@@ -24,7 +24,7 @@ enum RemoteTheme {
     // MARK: Text
     static let primaryText = Color(light: 0x1D1D1B, dark: 0xF3F3F3)
     static let secondaryText = Color(light: 0x6D6C69, dark: 0xA0A0A0)
-    static let tertiaryText = Color(light: 0x9A9894, dark: 0x787878)
+    static let tertiaryText = Color(light: 0x716F6B, dark: 0x8A8A8A)
     static let inlineCodeText = Color(light: 0x4B3BB0, dark: 0xE8E2FF)
 
     // MARK: Signals
@@ -59,7 +59,25 @@ enum RemoteTheme {
             EnsembleFonts.register()
             return .custom(EnsembleFonts.interface, size: size, relativeTo: textStyle).weight(weight)
         default:
-            return .system(size: size, weight: weight, design: design)
+            let scaled = UIFontMetrics(forTextStyle: uiTextStyle(textStyle)).scaledValue(for: size)
+            return .system(size: scaled, weight: weight, design: design)
+        }
+    }
+
+    private static func uiTextStyle(_ style: Font.TextStyle) -> UIFont.TextStyle {
+        switch style {
+        case .largeTitle: .largeTitle
+        case .title: .title1
+        case .title2: .title2
+        case .title3: .title3
+        case .headline: .headline
+        case .subheadline: .subheadline
+        case .body: .body
+        case .callout: .callout
+        case .footnote: .footnote
+        case .caption: .caption1
+        case .caption2: .caption2
+        @unknown default: .body
         }
     }
 

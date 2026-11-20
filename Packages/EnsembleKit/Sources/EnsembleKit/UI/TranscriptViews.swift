@@ -176,6 +176,8 @@ public struct TranscriptList: View {
     let items: [TranscriptItem]
     let resolutions: [String: PermissionResolution]
     let agents: [UUID: AgentSpec]
+    let onRetry: (() -> Void)?
+    let onContinueWithModel: ((ModelRef) -> Void)?
     @Environment(\.isSnapshot) private var isSnapshot
     @Environment(\.theme) private var theme
     @Environment(\.transcriptViewMode) private var forcedMode
@@ -185,10 +187,18 @@ public struct TranscriptList: View {
     @State private var appliedFocusToken: Int?
     @State private var highlightedBlockID: String?
 
-    public init(items: [TranscriptItem], resolutions: [String: PermissionResolution] = [:], agents: [UUID: AgentSpec] = [:]) {
+    public init(
+        items: [TranscriptItem],
+        resolutions: [String: PermissionResolution] = [:],
+        agents: [UUID: AgentSpec] = [:],
+        onRetry: (() -> Void)? = nil,
+        onContinueWithModel: ((ModelRef) -> Void)? = nil
+    ) {
         self.items = items
         self.resolutions = resolutions
         self.agents = agents
+        self.onRetry = onRetry
+        self.onContinueWithModel = onContinueWithModel
     }
 
     private var mode: TranscriptViewMode { forcedMode ?? TranscriptViewMode(rawValue: savedMode) ?? .normal }
@@ -213,6 +223,9 @@ public struct TranscriptList: View {
 
     private func rows(_ blocks: [TranscriptBlock]) -> some View {
         let partitioned = partitionExchanges(blocks)
+        let modelLabels = switchedModelLabels()
+        let latestReply = latestReplyID()
+        let retryError = retryableErrorID()
         return Group {
             ForEach(Array(blocks.enumerated()), id: \.element.id) { index, block in
                 let previous = index > 0 ? blocks[index - 1] : nil
@@ -221,7 +234,16 @@ public struct TranscriptList: View {
                     Group {
                         switch block {
                         case .single(let item):
-                            TranscriptItemView(item: item, previous: previous?.lastItem, resolution: resolutions[item.id], agents: agents)
+                            TranscriptItemView(
+                                item: item,
+                                previous: previous?.lastItem,
+                                resolution: resolutions[item.id],
+                                agents: agents,
+                                modelLabel: modelLabels[item.id],
+                                isLatestReply: item.id == latestReply,
+                                onRetry: item.id == retryError ? onRetry : nil,
+                                onContinueWithModel: onContinueWithModel
+                            )
                         case .activity(_, let steps):
                             ActivityGroupView(items: steps, resolutions: resolutions)
                         }
@@ -250,6 +272,63 @@ public struct TranscriptList: View {
                     }
                 }
                 .padding(.top, blocks.isEmpty ? 0 : theme.z(12))
+            }
+        }
+    }
+
+    /// Maps the first assistant reply after each mid-chat model switch notice to the switched model's name.
+    private func switchedModelLabels() -> [String: String] {
+        var labels: [String: String] = [:]
+        var pendingModel: String?
+        for item in items {
+            switch item {
+            case .notice(_, let text):
+                if let switched = TranscriptExport.switchedModelName(fromNotice: text) {
+                    pendingModel = switched
+                }
+            case .agentText(let id, let text, let agentID, _):
+                guard agentID == nil,
+                      let model = pendingModel,
+                      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    continue
+                }
+                labels[id] = model
+                pendingModel = nil
+            default:
+                continue
+            }
+        }
+        return labels
+    }
+
+    private func latestReplyID() -> String? {
+        for item in items.reversed() {
+            if case .agentText(let id, let text, _, _) = item,
+               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return id
+            }
+        }
+        return nil
+    }
+
+    private func retryableErrorID() -> String? {
+        guard onRetry != nil, !isTranscriptWorking else { return nil }
+        for item in items.reversed() {
+            if case .error(let id, _) = item {
+                return id
+            }
+        }
+        return nil
+    }
+
+    private var isTranscriptWorking: Bool {
+        if actions.workingAgentName != nil { return true }
+        return items.contains { item in
+            switch item {
+            case .agentText(_, _, _, let streaming): streaming
+            case .reasoning(_, _, let streaming): streaming
+            case .tool(let tool): tool.status == .running || tool.status == .pending
+            default: false
             }
         }
     }
@@ -366,15 +445,32 @@ public struct TranscriptItemView: View {
     let previous: TranscriptItem?
     let resolution: PermissionResolution?
     let agents: [UUID: AgentSpec]
+    let modelLabel: String?
+    let isLatestReply: Bool
+    let onRetry: (() -> Void)?
+    let onContinueWithModel: ((ModelRef) -> Void)?
     @Environment(\.transcriptViewMode) private var mode
     /// Knows which error rows are plan limit stops (`AutoContinue.swift`).
     @Environment(\.interactionStore) private var store
 
-    public init(item: TranscriptItem, previous: TranscriptItem? = nil, resolution: PermissionResolution? = nil, agents: [UUID: AgentSpec] = [:]) {
+    public init(
+        item: TranscriptItem,
+        previous: TranscriptItem? = nil,
+        resolution: PermissionResolution? = nil,
+        agents: [UUID: AgentSpec] = [:],
+        modelLabel: String? = nil,
+        isLatestReply: Bool = false,
+        onRetry: (() -> Void)? = nil,
+        onContinueWithModel: ((ModelRef) -> Void)? = nil
+    ) {
         self.item = item
         self.previous = previous
         self.resolution = resolution
         self.agents = agents
+        self.modelLabel = modelLabel
+        self.isLatestReply = isLatestReply
+        self.onRetry = onRetry
+        self.onContinueWithModel = onContinueWithModel
     }
 
     public var body: some View {
@@ -387,7 +483,10 @@ public struct TranscriptItemView: View {
                 text: text,
                 agent: agentID.flatMap { agents[$0] },
                 showHeader: showsAgentHeader(agentID),
-                streaming: streaming
+                streaming: streaming,
+                modelLabel: modelLabel,
+                isLatestReply: isLatestReply,
+                onContinueWithModel: onContinueWithModel
             )
         case .reasoning(_, let text, let streaming):
             ReasoningRow(text: text, streaming: streaming, expanded: (mode ?? .normal) != .normal)
@@ -405,7 +504,7 @@ public struct TranscriptItemView: View {
             if let stop = store?.usageLimitStop(forItem: id) {
                 UsageLimitCard(stop: stop)
             } else {
-                ErrorRow(message: message)
+                ErrorRow(message: message, onRetry: onRetry)
             }
         case .notice(let id, let text):
             if let store, let notice = store.rewindNotice(forItem: id) {
@@ -578,18 +677,34 @@ public struct AgentTextRow: View {
     let agent: AgentSpec?
     let showHeader: Bool
     let streaming: Bool
+    let modelLabel: String?
+    let isLatestReply: Bool
+    let onContinueWithModel: ((ModelRef) -> Void)?
     @Environment(\.theme) private var theme
     @Environment(\.transcriptActions) private var actions
     @State private var hovering = false
+    @State private var secondOpinionHovered = false
     @State private var copied = false
     @State private var showModelPicker = false
 
-    public init(itemID: String = "", text: String, agent: AgentSpec?, showHeader: Bool, streaming: Bool) {
+    public init(
+        itemID: String = "",
+        text: String,
+        agent: AgentSpec?,
+        showHeader: Bool,
+        streaming: Bool,
+        modelLabel: String? = nil,
+        isLatestReply: Bool = false,
+        onContinueWithModel: ((ModelRef) -> Void)? = nil
+    ) {
         self.itemID = itemID
         self.text = text
         self.agent = agent
         self.showHeader = showHeader
         self.streaming = streaming
+        self.modelLabel = modelLabel
+        self.isLatestReply = isLatestReply
+        self.onContinueWithModel = onContinueWithModel
     }
 
     public init(text: String, agent: AgentSpec?, showHeader: Bool, streaming: Bool) {
@@ -601,6 +716,15 @@ public struct AgentTextRow: View {
         VStack(alignment: .leading, spacing: theme.z(6)) {
             if showHeader, let agent {
                 AgentNameTag(agent: agent)
+            } else if let modelLabel, !modelLabel.isEmpty {
+                Text(modelLabel)
+                    .font(theme.font(size: 10.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(theme.textTertiary)
+                    .padding(.horizontal, theme.z(6))
+                    .padding(.vertical, theme.z(2))
+                    .background(Capsule().fill(theme.codeBackground))
+                    .overlay(Capsule().strokeBorder(theme.separator, lineWidth: 1))
+                    .accessibilityLabel("Model: \(modelLabel)")
             }
             MarkdownView(text, streaming: streaming)
 
@@ -614,7 +738,8 @@ public struct AgentTextRow: View {
                         SecondOpinionCardView(
                             opinion: opinion,
                             onRetry: { actions.retrySecondOpinion(opinion) },
-                            onDismiss: { actions.dismissSecondOpinion(opinion) }
+                            onDismiss: { actions.dismissSecondOpinion(opinion) },
+                            onUseModel: onContinueWithModel
                         )
                     }
                 }
@@ -630,6 +755,11 @@ public struct AgentTextRow: View {
             && !streaming
             && !itemID.isEmpty
             && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var actionBarOpacity: Double {
+        if hovering || showModelPicker || copied { return 1 }
+        return isLatestReply ? 0.55 : 0
     }
 
     private var replyActionBar: some View {
@@ -652,7 +782,9 @@ public struct AgentTextRow: View {
             }
             Spacer(minLength: 0)
         }
-        .opacity(hovering || showModelPicker || copied ? 1 : 0.72)
+        .opacity(actionBarOpacity)
+        .allowsHitTesting(hovering || showModelPicker || copied || isLatestReply)
+        .animation(.easeOut(duration: 0.15), value: actionBarOpacity)
     }
 
     @ViewBuilder
@@ -664,6 +796,7 @@ public struct AgentTextRow: View {
                 secondOpinionLabel(title: "Second opinion (\(sole.name))")
             }
             .buttonStyle(.plain)
+            .onHover { secondOpinionHovered = $0 }
             .help("Ask \(sole.name) for a second opinion")
         } else {
             Button {
@@ -672,6 +805,7 @@ public struct AgentTextRow: View {
                 secondOpinionLabel(title: "Second opinion")
             }
             .buttonStyle(.plain)
+            .onHover { secondOpinionHovered = $0 }
             .help("Ask another model for a second opinion")
             .popover(isPresented: $showModelPicker, arrowEdge: .bottom) {
                 SecondOpinionModelPicker(options: actions.secondOpinionModels) { option in
@@ -689,12 +823,12 @@ public struct AgentTextRow: View {
             Text(title)
                 .font(theme.font(size: 11.5, weight: .medium))
         }
-        .foregroundStyle(theme.textSecondary)
+        .foregroundStyle(secondOpinionHovered || showModelPicker ? theme.textPrimary : theme.textSecondary)
         .padding(.horizontal, theme.z(7))
         .frame(height: theme.z(22))
         .background(
             RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
-                .fill(theme.hover.opacity(hovering || showModelPicker ? 1 : 0.45))
+                .fill(theme.hover.opacity(secondOpinionHovered || showModelPicker ? 1 : (hovering ? 0.5 : 0.35)))
         )
         .contentShape(Rectangle())
     }
@@ -873,9 +1007,14 @@ public struct BoardRow: View {
 
 public struct ErrorRow: View {
     let message: String
+    let onRetry: (() -> Void)?
     @Environment(\.theme) private var theme
+    @State private var retryHovered = false
 
-    public init(message: String) { self.message = message }
+    public init(message: String, onRetry: (() -> Void)? = nil) {
+        self.message = message
+        self.onRetry = onRetry
+    }
 
     public var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: theme.z(8)) {
@@ -887,7 +1026,33 @@ public struct ErrorRow: View {
                 .foregroundStyle(theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
                 .selectableText()
-            Spacer(minLength: 0)
+            Spacer(minLength: theme.z(6))
+            if let onRetry {
+                Button(action: onRetry) {
+                    HStack(spacing: theme.z(4)) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(theme.font(size: 10.5, weight: .medium))
+                        Text("Retry")
+                            .font(theme.font(size: 11.5, weight: .medium))
+                    }
+                    .foregroundStyle(retryHovered ? theme.textPrimary : theme.textSecondary)
+                    .padding(.horizontal, theme.z(8))
+                    .padding(.vertical, theme.z(4))
+                    .background(
+                        RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                            .fill(retryHovered ? theme.danger.opacity(0.18) : theme.danger.opacity(0.08))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                            .strokeBorder(theme.danger.opacity(retryHovered ? 0.45 : 0.25), lineWidth: 1)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { retryHovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: retryHovered)
+                .help("Retry last message")
+            }
         }
         .padding(.horizontal, theme.z(12))
         .padding(.vertical, theme.z(9))

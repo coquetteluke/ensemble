@@ -24,6 +24,8 @@ struct StatusLine: View {
     @State private var showBranches = false
     @State private var pendingSwitch: WorktreeStatusControls.PendingSwitch?
     @State private var planLoader = PlanLimitLoader()
+    @State private var usageHovered = false
+    @State private var contextHovered = false
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -77,11 +79,21 @@ struct StatusLine: View {
                 case .minimal: EmptyView()
                 }
             }
+            .foregroundStyle(usageHovered ? theme.textPrimary : theme.textTertiary)
             .lineLimit(1)
             .fixedSize()
+            .padding(.horizontal, theme.z(5))
+            .frame(height: theme.z(22))
+            .background(
+                RoundedRectangle(cornerRadius: theme.z(5), style: .continuous)
+                    .fill(usageHovered ? theme.hover : .clear)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .padding(.horizontal, theme.z(-5))
+        .onHover { usageHovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: usageHovered)
         .help(level == .full ? "Usage for this session" : "Usage for this session: \(cost), \(tokens) tokens")
         .accessibilityLabel("Usage for this session")
         .accessibilityValue("\(cost), \(tokens) tokens")
@@ -108,11 +120,21 @@ struct StatusLine: View {
                 case .minimal: EmptyView()
                 }
             }
+            .foregroundStyle(contextHovered ? theme.textPrimary : theme.textTertiary)
             .lineLimit(1)
             .fixedSize()
+            .padding(.horizontal, theme.z(5))
+            .frame(height: theme.z(22))
+            .background(
+                RoundedRectangle(cornerRadius: theme.z(5), style: .continuous)
+                    .fill(contextHovered ? theme.hover : .clear)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .padding(.horizontal, theme.z(-5))
+        .onHover { contextHovered = $0 }
+        .animation(.easeOut(duration: 0.12), value: contextHovered)
         .help("\(percent) context: \(Format.tokens(context.usedTokens)) of \(Format.tokens(context.limitTokens)) tokens used")
         .accessibilityLabel("Context")
         .accessibilityValue("\(percent) used")
@@ -176,6 +198,7 @@ struct UsagePopover: View {
     /// Opens the Usage screen; nil hides the button.
     var onShowAll: (() -> Void)?
     @Environment(\.theme) private var theme
+    @State private var showAllHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: theme.z(10)) {
@@ -202,10 +225,19 @@ struct UsagePopover: View {
                     }
                     .font(theme.font(size: 12.5, weight: .medium))
                     .foregroundStyle(theme.accent)
+                    .padding(.horizontal, theme.z(6))
+                    .padding(.vertical, theme.z(4))
+                    .background(
+                        RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                            .fill(showAllHovered ? theme.hover : .clear)
+                    )
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .padding(.horizontal, theme.z(-6))
                 .padding(.top, theme.z(2))
+                .onHover { showAllHovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: showAllHovered)
                 .help("Usage per agent and provider, with daily spending caps")
             }
         }

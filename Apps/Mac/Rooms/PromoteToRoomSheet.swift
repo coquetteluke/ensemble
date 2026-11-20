@@ -15,6 +15,8 @@ struct PromoteToRoomSheet: View {
     @State private var title: String
     @State private var mode: RoomMode = .team
     @State private var selectedIDs: [String] = []
+    @State private var modelQuery = ""
+    @State private var selectionNote: String?
     @State private var starterPrompt = ""
     @State private var error: String?
 
@@ -89,7 +91,7 @@ struct PromoteToRoomSheet: View {
                 .font(theme.font(size: 12, weight: .semibold))
                 .foregroundStyle(theme.textPrimary)
             Spacer(minLength: 0)
-            Text("Up to 12,000 chars of chat handed off")
+            Text(hasConversationMessages ? "Up to 12,000 chars of chat handed off" : "Starts a fresh room in this folder")
                 .font(theme.font(size: 11))
                 .foregroundStyle(theme.textTertiary)
         }
@@ -139,6 +141,7 @@ struct PromoteToRoomSheet: View {
 
     private var additionalAgentsSection: some View {
         let options = availableOptions
+        let visibleOptions = filteredOptions(in: options)
         return VStack(alignment: .leading, spacing: theme.z(8)) {
             HStack {
                 sectionLabel("Add 1 to 3 models")
@@ -148,34 +151,46 @@ struct PromoteToRoomSheet: View {
                     .foregroundStyle(theme.textTertiary)
             }
 
+            if options.count > 6 {
+                InputField("Filter models", text: $modelQuery, icon: "magnifyingglass", height: 26)
+            }
+
             ScrollView(.vertical) {
                 VStack(alignment: .leading, spacing: theme.z(4)) {
-                    ForEach(options) { option in
-                        let checked = selectedIDs.contains(option.id)
-                        Button {
-                            toggle(option.id)
-                        } label: {
-                            HStack(spacing: theme.z(8)) {
-                                Image(systemName: checked ? "checkmark.circle.fill" : "circle")
-                                    .font(theme.font(size: 13))
-                                    .foregroundStyle(checked ? theme.accent : theme.textTertiary)
-                                Text(option.name)
-                                    .font(theme.font(size: 12.5, weight: .medium))
-                                    .foregroundStyle(theme.textPrimary)
-                                    .lineLimit(1)
-                                Spacer(minLength: 8)
-                                Text(option.makerName)
-                                    .font(theme.font(size: 11))
-                                    .foregroundStyle(theme.textTertiary)
-                                    .padding(.horizontal, theme.z(6))
-                                    .padding(.vertical, theme.z(2))
-                                    .background(Capsule().fill(theme.codeBackground))
-                            }
+                    if visibleOptions.isEmpty {
+                        Text("No matching models")
+                            .font(theme.font(size: 12))
+                            .foregroundStyle(theme.textTertiary)
                             .padding(.horizontal, theme.z(8))
-                            .padding(.vertical, theme.z(6))
-                            .contentShape(Rectangle())
+                            .padding(.vertical, theme.z(8))
+                    } else {
+                        ForEach(visibleOptions) { option in
+                            let checked = selectedIDs.contains(option.id)
+                            Button {
+                                toggle(option.id)
+                            } label: {
+                                HStack(spacing: theme.z(8)) {
+                                    Image(systemName: checked ? "checkmark.circle.fill" : "circle")
+                                        .font(theme.font(size: 13))
+                                        .foregroundStyle(checked ? theme.accent : theme.textTertiary)
+                                    Text(option.name)
+                                        .font(theme.font(size: 12.5, weight: .medium))
+                                        .foregroundStyle(theme.textPrimary)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 8)
+                                    Text(option.makerName)
+                                        .font(theme.font(size: 11))
+                                        .foregroundStyle(theme.textTertiary)
+                                        .padding(.horizontal, theme.z(6))
+                                        .padding(.vertical, theme.z(2))
+                                        .background(Capsule().fill(theme.codeBackground))
+                                }
+                                .padding(.horizontal, theme.z(8))
+                                .padding(.vertical, theme.z(6))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(RowButtonStyle(selected: checked, cornerRadius: theme.z(6)))
                         }
-                        .buttonStyle(RowButtonStyle(selected: checked, cornerRadius: theme.z(6)))
                     }
                 }
             }
@@ -183,6 +198,12 @@ struct PromoteToRoomSheet: View {
             .padding(theme.z(6))
             .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(theme.elevated))
             .overlay(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).strokeBorder(theme.border))
+
+            if let selectionNote {
+                Text(selectionNote)
+                    .font(theme.font(size: 11.5))
+                    .foregroundStyle(theme.textSecondary)
+            }
         }
     }
 
@@ -190,7 +211,9 @@ struct PromoteToRoomSheet: View {
         VStack(alignment: .leading, spacing: theme.z(6)) {
             sectionLabel("Opening instruction (optional)")
             RoomTextEditor(
-                placeholder: "Leave blank to continue straight from the handed-off solo chat",
+                placeholder: hasConversationMessages
+                    ? "Leave blank to continue straight from the handed-off solo chat"
+                    : "Describe what the room should work on",
                 text: $starterPrompt,
                 minHeight: 54,
                 maxHeight: 96
@@ -221,8 +244,27 @@ struct PromoteToRoomSheet: View {
             .foregroundStyle(theme.textSecondary)
     }
 
+    private var hasConversationMessages: Bool {
+        session.items.contains { item in
+            switch item {
+            case .user, .agentText: true
+            default: false
+            }
+        }
+    }
+
     private var availableOptions: [SecondOpinionModelOption] {
         SecondOpinionModels.options(from: store.models, current: session.info.model)
+    }
+
+    private func filteredOptions(in options: [SecondOpinionModelOption]) -> [SecondOpinionModelOption] {
+        let query = modelQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return options }
+        return options.filter { option in
+            option.name.localizedCaseInsensitiveContains(query)
+                || option.makerName.localizedCaseInsensitiveContains(query)
+                || option.providerName.localizedCaseInsensitiveContains(query)
+        }
     }
 
     private func selectDefaultModel() {
@@ -234,9 +276,13 @@ struct PromoteToRoomSheet: View {
         if let index = selectedIDs.firstIndex(of: id) {
             if selectedIDs.count > 1 {
                 selectedIDs.remove(at: index)
+                selectionNote = nil
+            } else {
+                selectionNote = "Keep at least one model selected."
             }
         } else if selectedIDs.count < 3 {
             selectedIDs.append(id)
+            selectionNote = nil
         }
     }
 

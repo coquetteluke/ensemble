@@ -9,6 +9,12 @@ struct RoomsView: View {
 
     @State private var showNewRoom = false
 
+    private var newRoomAccessibilityHint: String {
+        if !client.state.isConnected { return "Connect to your Mac to create a room" }
+        if client.availableModels.isEmpty { return "Loading available models from your Mac" }
+        return "Create a new multi-agent room"
+    }
+
     var body: some View {
         RoomsListContent(client: client, selectedSessionID: selectedSessionID, open: open)
             .navigationTitle("Rooms")
@@ -25,6 +31,7 @@ struct RoomsView: View {
                     }
                     .disabled(!client.state.isConnected || client.availableModels.isEmpty)
                     .accessibilityLabel("New room")
+                    .accessibilityHint(newRoomAccessibilityHint)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     StatusPill(client: client, inToolbar: true)

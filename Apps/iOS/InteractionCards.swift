@@ -17,32 +17,39 @@ struct RemoteQuestionCard: View {
     var onError: (String) -> Void
     @Environment(\.colorScheme) private var scheme
     @State private var busy = false
+    @State private var allowHaptic = 0
+    @State private var rejectHaptic = 0
 
     private var answered: Bool {
         client.isAnswered(request.id) || !client.permissions.contains { $0.id == request.id }
     }
 
     var body: some View {
-        if answered {
-            Label(
-                client.permissionDecisions[request.id] == .reject ? "Question declined" : "Question answered",
-                systemImage: client.permissionDecisions[request.id] == .reject ? "xmark.circle.fill" : "checkmark.circle.fill"
-            )
-            .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
-            .foregroundStyle(RemoteTheme.secondaryText)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            QuestionCardView(
-                request: request,
-                onAnswer: { answers in send(answers) },
-                onDecline: { send([]) }
-            )
-            .environment(\.theme, PhoneCardTheme.theme(for: scheme))
-            .disabled(busy || !client.state.isConnected)
+        Group {
+            if answered {
+                Label(
+                    client.permissionDecisions[request.id] == .reject ? "Question declined" : "Question answered",
+                    systemImage: client.permissionDecisions[request.id] == .reject ? "xmark.circle.fill" : "checkmark.circle.fill"
+                )
+                .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
+                .foregroundStyle(RemoteTheme.secondaryText)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                QuestionCardView(
+                    request: request,
+                    onAnswer: { answers in send(answers) },
+                    onDecline: { send([]) }
+                )
+                .environment(\.theme, PhoneCardTheme.theme(for: scheme))
+                .disabled(busy || !client.state.isConnected)
+            }
         }
+        .sensoryFeedback(.success, trigger: allowHaptic)
+        .sensoryFeedback(.warning, trigger: rejectHaptic)
     }
 
     private func send(_ answers: [AgentQuestionAnswer]) {
+        if answers.isEmpty { rejectHaptic += 1 } else { allowHaptic += 1 }
         busy = true
         Task {
             do { try await client.answer(request, answers: answers) } catch { onError(error.localizedDescription) }
@@ -57,6 +64,8 @@ struct RemotePlanCard: View {
     let client: RemoteClient
     var onError: (String) -> Void
     @State private var busy = false
+    @State private var allowHaptic = 0
+    @State private var rejectHaptic = 0
     @State private var expanded = false
     @ScaledMetric(relativeTo: .body) private var messageSize: CGFloat = 15
 
@@ -91,7 +100,8 @@ struct RemotePlanCard: View {
                 }
                 .font(RemoteTheme.font(size: 13.5, weight: .medium, relativeTo: .footnote))
                 .foregroundStyle(RemoteTheme.secondaryText)
-                .frame(minHeight: 36)
+                .frame(minHeight: RemoteTheme.minTapTarget)
+                .contentShape(Rectangle())
             }
 
             if answered {
@@ -109,9 +119,12 @@ struct RemotePlanCard: View {
             }
         }
         .remoteCard(padding: 14, attention: !answered)
+        .sensoryFeedback(.success, trigger: allowHaptic)
+        .sensoryFeedback(.warning, trigger: rejectHaptic)
     }
 
     private func decide(_ decision: PlanDecision) {
+        if case .proceed = decision { allowHaptic += 1 } else { rejectHaptic += 1 }
         busy = true
         Task {
             do { try await client.respond(to: request, decision: decision) } catch { onError(error.localizedDescription) }

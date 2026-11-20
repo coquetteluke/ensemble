@@ -13,6 +13,7 @@ struct RemoteModelPickerSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var selectionHaptic = 0
 
     private var filtered: [RemoteModelOption] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -112,6 +113,7 @@ struct RemoteModelPickerSheet: View {
                                     ForEach(Array(section.items.enumerated()), id: \.element.id) { idx, option in
                                         let isCurrent = option.providerID == currentProviderID && option.modelID == currentModelID
                                         Button {
+                                            selectionHaptic += 1
                                             onSelect(option)
                                             dismiss()
                                         } label: {
@@ -169,6 +171,8 @@ struct RemoteModelPickerSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .sensoryFeedback(.selection, trigger: selectionHaptic)
     }
 }
 
@@ -184,6 +188,7 @@ struct RemoteNewSessionSheet: View {
     @State private var title = ""
     @State private var creating = false
     @State private var errorText: String?
+    @State private var selectionHaptic = 0
 
     private var selectedModel: RemoteModelOption? {
         client.availableModels.first { $0.id == selectedModelID } ?? client.availableModels.first
@@ -203,11 +208,17 @@ struct RemoteNewSessionSheet: View {
                     folderSection
                     modelSection
                     titleSection
-
+                }
+                .padding(16)
+            }
+            .remoteScreen()
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(alignment: .leading, spacing: 10) {
                     if let errorText {
                         Label(errorText, systemImage: "exclamationmark.triangle")
                             .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
                             .foregroundStyle(RemoteTheme.danger)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Button {
@@ -222,9 +233,13 @@ struct RemoteNewSessionSheet: View {
                     .buttonStyle(RemotePrimaryButtonStyle())
                     .disabled(!canCreate)
                 }
-                .padding(16)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(RemoteTheme.background)
+                .overlay(alignment: .top) {
+                    Rectangle().fill(RemoteTheme.separator).frame(height: 1)
+                }
             }
-            .remoteScreen()
             .navigationTitle("New session")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -242,6 +257,8 @@ struct RemoteNewSessionSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .sensoryFeedback(.selection, trigger: selectionHaptic)
     }
 
     private var folderSection: some View {
@@ -308,6 +325,7 @@ struct RemoteNewSessionSheet: View {
                     ForEach(client.availableModels) { option in
                         Button {
                             selectedModelID = option.id
+                            selectionHaptic += 1
                         } label: {
                             let label = option.makerName.isEmpty ? option.name : "\(option.name) (\(option.makerName))"
                             if option.id == selectedModel?.id {
@@ -408,6 +426,7 @@ struct RemoteNewRoomSheet: View {
     @State private var draftAgents: [DraftAgent] = []
     @State private var creating = false
     @State private var errorText: String?
+    @State private var selectionHaptic = 0
 
     private let supportedModes: [RoomMode] = [.team, .debate, .roundTable]
     private let defaultNames = ["Ada", "Grace", "Linus", "Alan"]
@@ -489,6 +508,7 @@ struct RemoteNewRoomSheet: View {
                                 let active = mode == candidate
                                 Button {
                                     mode = candidate
+                                    selectionHaptic += 1
                                 } label: {
                                     Text(candidate.label)
                                         .font(RemoteTheme.font(size: 13, weight: active ? .semibold : .medium, relativeTo: .footnote))
@@ -550,6 +570,7 @@ struct RemoteNewRoomSheet: View {
                                         ForEach(client.availableModels) { option in
                                             Button {
                                                 agent.modelOptionID = option.id
+                                                selectionHaptic += 1
                                             } label: {
                                                 if option.id == currentOption?.id {
                                                     Label(option.name, systemImage: "checkmark")
@@ -578,11 +599,17 @@ struct RemoteNewRoomSheet: View {
                             .remoteCard(padding: 12)
                         }
                     }
-
+                }
+                .padding(16)
+            }
+            .remoteScreen()
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(alignment: .leading, spacing: 10) {
                     if let errorText {
                         Label(errorText, systemImage: "exclamationmark.triangle")
                             .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
                             .foregroundStyle(RemoteTheme.danger)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
 
                     Button {
@@ -597,9 +624,13 @@ struct RemoteNewRoomSheet: View {
                     .buttonStyle(RemotePrimaryButtonStyle())
                     .disabled(!canCreate)
                 }
-                .padding(16)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(RemoteTheme.background)
+                .overlay(alignment: .top) {
+                    Rectangle().fill(RemoteTheme.separator).frame(height: 1)
+                }
             }
-            .remoteScreen()
             .navigationTitle("New room")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -617,6 +648,8 @@ struct RemoteNewRoomSheet: View {
             }
         }
         .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .sensoryFeedback(.selection, trigger: selectionHaptic)
     }
 
     private func seedDefaultAgents() {
@@ -681,12 +714,19 @@ struct RemoteDiffSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var diff: RemoteSessionDiff?
+    @State private var parsedDiffs: [String: ParsedDiff] = [:]
     @State private var loading = false
     @State private var errorText: String?
     @State private var collapsedPaths: Set<String> = []
+    @State private var copiedDiff = false
+    @State private var copyHaptic = 0
 
     private var totalAdditions: Int { diff?.files.reduce(0) { $0 + $1.additions } ?? 0 }
     private var totalDeletions: Int { diff?.files.reduce(0) { $0 + $1.deletions } ?? 0 }
+    private var allCollapsed: Bool {
+        guard let files = diff?.files, !files.isEmpty else { return false }
+        return files.allSatisfy { collapsedPaths.contains($0.path) }
+    }
 
     var body: some View {
         NavigationStack {
@@ -750,26 +790,78 @@ struct RemoteDiffSheet: View {
             .task { await reload() }
         }
         .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .sensoryFeedback(.selection, trigger: copyHaptic)
     }
 
     private func summaryBar(_ diff: RemoteSessionDiff) -> some View {
-        HStack(spacing: 8) {
-            Text("\(diff.files.count) \(diff.files.count == 1 ? "file" : "files")")
-                .font(RemoteTheme.font(size: 13.5, weight: .semibold, relativeTo: .subheadline))
-                .foregroundStyle(RemoteTheme.primaryText)
-            if totalAdditions > 0 {
-                Text("+\(totalAdditions)")
-                    .font(RemoteTheme.font(size: 12.5, weight: .semibold, design: .monospaced, relativeTo: .caption))
-                    .foregroundStyle(RemoteTheme.success)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text("\(diff.files.count) \(diff.files.count == 1 ? "file" : "files")")
+                    .font(RemoteTheme.font(size: 13.5, weight: .semibold, relativeTo: .subheadline))
+                    .foregroundStyle(RemoteTheme.primaryText)
+                if totalAdditions > 0 {
+                    Text("+\(totalAdditions)")
+                        .font(RemoteTheme.font(size: 12.5, weight: .semibold, design: .monospaced, relativeTo: .caption))
+                        .foregroundStyle(RemoteTheme.success)
+                }
+                if totalDeletions > 0 {
+                    Text("-\(totalDeletions)")
+                        .font(RemoteTheme.font(size: 12.5, weight: .semibold, design: .monospaced, relativeTo: .caption))
+                        .foregroundStyle(RemoteTheme.danger)
+                }
+                Spacer(minLength: 4)
+                if diff.truncated {
+                    Chip(text: "Truncated", color: RemoteTheme.warning)
+                }
             }
-            if totalDeletions > 0 {
-                Text("-\(totalDeletions)")
-                    .font(RemoteTheme.font(size: 12.5, weight: .semibold, design: .monospaced, relativeTo: .caption))
-                    .foregroundStyle(RemoteTheme.danger)
-            }
-            Spacer(minLength: 4)
-            if diff.truncated {
-                Chip(text: "Truncated", color: RemoteTheme.warning)
+
+            if !diff.files.isEmpty {
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation(.snappy) {
+                            if allCollapsed {
+                                collapsedPaths.removeAll()
+                            } else {
+                                collapsedPaths = Set(diff.files.map(\.path))
+                            }
+                        }
+                    } label: {
+                        Label(
+                            allCollapsed ? "Expand all" : "Collapse all",
+                            systemImage: allCollapsed ? "rectangle.expand.vertical" : "rectangle.compress.vertical"
+                        )
+                        .font(RemoteTheme.font(size: 12.5, weight: .medium, relativeTo: .caption))
+                        .foregroundStyle(RemoteTheme.primaryText)
+                        .padding(.horizontal, 11)
+                        .frame(minHeight: 36)
+                        .background(RemoteTheme.card, in: Capsule())
+                        .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+                        .frame(minHeight: RemoteTheme.minTapTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        copyAllDiff(diff)
+                    } label: {
+                        Label(
+                            copiedDiff ? "Copied" : "Copy diff",
+                            systemImage: copiedDiff ? "checkmark" : "doc.on.doc"
+                        )
+                        .font(RemoteTheme.font(size: 12.5, weight: .medium, relativeTo: .caption))
+                        .foregroundStyle(copiedDiff ? RemoteTheme.success : RemoteTheme.primaryText)
+                        .padding(.horizontal, 11)
+                        .frame(minHeight: 36)
+                        .background(RemoteTheme.card, in: Capsule())
+                        .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+                        .frame(minHeight: RemoteTheme.minTapTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer(minLength: 0)
+                }
             }
         }
     }
@@ -806,28 +898,18 @@ struct RemoteDiffSheet: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .frame(minHeight: 42)
+                .frame(minHeight: RemoteTheme.minTapTarget)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             if !collapsed && !file.diffText.isEmpty {
                 Rectangle().fill(RemoteTheme.separator).frame(height: 1)
-                ScrollView(.horizontal, showsIndicators: true) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        let lines = file.diffText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-                        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                            Text(line.isEmpty ? " " : line)
-                                .font(RemoteTheme.font(size: 11.5, design: .monospaced, relativeTo: .caption2))
-                                .foregroundStyle(diffLineColor(line))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 1.5)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(diffLineBackground(line))
-                        }
-                    }
-                    .padding(.vertical, 6)
-                }
+                let parsed = parsedDiffs[file.path] ?? ParsedDiff(file.diffText, wordHighlight: true)
+                DiffView(
+                    parsed: parsed,
+                    options: DiffDisplayOptions(wrapLines: false, showGaps: false, maxLines: 80)
+                )
                 .background(RemoteTheme.codeBackground)
             }
         }
@@ -839,28 +921,32 @@ struct RemoteDiffSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private func diffLineColor(_ line: String) -> Color {
-        if line.hasPrefix("+") && !line.hasPrefix("+++") { return RemoteTheme.success }
-        if line.hasPrefix("-") && !line.hasPrefix("---") { return RemoteTheme.danger }
-        if line.hasPrefix("@@") { return RemoteTheme.accent }
-        if line.hasPrefix("diff ") || line.hasPrefix("index ") || line.hasPrefix("---") || line.hasPrefix("+++") {
-            return RemoteTheme.tertiaryText
+    private func copyAllDiff(_ diff: RemoteSessionDiff) {
+        let combined = diff.files
+            .map { file in
+                file.diffText.isEmpty ? file.path : file.diffText
+            }
+            .joined(separator: "\n\n")
+        copyToPasteboard(combined)
+        copyHaptic += 1
+        copiedDiff = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            copiedDiff = false
         }
-        return RemoteTheme.primaryText
-    }
-
-    private func diffLineBackground(_ line: String) -> Color {
-        if line.hasPrefix("+") && !line.hasPrefix("+++") { return RemoteTheme.success.opacity(0.11) }
-        if line.hasPrefix("-") && !line.hasPrefix("---") { return RemoteTheme.danger.opacity(0.11) }
-        if line.hasPrefix("@@") { return RemoteTheme.accent.opacity(0.08) }
-        return .clear
     }
 
     private func reload() async {
         loading = true
         errorText = nil
         do {
-            diff = try await client.sessionDiff(sessionID: sessionID)
+            let loaded = try await client.sessionDiff(sessionID: sessionID)
+            var parsed: [String: ParsedDiff] = [:]
+            for file in loaded.files where !file.diffText.isEmpty {
+                parsed[file.path] = ParsedDiff(file.diffText, wordHighlight: true)
+            }
+            parsedDiffs = parsed
+            diff = loaded
         } catch {
             errorText = error.localizedDescription
         }
@@ -872,7 +958,11 @@ struct RemoteDiffSheet: View {
 
 struct RemoteSecondOpinionCard: View {
     let opinion: RemoteSecondOpinion
+    var onRetry: (() -> Void)? = nil
+    var onContinueWithModel: (() -> Void)? = nil
+
     @State private var showDetails = false
+    @ScaledMetric(relativeTo: .footnote) private var detailsSize: CGFloat = 13
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -901,20 +991,33 @@ struct RemoteSecondOpinionCard: View {
                         .foregroundStyle(RemoteTheme.secondaryText)
                 }
             } else if opinion.status == "failed" {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(RemoteTheme.font(size: 11.5, relativeTo: .caption))
-                    Text(opinion.error ?? "Second opinion failed.")
-                        .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(RemoteTheme.font(size: 11.5, relativeTo: .caption))
+                        Text(opinion.error ?? "Second opinion failed.")
+                            .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    .foregroundStyle(RemoteTheme.danger)
+
+                    if let onRetry {
+                        Button {
+                            onRetry()
+                        } label: {
+                            Label("Retry", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(RemoteSecondaryButtonStyle())
+                    }
                 }
-                .foregroundStyle(RemoteTheme.danger)
             } else {
                 if let summary = opinion.summary, !summary.isEmpty {
                     Text(summary)
                         .font(RemoteTheme.font(size: 13.5, relativeTo: .subheadline))
                         .foregroundStyle(RemoteTheme.primaryText)
                         .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
                 }
                 if !opinion.concerns.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
@@ -927,6 +1030,7 @@ struct RemoteSecondOpinionCard: View {
                                     .font(RemoteTheme.font(size: 12.5, relativeTo: .footnote))
                                     .foregroundStyle(RemoteTheme.secondaryText)
                                     .fixedSize(horizontal: false, vertical: true)
+                                    .textSelection(.enabled)
                             }
                         }
                     }
@@ -940,18 +1044,54 @@ struct RemoteSecondOpinionCard: View {
                             Image(systemName: showDetails ? "chevron.up" : "chevron.down")
                                 .font(RemoteTheme.font(size: 9.5, weight: .semibold, relativeTo: .caption2))
                         }
-                        .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption))
+                        .font(RemoteTheme.font(size: 12.5, weight: .medium, relativeTo: .caption))
                         .foregroundStyle(RemoteTheme.accent)
+                        .frame(minHeight: 36, alignment: .leading)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
 
                     if showDetails {
-                        Text(details)
-                            .font(RemoteTheme.font(size: 12.5, relativeTo: .footnote))
-                            .foregroundStyle(RemoteTheme.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.top, 2)
+                        MarkdownView(
+                            details,
+                            fontSize: detailsSize,
+                            textColor: RemoteTheme.secondaryText,
+                            streaming: false,
+                            serif: false
+                        )
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RemoteTheme.codeBackground,
+                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(RemoteTheme.separator, lineWidth: 0.75)
+                        )
+                        .textSelection(.enabled)
                     }
+                }
+
+                if opinion.status == "ready", let onContinueWithModel {
+                    Button(action: onContinueWithModel) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(RemoteTheme.font(size: 11, weight: .semibold, relativeTo: .caption2))
+                            Text("Continue with \(opinion.modelName)")
+                                .font(RemoteTheme.font(size: 12.5, weight: .semibold, relativeTo: .caption))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(RemoteTheme.accent)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 6)
+                        .background(RemoteTheme.accent.opacity(0.12), in: Capsule())
+                        .overlay(Capsule().strokeBorder(RemoteTheme.accent.opacity(0.35), lineWidth: 0.75))
+                        .frame(minHeight: RemoteTheme.minTapTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }

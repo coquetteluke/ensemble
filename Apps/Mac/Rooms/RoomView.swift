@@ -357,7 +357,7 @@ struct RoomScroll<Content: View>: View {
                                 .frame(width: theme.z(30), height: theme.z(30))
                                 .background(Circle().fill(theme.elevated))
                                 .overlay(Circle().strokeBorder(theme.border))
-                                .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+                                .shadow(color: .black.opacity(0.25), radius: theme.z(6), y: theme.z(2))
                         }
                         .buttonStyle(.plain)
                         .help("Jump to the newest message")
@@ -649,6 +649,7 @@ struct AgentChip: View {
 private struct RoomTabs: View {
     @Binding var tab: RoomTab
     @Environment(\.theme) private var theme
+    @State private var hoveredTab: RoomTab?
 
     var body: some View {
         HStack(spacing: theme.z(2)) {
@@ -661,17 +662,24 @@ private struct RoomTabs: View {
     }
 
     private func item(_ title: String, _ value: RoomTab) -> some View {
-        Button { tab = value } label: {
+        let selected = tab == value
+        let hovered = hoveredTab == value
+        return Button { tab = value } label: {
             Text(title)
                 .font(theme.font(size: 12, weight: .medium))
-                .foregroundStyle(tab == value ? theme.textPrimary : theme.textSecondary)
+                .foregroundStyle(selected || hovered ? theme.textPrimary : theme.textSecondary)
                 .lineLimit(1)
                 .padding(.horizontal, theme.z(10))
                 .frame(height: theme.z(22))
-                .background(RoundedRectangle(cornerRadius: theme.z(6), style: .continuous).fill(tab == value ? theme.selection : .clear))
+                .background(
+                    RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                        .fill(selected ? theme.selection : (hovered ? theme.hover : .clear))
+                )
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hoveredTab = $0 ? value : (hoveredTab == value ? nil : hoveredTab) }
+        .animation(.easeOut(duration: 0.12), value: hoveredTab)
     }
 }
 
@@ -707,7 +715,7 @@ struct RoomComposer: View {
         .padding(.bottom, theme.z(10))
         .background(RoundedRectangle(cornerRadius: theme.z(16), style: .continuous).fill(theme.elevated))
         .overlay(RoundedRectangle(cornerRadius: theme.z(16), style: .continuous).strokeBorder(focused ? theme.accent.opacity(0.5) : theme.border, lineWidth: 1))
-        .shadow(color: .black.opacity(theme.isDark ? 0.25 : 0.06), radius: 10, y: 3)
+        .shadow(color: .black.opacity(theme.isDark ? 0.25 : 0.06), radius: theme.z(10), y: theme.z(3))
     }
 
     private var startsRun: Bool {
@@ -879,6 +887,7 @@ struct PauseBanner: View {
     let reason: String
     let resume: () -> Void
     @Environment(\.theme) private var theme
+    @State private var resumeHovered = false
 
     var body: some View {
         HStack(spacing: theme.z(8)) {
@@ -890,10 +899,21 @@ struct PauseBanner: View {
                 .foregroundStyle(theme.textPrimary)
                 .lineLimit(2)
             Spacer(minLength: 8)
-            Button("Resume", action: resume)
-                .buttonStyle(.plain)
-                .font(theme.font(size: 12.5, weight: .medium))
-                .foregroundStyle(theme.accent)
+            Button(action: resume) {
+                Text("Resume")
+                    .font(theme.font(size: 12.5, weight: .medium))
+                    .foregroundStyle(theme.accent)
+                    .padding(.horizontal, theme.z(8))
+                    .padding(.vertical, theme.z(4))
+                    .background(
+                        RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                            .fill(resumeHovered ? theme.accent.opacity(theme.isDark ? 0.18 : 0.12) : .clear)
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { resumeHovered = $0 }
+            .animation(.easeOut(duration: 0.12), value: resumeHovered)
         }
         .padding(.horizontal, theme.z(12))
         .padding(.vertical, theme.z(8))

@@ -59,6 +59,13 @@ struct ComposerView: View {
                     offer: offer,
                     onStart: { Task { await ModelSwitcher.accept(offer, store: store, window: window) } },
                     onCancel: { ModelSwitcher.decline(offer) })
+            } else if let staged = store.stagedModel(for: session.id) {
+                StagedModelBanner(
+                    stagedName: store.modelName(staged),
+                    currentName: store.modelName(session.info.model)
+                ) {
+                    store.clearStagedModel(for: session.id)
+                }
             }
             composerBox
         }
@@ -548,23 +555,9 @@ struct ComposerView: View {
     @ViewBuilder private var fastToggle: some View {
         if hasFastMode {
             let on = session.fastMode
-            Button {
+            FastModeToggle(isOn: on) {
                 Task { await store.setFastMode(!on, for: session.id) }
-            } label: {
-                Image(systemName: on ? "bolt.fill" : "bolt")
-                    .font(theme.font(size: 13))
-                    .foregroundStyle(on ? theme.accent : theme.textSecondary)
-                    .frame(width: theme.z(30), height: theme.z(28))
-                    .background(
-                        RoundedRectangle(cornerRadius: theme.z(8), style: .continuous)
-                            .fill(on ? theme.accent.opacity(0.14) : .clear)
-                    )
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .help(on ? "Fast mode is on" : "Fast mode is off")
-            .accessibilityLabel("Fast mode")
-            .accessibilityValue(on ? "On" : "Off")
         }
     }
 
@@ -572,7 +565,7 @@ struct ComposerView: View {
         let hasText = !(snapshotDraft ?? draft.wrappedValue).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
         if session.isWorking && !hasText {
             Button {
-                Task { await store.stop() }
+                Task { await store.stop(session.id) }
             } label: {
                 RoundedRectangle(cornerRadius: theme.z(2.5))
                     .fill(theme.background)
@@ -598,6 +591,90 @@ struct ComposerView: View {
             .help(session.isWorking ? "Queue (Return): sent when the agent finishes" : "Send (Return)")
             .accessibilityLabel(session.isWorking ? "Queue" : "Send")
         }
+    }
+}
+
+/// Slim dismissible bar above the composer when a model switch is staged for the next message.
+private struct StagedModelBanner: View {
+    let stagedName: String
+    let currentName: String
+    let onClear: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var clearHovering = false
+
+    var body: some View {
+        HStack(spacing: theme.z(8)) {
+            Image(systemName: "arrow.right.circle.fill")
+                .font(theme.font(size: 11.5))
+                .foregroundStyle(theme.accent)
+            Text("Next message: \(stagedName)")
+                .font(theme.font(size: 12, weight: .medium))
+                .foregroundStyle(theme.textPrimary)
+                .lineLimit(1)
+            Spacer(minLength: theme.z(8))
+            Button(action: onClear) {
+                HStack(spacing: theme.z(4)) {
+                    Text(currentName.isEmpty ? "Cancel" : "Keep \(currentName)")
+                        .lineLimit(1)
+                    Image(systemName: "xmark")
+                        .font(theme.font(size: 9, weight: .semibold))
+                }
+                .font(theme.font(size: 11.5))
+                .foregroundStyle(clearHovering ? theme.textPrimary : theme.textSecondary)
+                .padding(.horizontal, theme.z(7))
+                .frame(height: theme.z(22))
+                .background(
+                    RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                        .fill(clearHovering ? theme.hover : .clear)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .fixedSize()
+            .onHover { clearHovering = $0 }
+            .animation(.easeOut(duration: 0.12), value: clearHovering)
+            .help(currentName.isEmpty ? "Cancel staged model switch" : "Keep \(currentName)")
+        }
+        .padding(.horizontal, theme.z(10))
+        .padding(.vertical, theme.z(5))
+        .background(
+            RoundedRectangle(cornerRadius: theme.z(10), style: .continuous)
+                .fill(theme.elevated)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.z(10), style: .continuous)
+                .strokeBorder(theme.border, lineWidth: 1)
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Next message: \(stagedName)")
+    }
+}
+
+/// Fast mode button in the composer's bottom row, matching `ComposerIconButton` and `ComposerChip` hover states.
+private struct FastModeToggle: View {
+    let isOn: Bool
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isOn ? "bolt.fill" : "bolt")
+                .font(theme.font(size: 13))
+                .foregroundStyle(isOn ? theme.accent : (hovering ? theme.textPrimary : theme.textSecondary))
+                .frame(width: theme.z(30), height: theme.z(28))
+                .background(
+                    RoundedRectangle(cornerRadius: theme.z(8), style: .continuous)
+                        .fill(isOn ? theme.accent.opacity(hovering ? 0.20 : 0.14) : (hovering ? theme.hover : .clear))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .help(isOn ? "Fast mode is on" : "Fast mode is off")
+        .accessibilityLabel("Fast mode")
+        .accessibilityValue(isOn ? "On" : "Off")
     }
 }
 

@@ -9,6 +9,8 @@ public struct AgentExchangeCardView: View {
 
     @Environment(\.theme) private var theme
     @State private var expanded = false
+    @State private var dismissHovered = false
+    @State private var toggleReplyHovered = false
 
     public init(
         exchange: AgentExchange,
@@ -130,11 +132,17 @@ public struct AgentExchangeCardView: View {
                 Button(action: onDismiss) {
                     Image(systemName: "xmark")
                         .font(theme.font(size: 10, weight: .medium))
-                        .foregroundStyle(theme.textTertiary)
+                        .foregroundStyle(dismissHovered ? theme.textPrimary : theme.textTertiary)
                         .frame(width: theme.z(20), height: theme.z(20))
+                        .background(
+                            RoundedRectangle(cornerRadius: theme.z(5), style: .continuous)
+                                .fill(dismissHovered ? theme.hover : .clear)
+                        )
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .onHover { dismissHovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: dismissHovered)
                 .help("Dismiss")
                 .accessibilityLabel("Dismiss exchange")
             }
@@ -204,12 +212,19 @@ public struct AgentExchangeCardView: View {
             }
 
             if reply.count > 160 || exchange.message.count > 220 {
-                Button(expanded ? "Show less" : "Show full reply") {
+                Button {
                     withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() }
+                } label: {
+                    Text(expanded ? "Hide full reply" : "Show full reply")
+                        .font(theme.font(size: 11.5, weight: .medium))
+                        .foregroundStyle(theme.accent)
+                        .underline(toggleReplyHovered)
+                        .padding(.vertical, theme.z(2))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .font(theme.font(size: 11.5, weight: .medium))
-                .foregroundStyle(theme.accent)
+                .onHover { toggleReplyHovered = $0 }
+                .animation(.easeOut(duration: 0.12), value: toggleReplyHovered)
             }
         }
     }

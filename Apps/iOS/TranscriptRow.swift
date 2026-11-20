@@ -6,10 +6,14 @@ struct TranscriptRow: View {
     let item: TranscriptItem
     let agents: [UUID: RemoteAgent]
     let client: RemoteClient
+    var modelLabel: String? = nil
     var secondOpinions: [RemoteSecondOpinion] = []
     var availableModels: [RemoteModelOption] = []
     var currentModelID: String? = nil
     var onRequestSecondOpinion: ((String, String, RemoteModelOption) -> Void)? = nil
+    var retrySecondOpinion: ((RemoteSecondOpinion, String) -> (() -> Void)?)? = nil
+    var continueWithOpinionModel: ((RemoteSecondOpinion) -> (() -> Void)?)? = nil
+    var onRetryError: (() -> Void)? = nil
     var onError: (String) -> Void
 
     var body: some View {
@@ -21,11 +25,14 @@ struct TranscriptRow: View {
                 itemID: id,
                 text: text,
                 agent: agentID.flatMap { agents[$0] },
+                modelLabel: modelLabel,
                 streaming: streaming,
                 opinions: secondOpinions.filter { $0.itemID == id },
                 availableModels: availableModels,
                 currentModelID: currentModelID,
-                onRequestSecondOpinion: onRequestSecondOpinion
+                onRequestSecondOpinion: onRequestSecondOpinion,
+                retrySecondOpinion: retrySecondOpinion,
+                continueWithOpinionModel: continueWithOpinionModel
             )
         case .reasoning(_, let text, let streaming):
             RemoteReasoningRow(text: text, streaming: streaming)
@@ -47,7 +54,7 @@ struct TranscriptRow: View {
         case .board(_, let from, let to, let text, _):
             BoardMessage(from: agents[from], to: to.compactMap { agents[$0] }, text: text)
         case .error(_, let message):
-            RemoteErrorRow(message: message)
+            RemoteErrorRow(message: message, onRetry: onRetryError)
         case .notice(_, let text):
             RemoteNoticeRow(text: text)
         }
@@ -86,13 +93,18 @@ private struct AgentTextRow: View {
     let itemID: String
     let text: String
     let agent: RemoteAgent?
+    let modelLabel: String?
     let streaming: Bool
     let opinions: [RemoteSecondOpinion]
     let availableModels: [RemoteModelOption]
     let currentModelID: String?
     let onRequestSecondOpinion: ((String, String, RemoteModelOption) -> Void)?
+    let retrySecondOpinion: ((RemoteSecondOpinion, String) -> (() -> Void)?)?
+    let continueWithOpinionModel: ((RemoteSecondOpinion) -> (() -> Void)?)?
 
     @ScaledMetric(relativeTo: .body) private var messageSize: CGFloat = 15
+    @State private var copied = false
+    @State private var copyHaptic = 0
 
     private var orderedModels: [RemoteModelOption] {
         guard let currentModelID else { return availableModels }
@@ -101,49 +113,96 @@ private struct AgentTextRow: View {
         return other + same
     }
 
+    private var hasText: Bool {
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let agent {
                 AgentTag(agent: agent, showModel: true)
+            } else if let modelLabel, !modelLabel.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: "cpu")
+                        .font(RemoteTheme.font(size: 10, weight: .medium, relativeTo: .caption2))
+                    Text(modelLabel)
+                        .font(RemoteTheme.font(size: 11.5, weight: .medium, relativeTo: .caption))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(RemoteTheme.tertiaryText)
             }
             MarkdownView(text, fontSize: messageSize, streaming: streaming)
             if streaming {
                 ConstellationSpinner(size: 13)
                     .padding(.top, 2)
-            } else if let onRequestSecondOpinion,
-                      !availableModels.isEmpty,
-                      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Menu {
-                    Section("Ask another model") {
-                        ForEach(orderedModels) { option in
-                            Button {
-                                onRequestSecondOpinion(itemID, text, option)
-                            } label: {
-                                Text(option.makerName.isEmpty ? option.name : "\(option.name) (\(option.makerName))")
+            } else if hasText {
+                HStack(spacing: 8) {
+                    Button {
+                        copyToPasteboard(text)
+                        copyHaptic += 1
+                        copied = true
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .seconds(1.5))
+                            copied = false
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                                .font(RemoteTheme.font(size: 11, weight: .medium, relativeTo: .caption))
+                            Text(copied ? "Copied" : "Copy")
+                                .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption))
+                        }
+                        .foregroundStyle(copied ? RemoteTheme.success : RemoteTheme.secondaryText)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(RemoteTheme.cardRaised, in: Capsule())
+                        .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+                        .frame(minHeight: RemoteTheme.minTapTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(copied ? "Copied reply" : "Copy reply")
+
+                    if let onRequestSecondOpinion, !availableModels.isEmpty {
+                        Menu {
+                            Section("Ask another model") {
+                                ForEach(orderedModels) { option in
+                                    Button {
+                                        onRequestSecondOpinion(itemID, text, option)
+                                    } label: {
+                                        Text(option.makerName.isEmpty ? option.name : "\(option.name) (\(option.makerName))")
+                                    }
+                                }
                             }
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "text.bubble")
+                                    .font(RemoteTheme.font(size: 11, weight: .medium, relativeTo: .caption))
+                                Text("Second opinion")
+                                    .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption))
+                            }
+                            .foregroundStyle(RemoteTheme.secondaryText)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(RemoteTheme.cardRaised, in: Capsule())
+                            .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+                            .frame(minHeight: RemoteTheme.minTapTarget)
+                            .contentShape(Rectangle())
                         }
                     }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "text.bubble")
-                            .font(RemoteTheme.font(size: 11, weight: .medium, relativeTo: .caption))
-                        Text("Second opinion")
-                            .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption))
-                    }
-                    .foregroundStyle(RemoteTheme.secondaryText)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(RemoteTheme.cardRaised, in: Capsule())
-                    .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
                 }
-                .padding(.top, 2)
             }
 
             ForEach(opinions) { opinion in
-                RemoteSecondOpinionCard(opinion: opinion)
+                RemoteSecondOpinionCard(
+                    opinion: opinion,
+                    onRetry: retrySecondOpinion?(opinion, text),
+                    onContinueWithModel: continueWithOpinionModel?(opinion)
+                )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .sensoryFeedback(.selection, trigger: copyHaptic)
     }
 }
 
@@ -219,7 +278,7 @@ private struct RemoteReasoningRow: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .frame(minHeight: 38)
+                .frame(minHeight: RemoteTheme.minTapTarget)
                 .background(RemoteTheme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -410,6 +469,8 @@ struct PermissionCard: View {
     var onError: (String) -> Void
     var agent: RemoteAgent?
     @State private var busy = false
+    @State private var allowHaptic = 0
+    @State private var rejectHaptic = 0
 
     private var decision: PermissionDecision? { client.permissionDecisions[request.id] }
     private var answered: Bool {
@@ -474,6 +535,8 @@ struct PermissionCard: View {
             }
         }
         .remoteCard(padding: 14, attention: !answered)
+        .sensoryFeedback(.success, trigger: allowHaptic)
+        .sensoryFeedback(.warning, trigger: rejectHaptic)
     }
 
     private var answerText: String {
@@ -486,6 +549,7 @@ struct PermissionCard: View {
     }
 
     private func reply(_ d: PermissionDecision) {
+        if d == .reject { rejectHaptic += 1 } else { allowHaptic += 1 }
         busy = true
         Task {
             do { try await client.reply(to: request, decision: d) } catch { onError(error.localizedDescription) }
@@ -534,18 +598,27 @@ struct BoardMessage: View {
 
 private struct RemoteErrorRow: View {
     let message: String
+    var onRetry: (() -> Void)? = nil
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
-                .foregroundStyle(RemoteTheme.danger)
-            Text(message)
-                .font(RemoteTheme.font(size: 13.5, relativeTo: .footnote))
-                .foregroundStyle(RemoteTheme.primaryText)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
+                    .foregroundStyle(RemoteTheme.danger)
+                Text(message)
+                    .font(RemoteTheme.font(size: 13.5, relativeTo: .footnote))
+                    .foregroundStyle(RemoteTheme.primaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+            }
+            if let onRetry {
+                Button(action: onRetry) {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(RemoteSecondaryButtonStyle())
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
