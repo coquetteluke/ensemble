@@ -153,6 +153,8 @@ public struct RemoteHelloLimiter: Sendable {
         self.blockDuration = blockDuration
     }
 
+    var trackedFailureCount: Int { failures.count }
+
     public func isBlocked(_ address: String, now: Date = Date()) -> Bool {
         if let until = blockedUntil[address], until > now { return true }
         return false
@@ -161,13 +163,38 @@ public struct RemoteHelloLimiter: Sendable {
     public mutating func recordFailure(_ address: String, now: Date = Date()) {
         var list = (failures[address] ?? []).filter { now.timeIntervalSince($0) < window }
         list.append(now)
-        failures[address] = list
         if list.count >= maxFailures {
             blockedUntil[address] = now.addingTimeInterval(blockDuration)
-            failures[address] = []
+            failures[address] = nil
+        } else {
+            failures[address] = list
         }
-        // Keep the tables small.
-        if failures.count > 1024 { failures = failures.filter { !$0.value.isEmpty } }
+        // Keep the tables strictly bounded.
+        if failures.count > 1024 {
+            var pruned: [String: [Date]] = [:]
+            pruned.reserveCapacity(min(failures.count, 1024))
+            for (key, dates) in failures {
+                let active = dates.filter { now.timeIntervalSince($0) < window }
+                if !active.isEmpty {
+                    pruned[key] = active
+                }
+            }
+            if pruned.count > 1024 {
+                let overflow = pruned.count - 1024
+                let oldestKeys = pruned
+                    .sorted { lhs, rhs in
+                        let left = lhs.value.max() ?? .distantPast
+                        let right = rhs.value.max() ?? .distantPast
+                        return left == right ? lhs.key < rhs.key : left < right
+                    }
+                    .prefix(overflow)
+                    .map(\.key)
+                for key in oldestKeys {
+                    pruned[key] = nil
+                }
+            }
+            failures = pruned
+        }
         if blockedUntil.count > 1024 { blockedUntil = blockedUntil.filter { $0.value > now } }
     }
 

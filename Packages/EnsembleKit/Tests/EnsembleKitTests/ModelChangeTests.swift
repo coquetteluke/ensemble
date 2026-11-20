@@ -1,6 +1,76 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import EnsembleKit
+
+private final class ModelChangeGate: @unchecked Sendable {
+    private struct State {
+        var arrived = false
+        var released = false
+        var arrivalWaiter: CheckedContinuation<Void, Never>?
+        var releaseWaiter: CheckedContinuation<Void, Never>?
+    }
+
+    private let state = Mutex(State())
+
+    func pause() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let (notify, resumeNow): (CheckedContinuation<Void, Never>?, Bool) = state.withLock { s in
+                s.arrived = true
+                let waiter = s.arrivalWaiter
+                s.arrivalWaiter = nil
+                if s.released {
+                    return (waiter, true)
+                } else {
+                    s.releaseWaiter = continuation
+                    return (waiter, false)
+                }
+            }
+            notify?.resume()
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    func waitUntilPaused() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let immediate = state.withLock { s -> Bool in
+                if s.arrived { return true }
+                s.arrivalWaiter = continuation
+                return false
+            }
+            if immediate { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let waiter: CheckedContinuation<Void, Never>? = state.withLock { s in
+            s.released = true
+            let w = s.releaseWaiter
+            s.releaseWaiter = nil
+            return w
+        }
+        waiter?.resume()
+    }
+}
+
+private final class PausableCreateFakeEngine: RouterFakeEngine, @unchecked Sendable {
+    private let createGate = Mutex<ModelChangeGate?>(nil)
+
+    func pauseNextCreate(with gate: ModelChangeGate) {
+        createGate.withLock { $0 = gate }
+    }
+
+    override func createSession(directory: String, model: ModelRef?, agent: String?, permissionMode: PermissionMode, parentID: String?) async throws -> EngineSession {
+        if let gate = createGate.withLock({ value -> ModelChangeGate? in
+            let next = value
+            value = nil
+            return next
+        }) {
+            await gate.pause()
+        }
+        return try await super.createSession(directory: directory, model: model, agent: agent, permissionMode: permissionMode, parentID: parentID)
+    }
+}
 
 /// Picking a model of another engine: an empty session starts over on that engine, a session with history is offered a
 /// new session, and nothing ends in an error.
@@ -80,5 +150,41 @@ import Testing
         #expect(await router.engineChange(forSession: session.id, to: ModelRef(providerID: "xai", id: "grok-5")) == nil)
         try await router.switchModel(session.id, model: ModelRef(providerID: "xai", id: "grok-5"))
         #expect(untrusted.calls.last == "switch:\(session.id):xai/grok-5")
+    }
+
+    @Test func changeModelDoesNotDeleteSessionIfMessageArrivesDuringRestart() async throws {
+        let openCode = RouterFakeEngine(name: "opencode")
+        let claude = PausableCreateFakeEngine(name: "claude")
+        let router = EngineRouter(fallback: openCode)
+        router.register(claude, providers: ["claude-code": .subscription], id: "claude", name: "Claude")
+        let store = SessionStore(engine: router)
+
+        let original = try await store.newSession(directory: "/tmp/project", model: gpt, permissionMode: .auto)
+        let gate = ModelChangeGate()
+        claude.pauseNextCreate(with: gate)
+
+        let restartTask = Task { await store.changeModel(haiku, for: original.id) }
+        await gate.waitUntilPaused()
+
+        // A concurrent restart request on the same session is rejected while one is in flight.
+        let concurrentResult = await store.changeModel(haiku, for: original.id)
+        #expect(concurrentResult == .failed)
+
+        // User starts using the original session before the replacement finishes creating.
+        await store.send("Keep this session alive", to: original.id)
+
+        gate.release()
+        let result = await restartTask.value
+
+        #expect(result == .stagedForNextMessage(haiku))
+        #expect(store.session(original.id) != nil)
+        #expect(store.selectedSessionID == original.id)
+        #expect(store.stagedModel(for: original.id) == haiku)
+        #expect(!openCode.calls.contains("delete:\(original.id)"))
+        #expect(claude.calls.contains { $0.hasPrefix("delete:claude-") })
+        #expect(original.items.contains {
+            if case .user(_, let text, _) = $0 { return text == "Keep this session alive" }
+            return false
+        })
     }
 }

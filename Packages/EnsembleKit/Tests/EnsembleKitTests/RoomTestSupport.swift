@@ -68,6 +68,8 @@ final class FakeEngine: OpenCodeAPI, EngineWorktreeAccess, EngineFolderModels {
         var modelDirectories: [String?] = []
         var sessionPrefix = "ses_"
         var defaultReply = "OK."
+        var transcriptHooks: [String: @Sendable () async -> Void] = [:]
+        var changedFilesHook: (@Sendable (String) async -> Void)?
 
         func session(of agent: String) -> String? {
             agentBySession.first { $0.value.caseInsensitiveCompare(agent) == .orderedSame }?.key
@@ -115,6 +117,14 @@ final class FakeEngine: OpenCodeAPI, EngineWorktreeAccess, EngineFolderModels {
 
     func setChangedFiles(_ agent: String, _ files: [String]) {
         state.withLock { $0.changedFiles[agent.lowercased()] = files }
+    }
+
+    func onTranscript(for agent: String, _ hook: @escaping @Sendable () async -> Void) {
+        state.withLock { $0.transcriptHooks[agent.lowercased()] = hook }
+    }
+
+    func onChangedFiles(_ hook: @escaping @Sendable (String) async -> Void) {
+        state.withLock { $0.changedFilesHook = hook }
     }
 
     /// Finishes a held execution with its rule's reply (or `reply`).
@@ -206,7 +216,12 @@ final class FakeEngine: OpenCodeAPI, EngineWorktreeAccess, EngineFolderModels {
     func switchModel(_ sessionID: String, model: ModelRef) async throws {}
 
     func transcript(_ sessionID: String) async throws -> [TranscriptItem] {
-        state.withLock { $0.transcripts[sessionID] ?? [] }
+        let hook: (@Sendable () async -> Void)? = state.withLock { s in
+            guard let agent = s.agentBySession[sessionID]?.lowercased() else { return nil }
+            return s.transcriptHooks.removeValue(forKey: agent)
+        }
+        if let hook { await hook() }
+        return state.withLock { $0.transcripts[sessionID] ?? [] }
     }
 
     func children(_ sessionID: String) async throws -> [EngineSession] { [] }
@@ -252,7 +267,9 @@ final class FakeEngine: OpenCodeAPI, EngineWorktreeAccess, EngineFolderModels {
     }
 
     func changedFiles(_ sessionID: String) async throws -> [FileChange] {
-        state.withLock { s in
+        let hook: (@Sendable (String) async -> Void)? = state.withLock { $0.changedFilesHook }
+        if let hook { await hook(sessionID) }
+        return state.withLock { s in
             let agent = s.agentBySession[sessionID]?.lowercased() ?? ""
             return (s.changedFiles[agent] ?? []).map { FileChange(path: $0, kind: .modified) }
         }
@@ -409,6 +426,7 @@ final class FakeGitOps: GitOps {
         var merges: [Merge] = []
         var commits: [String] = []
         var conflictsOnce: [String: [String]] = [:]
+        var conflictStatuses: [String: GitConflictStatus] = [:]
     }
 
     private let state = Mutex(State())
@@ -423,6 +441,10 @@ final class FakeGitOps: GitOps {
     /// The first merge of `branch` stops with conflicts in `files`.
     func conflictOnce(branch: String, files: [String]) {
         state.withLock { $0.conflictsOnce[branch] = files }
+    }
+
+    func setConflictStatus(_ status: GitConflictStatus, for branch: String) {
+        state.withLock { $0.conflictStatuses[branch] = status }
     }
 
     var worktrees: [String] { state.withLock { $0.worktrees } }
@@ -455,6 +477,10 @@ final class FakeGitOps: GitOps {
             }
             return GitMergeResult(merged: true)
         }
+    }
+
+    func conflictStatus(branch: String, into base: String, repo: String) async throws -> GitConflictStatus {
+        state.withLock { $0.conflictStatuses[branch] ?? GitConflictStatus(conflicts: [], mergeInProgress: false, branchMerged: true) }
     }
 }
 
@@ -516,15 +542,28 @@ extension RoomEngine {
     /// agent whose subagents work).
     func waitForQuiet(fake: FakeEngine, sourceLocation: SourceLocation = #_sourceLocation) async throws {
         try await waitFor("the room to go quiet", fake: fake, sourceLocation: sourceLocation) { engine in
-            engine.busy.isEmpty && fake.isQuiet
+            engine.busy.isEmpty && engine.finishing.isEmpty && fake.isQuiet
         }
     }
 
     /// Quiet, and nothing waits in an outbox: the room has settled.
     func waitForSettled(fake: FakeEngine, sourceLocation: SourceLocation = #_sourceLocation) async throws {
         try await waitFor("the room to settle", fake: fake, sourceLocation: sourceLocation) { engine in
-            engine.busy.isEmpty && engine.state.outbox.values.allSatisfy(\.isEmpty) && fake.isQuiet
+            engine.busy.isEmpty && engine.finishing.isEmpty && engine.state.outbox.values.allSatisfy(\.isEmpty) && fake.isQuiet
         }
+    }
+
+    /// The branch a team run gives `agentName` in its first run: `ensemble/<room slug>-<room id>/<agent slug>-<agent id>`,
+    /// each id cut to its first six characters, lowercased.
+    func expectedBranch(_ agentName: String, roomSlug: String = "test-room") -> String {
+        let room = String(state.id.uuidString.prefix(6)).lowercased()
+        let agent = String(id(of: agentName).uuidString.prefix(6)).lowercased()
+        return "ensemble/\(roomSlug)-\(room)/\(agentName.lowercased())-\(agent)"
+    }
+
+    /// The worktree folder name for `expectedBranch(_:roomSlug:)`.
+    func expectedWorktreeFolder(_ agentName: String, roomSlug: String = "test-room") -> String {
+        expectedBranch(agentName, roomSlug: roomSlug).replacingOccurrences(of: "/", with: "-")
     }
 
     func messages(from name: String) -> [BoardMessage] {

@@ -97,6 +97,16 @@ public struct RemoteSessionRef: Codable, Hashable, Sendable {
     public init(sessionID: String) { self.sessionID = sessionID }
 }
 
+public struct RemoteArchiveSession: Codable, Hashable, Sendable {
+    public var sessionID: String
+    public var archived: Bool
+
+    public init(sessionID: String, archived: Bool = true) {
+        self.sessionID = sessionID
+        self.archived = archived
+    }
+}
+
 public struct RemoteTargetRef: Codable, Hashable, Sendable {
     public var target: RemoteTarget
     public init(target: RemoteTarget) { self.target = target }
@@ -142,6 +152,8 @@ public enum RemoteClientMessage: Hashable, Sendable {
     case sessionDiff(sessionID: String)
     /// Reply: `.ack`. Requests an inline second opinion on an assistant reply.
     case secondOpinion(RemoteSecondOpinionRequest)
+    /// Reply: `.ack`. Archives or unarchives a solo session.
+    case archiveSession(RemoteArchiveSession)
 
     public var typeName: String {
         switch self {
@@ -164,6 +176,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .createRoom: "createRoom"
         case .sessionDiff: "sessionDiff"
         case .secondOpinion: "secondOpinion"
+        case .archiveSession: "archiveSession"
         }
     }
 
@@ -186,6 +199,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .createSession(let p): try c.encode(p, forKey: .data)
         case .createRoom(let p): try c.encode(p, forKey: .data)
         case .secondOpinion(let p): try c.encode(p, forKey: .data)
+        case .archiveSession(let p): try c.encode(p, forKey: .data)
         }
     }
 
@@ -211,6 +225,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case "createRoom": return .createRoom(try c.decode(RemoteCreateRoom.self, forKey: .data))
         case "sessionDiff": return .sessionDiff(sessionID: try c.decode(RemoteSessionRef.self, forKey: .data).sessionID)
         case "secondOpinion": return .secondOpinion(try c.decode(RemoteSecondOpinionRequest.self, forKey: .data))
+        case "archiveSession": return .archiveSession(try c.decode(RemoteArchiveSession.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)
         }
     }

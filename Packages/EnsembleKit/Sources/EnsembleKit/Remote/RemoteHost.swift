@@ -39,6 +39,8 @@ public protocol RemoteHost: AnyObject, Sendable {
     func sessionDiff(sessionID: String) async throws -> RemoteSessionDiff
     /// Requests a second opinion on a completed assistant reply.
     func requestSecondOpinion(_ request: RemoteSecondOpinionRequest) async throws
+    /// Archives or unarchives a solo session.
+    func archiveSession(sessionID: String, archived: Bool) async throws
 }
 
 public extension RemoteHost {
@@ -73,6 +75,10 @@ public extension RemoteHost {
     func requestSecondOpinion(_ request: RemoteSecondOpinionRequest) async throws {
         throw RemoteError(.unknownMessage, "This Mac cannot request second opinions from the iPhone.")
     }
+
+    func archiveSession(sessionID: String, archived: Bool) async throws {
+        throw RemoteError(.unknownMessage, "This Mac cannot archive sessions from the iPhone.")
+    }
 }
 
 /// An action the phone asked for, as `DemoRemoteHost` records it.
@@ -90,6 +96,7 @@ public enum RemoteHostAction: Hashable, Sendable {
     case createRoom(RemoteCreateRoom)
     case sessionDiff(sessionID: String)
     case requestSecondOpinion(RemoteSecondOpinionRequest)
+    case archiveSession(sessionID: String, archived: Bool)
 }
 
 /// In-memory `RemoteHost` with sample data. Records every action and applies it to its own state the way
@@ -431,6 +438,18 @@ public actor DemoRemoteHost: RemoteHost {
         transcript.secondOpinions.append(opinion)
         transcripts[request.sessionID] = transcript
         emit(.transcriptUpdated(transcript: transcript))
+    }
+
+    public func archiveSession(sessionID: String, archived: Bool) async throws {
+        guard let idx = sessions.firstIndex(where: { $0.id == sessionID }) else {
+            throw RemoteError(.notFound, "No session \(sessionID)")
+        }
+        guard sessions[idx].roomID == nil else {
+            throw RemoteError(.badRequest, "Rooms cannot be archived from here.")
+        }
+        recordedActions.append(.archiveSession(sessionID: sessionID, archived: archived))
+        sessions[idx].archived = archived
+        emit(.sessionUpserted(session: sessions[idx]))
     }
 
     // MARK: Driving it from tests and previews

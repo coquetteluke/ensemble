@@ -393,11 +393,15 @@ public final class AgentToolsServer: AgentToolsAttaching, Sendable {
             return
         }
         guard message["method"] != nil else { return }
-        let started = connection.start(id) { [weak self] in
+        switch connection.start(id) { [weak self] in
             guard let self, let response = await self.respond(to: message, on: connection) else { return }
             connection.send(response)
-        }
-        if !started {
+        } {
+        case .started, .closed:
+            break
+        case .duplicateID:
+            connection.send(AgentToolsMCP.error(id: id, code: -32600, message: "Duplicate in-flight request id."))
+        case .tooManyInFlight:
             connection.send(AgentToolsMCP.error(id: id, code: -32000, message: "Too many requests at once."))
         }
     }
@@ -521,16 +525,25 @@ final class AgentToolsConnection: @unchecked Sendable {
         set { lock.withLock { listed = newValue } }
     }
 
-    /// Runs one request's work, unless too many are open already. False when refused.
-    func start(_ id: JSONValue, _ work: @escaping @Sendable () async -> Void) -> Bool {
+    enum StartResult {
+        case started
+        case duplicateID
+        case tooManyInFlight
+        case closed
+    }
+
+    /// Runs one request's work, unless closed, duplicate in-flight id, or too many are open already.
+    func start(_ id: JSONValue, _ work: @escaping @Sendable () async -> Void) -> StartResult {
         lock.withLock {
-            guard !closed, inFlight < maxInFlight else { return false }
+            guard !closed else { return .closed }
+            guard tasks[id] == nil else { return .duplicateID }
+            guard inFlight < maxInFlight else { return .tooManyInFlight }
             inFlight += 1
             tasks[id] = Task { [weak self] in
                 await work()
                 self?.finish(id)
             }
-            return true
+            return .started
         }
     }
 

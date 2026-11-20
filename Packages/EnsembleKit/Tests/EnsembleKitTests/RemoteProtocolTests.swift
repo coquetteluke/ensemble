@@ -406,6 +406,40 @@ import Testing
         #expect(!slow.isBlocked("9.9.9.9", now: t0.addingTimeInterval(700)))
     }
 
+    @Test func limiterPrunesExpiredEntriesAndBoundsTrackedTable() {
+        var limiter = RemoteHelloLimiter(maxFailures: 3, window: 60, blockDuration: 120)
+        let t0 = Date(timeIntervalSince1970: 1000)
+
+        // Recording more than 1024 active addresses keeps the table strictly capped at 1024 by evicting oldest entries.
+        for i in 0..<1200 {
+            limiter.recordFailure("10.0.\(i / 256).\(i % 256)", now: t0.addingTimeInterval(Double(i) * 0.01))
+        }
+        #expect(limiter.trackedFailureCount == 1024)
+
+        // The newest address stayed tracked; two more failures within the window block it.
+        let newest = "10.0.\(1199 / 256).\(1199 % 256)"
+        let tRecent = t0.addingTimeInterval(15)
+        limiter.recordFailure(newest, now: tRecent)
+        #expect(!limiter.isBlocked(newest, now: tRecent))
+        limiter.recordFailure(newest, now: tRecent.addingTimeInterval(1))
+        #expect(limiter.isBlocked(newest, now: tRecent.addingTimeInterval(2)))
+
+        // The oldest address was evicted; two more failures are still below maxFailures (3).
+        let oldest = "10.0.0.0"
+        limiter.recordFailure(oldest, now: tRecent)
+        limiter.recordFailure(oldest, now: tRecent.addingTimeInterval(1))
+        #expect(!limiter.isBlocked(oldest, now: tRecent.addingTimeInterval(2)))
+
+        // Once the window passes, recording past the 1024 threshold prunes all expired entries.
+        var expiring = RemoteHelloLimiter(maxFailures: 3, window: 60, blockDuration: 120)
+        for i in 0..<1024 {
+            expiring.recordFailure("10.1.\(i / 256).\(i % 256)", now: t0)
+        }
+        #expect(expiring.trackedFailureCount == 1024)
+        expiring.recordFailure("10.2.0.1", now: t0.addingTimeInterval(120))
+        #expect(expiring.trackedFailureCount == 1)
+    }
+
     @Test func qrCodeRenders() throws {
         let image = try #require(RemoteQRCode.cgImage(for: RemotePairing(hosts: ["h"], port: 1, token: "t", macName: "M").code(), scale: 4))
         #expect(image.width > 50)

@@ -16,6 +16,13 @@ struct EnsembleRemoteApp: App {
                 .environment(model)
                 .remoteThemeEnvironment()
                 .onChange(of: scenePhase) { _, phase in model.scenePhaseChanged(phase) }
+                #if DEBUG
+                .task {
+                    if let dir = RemoteSnapshots.requestedDirectory() {
+                        await RemoteSnapshots.run(outputDirectory: dir)
+                    }
+                }
+                #endif
         }
     }
 }

@@ -45,6 +45,15 @@ final class AgentToolsCenter {
         self.store = store
         let coordinator = AgentToolsCoordinator(environment: Self.environment(store: store, center: self))
         self.coordinator = coordinator
+        RoomEngine.appWideUserTurnObserver = { [weak self] roomID, memberSessionIDs in
+            self?.noteUserTurn(in: roomID.uuidString)
+            for sid in memberSessionIDs {
+                self?.noteUserTurn(in: sid)
+            }
+        }
+        store.onUserMessageSent = { [weak self] sessionID in
+            self?.noteUserTurn(in: sessionID)
+        }
         guard let helper = Bundle.main.url(forAuxiliaryExecutable: AgentToolsBridge.executableName) else {
             problem = "The \(AgentToolsBridge.executableName) helper is missing from the app."
             return
@@ -83,6 +92,19 @@ final class AgentToolsCenter {
             coordinator?.forget(id)
             server.revoke(.session(id))
             secondOpinions.remove(sessionID: id)
+        }
+    }
+
+    /// Resets cross-session agent exchange hop limits when the user sends a message in a session or room.
+    func noteUserTurn(in sessionID: String) {
+        if let store {
+            let primaryID = store.primarySessionID(for: sessionID)
+            coordinator?.noteUserTurn(in: primaryID)
+            if primaryID != sessionID {
+                coordinator?.noteUserTurn(in: sessionID)
+            }
+        } else {
+            coordinator?.noteUserTurn(in: sessionID)
         }
     }
 
@@ -482,7 +504,7 @@ final class AgentToolsCenter {
 
         if let roomID = UUID(uuidString: targetID), let rooms, let engine = rooms.engine(for: roomID) {
             let queued = rooms.isRunning(roomID)
-            await engine.send(payload)
+            await engine.receiveExternalAgentMessage(payload)
             let names = engine.state.spec.agents.map(\.name).joined(separator: ", ")
             return .delivered(
                 targetSessionID: roomID.uuidString,

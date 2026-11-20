@@ -10,8 +10,17 @@ extension BrowserPage: AgentBrowserSurface {
     var agentWorld: WKContentWorld { world }
     var agentURL: URL? { url }
     var agentConsole: [BrowserConsoleLine] { console }
+    var agentConsoleEntries: [AgentBrowserConsoleEntry] { agentTaggedConsoleEntries }
 
     func agentOpen(_ target: URL) {
         load(target)
+    }
+
+    func agentSetNavigationOriginLock(_ expectedOrigin: String?) {
+        setAgentNavigationOriginLock(expectedOrigin)
+    }
+
+    var agentBlockedNavigationTarget: String? {
+        agentBlockedRedirectTarget
     }
 }

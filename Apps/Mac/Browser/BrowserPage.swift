@@ -75,6 +75,14 @@ final class BrowserPage {
     @ObservationIgnored private var delegate: BrowserWebDelegate?
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
     @ObservationIgnored private var nextLineID = 0
+    /// Origin that produced each console line, keyed by `BrowserConsoleLine.id`.
+    @ObservationIgnored private var consoleOrigins: [Int: String] = [:]
+    /// Last committed http(s) origin, used to clear the console on cross-origin navigation.
+    @ObservationIgnored private var lastPageOrigin: String?
+    /// Active origin lock set during agent-initiated navigation; cross-origin main-frame navigations are refused.
+    @ObservationIgnored private(set) var agentNavigationOriginLock: String?
+    /// Target address of a cross-origin redirect blocked while `agentNavigationOriginLock` was active.
+    @ObservationIgnored private(set) var agentBlockedRedirectTarget: String?
     @ObservationIgnored let world = WKContentWorld.world(name: BrowserScripts.worldName)
 
     init(owner: String, folder: String) {
@@ -141,6 +149,11 @@ final class BrowserPage {
 
     private func urlChanged(_ newURL: URL?) {
         guard let newURL, newURL.absoluteString != "about:blank" else { return }
+        let newOrigin = BrowserAgentOrigin.origin(of: newURL)
+        if let previous = lastPageOrigin, let newOrigin, previous != newOrigin {
+            clearConsole()
+        }
+        if let newOrigin { lastPageOrigin = newOrigin }
         url = newURL
         addressText = newURL.absoluteString
         addressError = nil
@@ -164,6 +177,11 @@ final class BrowserPage {
             note("Blocked a \(BrowserNavigationPolicy.schemeName(target)): address. Only http and https pages open here.", level: .warn)
             return
         }
+        let newOrigin = BrowserAgentOrigin.origin(of: target)
+        if let previous = lastPageOrigin, let newOrigin, previous != newOrigin {
+            clearConsole()
+        }
+        if let newOrigin { lastPageOrigin = newOrigin }
         addressError = nil
         loadError = nil
         hasPage = true
@@ -195,13 +213,42 @@ final class BrowserPage {
         append(level: level, text: text, source: .browser)
     }
 
-    func append(level: BrowserConsoleLine.Level, text: String, source: BrowserConsoleLine.Source) {
+    func append(level: BrowserConsoleLine.Level, text: String, source: BrowserConsoleLine.Source, origin: String? = nil) {
         nextLineID += 1
-        console.append(BrowserConsoleLine(id: nextLineID, level: level, text: text, source: source))
-        if console.count > Self.maxConsoleLines { console.removeFirst(console.count - Self.maxConsoleLines) }
+        let id = nextLineID
+        let resolvedOrigin = origin ?? BrowserAgentOrigin.origin(of: storedWebView?.url ?? url)
+        console.append(BrowserConsoleLine(id: id, level: level, text: text, source: source))
+        if let resolvedOrigin { consoleOrigins[id] = resolvedOrigin }
+        if console.count > Self.maxConsoleLines {
+            let dropped = console.count - Self.maxConsoleLines
+            for line in console.prefix(dropped) { consoleOrigins[line.id] = nil }
+            console.removeFirst(dropped)
+        }
     }
 
-    func clearConsole() { console.removeAll() }
+    func clearConsole() {
+        console.removeAll()
+        consoleOrigins.removeAll()
+    }
+
+    /// Console lines paired with the page origin that produced them.
+    var agentTaggedConsoleEntries: [AgentBrowserConsoleEntry] {
+        console.map { AgentBrowserConsoleEntry(line: $0, origin: consoleOrigins[$0.id]) }
+    }
+
+    /// Locks main-frame navigations to `origin` during an agent navigation, or clears the lock when nil.
+    func setAgentNavigationOriginLock(_ origin: String?) {
+        agentNavigationOriginLock = origin
+        if origin != nil {
+            agentBlockedRedirectTarget = nil
+        }
+    }
+
+    fileprivate func recordBlockedAgentRedirect(_ target: URL?) {
+        let address = target?.absoluteString ?? "another site"
+        agentBlockedRedirectTarget = address
+        note("Blocked cross-origin redirect to \(address) during agent navigation.", level: .warn)
+    }
 
     var errorCount: Int { console.reduce(0) { $0 + ($1.level == .error ? 1 : 0) } }
     var warningCount: Int { console.reduce(0) { $0 + ($1.level == .warn ? 1 : 0) } }
@@ -336,9 +383,10 @@ final class BrowserPage {
 
     // MARK: From the delegate
 
-    fileprivate func receiveConsole(_ body: Any) {
+    fileprivate func receiveConsole(_ body: Any, frameURL: URL?) {
         guard let message = BrowserConsoleLine.pageMessage(body) else { return }
-        append(level: message.level, text: message.text, source: .page)
+        let origin = BrowserAgentOrigin.origin(of: frameURL) ?? BrowserAgentOrigin.origin(of: storedWebView?.url ?? url)
+        append(level: message.level, text: message.text, source: .page, origin: origin)
     }
 
     fileprivate func navigationStarted() {
@@ -389,6 +437,15 @@ final class BrowserWebDelegate: NSObject, WKNavigationDelegate, WKUIDelegate, WK
             decisionHandler(.cancel)
             return
         }
+        if let lockedOrigin = page?.agentNavigationOriginLock,
+           navigationAction.targetFrame?.isMainFrame ?? true {
+            let targetOrigin = BrowserAgentOrigin.origin(of: target)
+            if targetOrigin != lockedOrigin {
+                page?.recordBlockedAgentRedirect(target)
+                decisionHandler(.cancel)
+                return
+            }
+        }
         decisionHandler(.allow)
     }
 
@@ -398,6 +455,15 @@ final class BrowserWebDelegate: NSObject, WKNavigationDelegate, WKUIDelegate, WK
             page?.note("Downloads are off in the browser pane: \(navigationResponse.response.url?.absoluteString ?? "")", level: .warn)
             decisionHandler(.cancel)
             return
+        }
+        if let lockedOrigin = page?.agentNavigationOriginLock,
+           navigationResponse.isForMainFrame {
+            let responseOrigin = BrowserAgentOrigin.origin(of: navigationResponse.response.url)
+            if responseOrigin != lockedOrigin {
+                page?.recordBlockedAgentRedirect(navigationResponse.response.url)
+                decisionHandler(.cancel)
+                return
+            }
         }
         decisionHandler(.allow)
     }
@@ -423,6 +489,10 @@ final class BrowserWebDelegate: NSObject, WKNavigationDelegate, WKUIDelegate, WK
                  for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if navigationAction.targetFrame == nil, let target = navigationAction.request.url, BrowserNavigationPolicy.allows(target),
            target.scheme?.lowercased() != "about" {
+            if let lockedOrigin = page?.agentNavigationOriginLock, BrowserAgentOrigin.origin(of: target) != lockedOrigin {
+                page?.recordBlockedAgentRedirect(target)
+                return nil
+            }
             webView.load(navigationAction.request)
         }
         return nil
@@ -431,19 +501,19 @@ final class BrowserWebDelegate: NSObject, WKNavigationDelegate, WKUIDelegate, WK
     // Dialogs go to the console instead of blocking the window: alert returns, confirm answers no, prompt answers nothing.
     func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo,
                  completionHandler: @escaping @MainActor @Sendable () -> Void) {
-        page?.append(level: .info, text: "alert: \(message)", source: .page)
+        page?.append(level: .info, text: "alert: \(message)", source: .page, origin: BrowserAgentOrigin.origin(of: frame.request.url))
         completionHandler()
     }
 
     func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String, initiatedByFrame frame: WKFrameInfo,
                  completionHandler: @escaping @MainActor @Sendable (Bool) -> Void) {
-        page?.append(level: .info, text: "confirm (answered Cancel): \(message)", source: .page)
+        page?.append(level: .info, text: "confirm (answered Cancel): \(message)", source: .page, origin: BrowserAgentOrigin.origin(of: frame.request.url))
         completionHandler(false)
     }
 
     func webView(_ webView: WKWebView, runJavaScriptTextInputPanelWithPrompt prompt: String, defaultText: String?,
                  initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping @MainActor @Sendable (String?) -> Void) {
-        page?.append(level: .info, text: "prompt (answered Cancel): \(prompt)", source: .page)
+        page?.append(level: .info, text: "prompt (answered Cancel): \(prompt)", source: .page, origin: BrowserAgentOrigin.origin(of: frame.request.url))
         completionHandler(nil)
     }
 
@@ -469,7 +539,7 @@ final class BrowserWebDelegate: NSObject, WKNavigationDelegate, WKUIDelegate, WK
         // Only Ensemble's own world can post to these handlers; check anyway.
         guard message.world.name == BrowserScripts.worldName else { return }
         switch message.name {
-        case BrowserScripts.consoleHandler: page?.receiveConsole(message.body)
+        case BrowserScripts.consoleHandler: page?.receiveConsole(message.body, frameURL: message.frameInfo.request.url)
         case BrowserScripts.pickHandler where message.frameInfo.isMainFrame: page?.receivePick(message.body)
         default: break
         }

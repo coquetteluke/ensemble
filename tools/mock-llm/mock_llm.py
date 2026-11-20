@@ -36,6 +36,7 @@ Every request is appended to the `--log` file as one JSON line when given.
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -109,7 +110,46 @@ def rule_steps(rule):
     return steps
 
 
+OWN_WORKTREE = re.compile(r"Work only in your own git worktree: (\S+)")
+ANY_WORKTREE = re.compile(r"\.ensemble/worktrees/[A-Za-z0-9._-]+")
+
+
+def worktree_in(body):
+    """The room worktree this conversation is about, as `.ensemble/worktrees/<folder>`, or None.
+
+    Room worktree folders end in random id suffixes, so scripts write `{{worktree}}` instead of a fixed path.
+    The agent's own brief wins; otherwise the newest worktree path any message mentions (a subagent's prompt).
+    """
+    texts = [message_text(m) for m in body.get("messages", [])]
+    for pattern in (OWN_WORKTREE, ANY_WORKTREE):
+        for text in reversed(texts):
+            found = pattern.findall(text)
+            if found:
+                match = ANY_WORKTREE.search(found[-1])
+                if match:
+                    return match.group(0)
+    return None
+
+
+def fill_placeholders(value, body):
+    if isinstance(value, str):
+        if "{{worktree}}" in value:
+            worktree = worktree_in(body)
+            if worktree is not None:
+                return value.replace("{{worktree}}", worktree)
+        return value
+    if isinstance(value, list):
+        return [fill_placeholders(v, body) for v in value]
+    if isinstance(value, dict):
+        return {k: fill_placeholders(v, body) for k, v in value.items()}
+    return value
+
+
 def choose_step(script, body):
+    return fill_placeholders(choose_step_raw(script, body), body)
+
+
+def choose_step_raw(script, body):
     messages = body.get("messages", [])
     has_tools = bool(body.get("tools"))
     last_user_index = None

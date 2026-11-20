@@ -310,7 +310,7 @@ import Testing
 
     @Test func roomAgentsAreReviewedInTheirOwnWorktrees() async throws {
         let repo = try makeRepo(files: ["shared.txt": "base\n"])
-        let gitOps = ProcessGitOps()
+        let gitOps = ProcessGitOps.trustingEverything
         let worktree = try await gitOps.createWorktree(repo: repo.path, branch: "ensemble/room/ada")
         try write("ada's change\n", "shared.txt", in: URL(fileURLWithPath: worktree))
         try write("ada's new file\n", "ada.txt", in: URL(fileURLWithPath: worktree))

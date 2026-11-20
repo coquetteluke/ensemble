@@ -671,12 +671,12 @@ describe("hardening limits", () => {
     await data.closeCode();
   });
 
-  it("blocks an IP after five wrong phone access proofs", async () => {
+  it("blocks an IP after five wrong phone access proofs without blocking host or data on a shared NAT", async () => {
     const mac = await setup();
-    const attackerIP = "198.51.100.90";
+    const sharedIP = "198.51.100.90";
     const wrongAccessKey = b64url(crypto.getRandomValues(new Uint8Array(32)));
     for (let i = 0; i < 5; i++) {
-      const p = await connect(mac.id, "phone", attackerIP);
+      const p = await connect(mac.id, "phone", sharedIP);
       const ch = await p.next();
       expect(ch.t).toBe("challenge");
       p.send({ t: "access", proof: await proof(wrongAccessKey, mac.id, ch.nonce) });
@@ -684,17 +684,124 @@ describe("hardening limits", () => {
     }
     expect(await mac.host.quiet()).toBe(true);
 
-    // Blocked IP is turned away immediately with no challenge on both phone and host sockets.
-    const blockedPhone = await connect(mac.id, "phone", attackerIP);
+    // Blocked IP is turned away immediately with no challenge on phone sockets.
+    const blockedPhone = await connect(mac.id, "phone", sharedIP);
     expect(await blockedPhone.closeCode()).toBe(4001);
     expect(blockedPhone.messages).toEqual([]);
 
-    const blockedHost = await connect(mac.id, "host", attackerIP);
-    expect(await blockedHost.closeCode()).toBe(4001);
-    expect(blockedHost.messages).toEqual([]);
+    // Host and data sockets from the same shared NAT IP are never blocked by phone failures.
+    const allowedHost = await connect(mac.id, "host", sharedIP);
+    const hostCh = await allowedHost.next();
+    expect(hostCh.t).toBe("challenge");
+    allowedHost.ws.close(1000);
+    await allowedHost.closeCode();
+
+    const { phone: waitingPhone, conn, token } = await phoneWaiting(mac);
+    const allowedData = await connect(mac.id, `data/${conn}`, sharedIP);
+    allowedData.send({ t: "data", token });
+    expect(await waitingPhone.next()).toEqual({ t: "paired" });
+    waitingPhone.ws.close(1000);
+    await allowedData.closeCode();
 
     // Another IP is unaffected.
     const good = await phoneFrom(mac, "198.51.100.91");
     expect(await good.next()).toEqual({ t: "waiting" });
+  });
+
+  it("24 idle phones and per-IP phone caps do not starve host or data sockets", async () => {
+    const mac = await setup();
+    const { phone: waitingPhone, conn, token } = await phoneWaiting(mac);
+
+    const idlePhones: Client[] = [];
+    for (let i = 0; i < 24; i++) {
+      const p = await connect(mac.id, "phone", `203.0.113.${i + 1}`);
+      expect((await p.next()).t).toBe("challenge");
+      idlePhones.push(p);
+    }
+    const overPhones = await connect(mac.id, "phone", "203.0.113.250");
+    expect(await overPhones.closeCode()).toBe(4029);
+
+    // Host and data sockets still succeed with dedicated unproven headroom, even from an IP holding idle phones.
+    const hostFromSameIP = await connect(mac.id, "host", "203.0.113.1");
+    expect((await hostFromSameIP.next()).t).toBe("challenge");
+    hostFromSameIP.ws.close(1000);
+    await hostFromSameIP.closeCode();
+
+    const dataFromSameIP = await connect(mac.id, `data/${conn}`, "203.0.113.1");
+    dataFromSameIP.send({ t: "data", token });
+    expect(await waitingPhone.next()).toEqual({ t: "paired" });
+
+    // Host unproven total cap (8) still bounds host floods across distinct IPs.
+    const heldHosts: Client[] = [];
+    for (let i = 0; i < 8; i++) {
+      const h = await connect(mac.id, "host", `198.51.105.${i + 1}`);
+      expect((await h.next()).t).toBe("challenge");
+      heldHosts.push(h);
+    }
+    const ninthHost = await connect(mac.id, "host", "198.51.105.99");
+    expect(await ninthHost.closeCode()).toBe(4029);
+
+    waitingPhone.ws.close(1000);
+    await dataFromSameIP.closeCode();
+    await Promise.all(heldHosts.map((c) => { c.ws.close(1000); return c.closeCode(); }));
+    await Promise.all(idlePhones.map((c) => { c.ws.close(1000); return c.closeCode(); }));
+  });
+
+  it("foldClosing does not double-count when serializeAttachment throws or a flush already zeroed the socket", async () => {
+    const mac = await setup();
+    const { phone, data } = await paired(mac);
+    for (let i = 0; i < 3; i++) {
+      phone.ws.send("ab");
+      expect(await data.nextRaw()).toBe("ab");
+    }
+
+    // Case 1: serializeAttachment throws on the closing socket while it is still returned by getWebSockets().
+    await runInDurableObject(stubOf(mac), async (inst: Mailbox, state) => {
+      const phoneWs = state.getWebSockets().find((w) => {
+        const a = w.deserializeAttachment() as { role?: string } | null;
+        return a?.role === "phone";
+      })!;
+      const spy = vi.spyOn(phoneWs, "serializeAttachment").mockImplementation(() => {
+        throw new Error("socket already closed");
+      });
+      try {
+        await (inst as unknown as { foldClosing(ws: WebSocket): Promise<void> }).foldClosing(phoneWs);
+      } finally {
+        spy.mockRestore();
+      }
+      // Manually clear so the test teardown close does not fold a second time.
+      const att = phoneWs.deserializeAttachment() as Record<string, unknown>;
+      phoneWs.serializeAttachment({ ...att, dMsgs: undefined, dBytes: undefined });
+    });
+
+    const afterThrow = await runInDurableObject(stubOf(mac), (_i, state) =>
+      state.storage.get<{ messages: number; bytes: number }>("budget"),
+    );
+    expect(afterThrow!.messages).toBe(3);
+    expect(afterThrow!.bytes).toBe(6);
+
+    // Case 2: concurrent messages on cold wake after eviction re-read the attachment after loadBudget().
+    await evictDurableObject(stubOf(mac));
+    await runInDurableObject(stubOf(mac), async (inst: Mailbox, state) => {
+      const phoneWs = state.getWebSockets().find((w) => {
+        const a = w.deserializeAttachment() as { role?: string } | null;
+        return a?.role === "phone";
+      })!;
+      const overBudget = (inst as unknown as {
+        overBudget(ws: WebSocket, msg: string): Promise<boolean>;
+      }).overBudget.bind(inst);
+      await Promise.all([overBudget(phoneWs, "xy"), overBudget(phoneWs, "zw")]);
+      const att = phoneWs.deserializeAttachment() as { dMsgs?: number; dBytes?: number };
+      expect(att.dMsgs).toBe(2);
+      expect(att.dBytes).toBe(4);
+    });
+
+    phone.ws.close(1000);
+    await data.closeCode();
+    const finalBudget = await runInDurableObject(stubOf(mac), (_i, state) =>
+      state.storage.get<{ messages: number; bytes: number }>("budget"),
+    );
+    expect(finalBudget!.messages).toBe(5);
+    expect(finalBudget!.bytes).toBe(10);
   });
 });

@@ -300,8 +300,13 @@ public final class AgentToolsCoordinator: AgentToolsHost {
     @ObservationIgnored private var limiter = ProposalLimiter()
     @ObservationIgnored private var exchangeLimiter = AgentExchangeLimiter()
     @ObservationIgnored private var waiters: [String: CheckedContinuation<BrowserPermissionAnswer, Never>] = [:]
+    private struct QueueWaiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
     @ObservationIgnored private var busy: Set<String> = []
-    @ObservationIgnored private var queued: [String: [CheckedContinuation<Void, Never>]] = [:]
+    @ObservationIgnored private var queued: [String: [QueueWaiter]] = [:]
     /// How long a permission card waits before the call is denied.
     @ObservationIgnored public var permissionTimeout: Duration = .seconds(300)
 
@@ -422,6 +427,15 @@ public final class AgentToolsCoordinator: AgentToolsHost {
 
     public func noteUserTurn(in sessionID: String) {
         exchangeLimiter.reset(session: sessionID)
+        if let root = environment.session(sessionID)?.rootID, root != sessionID {
+            exchangeLimiter.reset(session: root)
+        }
+        if let ownRoom = environment.ownRoomID(sessionID) {
+            exchangeLimiter.reset(session: ownRoom.uuidString)
+            for memberID in environment.roomMemberSessionIDs(ownRoom.uuidString) {
+                exchangeLimiter.reset(session: memberID)
+            }
+        }
         for memberID in environment.roomMemberSessionIDs(sessionID) {
             exchangeLimiter.reset(session: memberID)
         }
@@ -477,6 +491,12 @@ public final class AgentToolsCoordinator: AgentToolsHost {
             }
             if directSession.archived {
                 return .refused("That session is archived.")
+            }
+            if let targetRoom = environment.ownRoomID(directSession.rootID) ?? environment.ownRoomID(directSession.id) {
+                if let ownRoom, targetRoom == ownRoom {
+                    return .refused("You cannot message another member of your own room with message_agent. Address them on the room board instead.")
+                }
+                return .refused("Cannot message a room member session directly. Message the room id \(targetRoom.uuidString) instead.")
             }
         }
         let openEntries = environment.listAgents(session.id, ownRoom)
@@ -706,9 +726,13 @@ public final class AgentToolsCoordinator: AgentToolsHost {
     /// `AgentToolsBinding.isExact`): then "Always for this site" is neither offered nor used, and every call asks.
     func browser(_ action: BrowserAgentAction, session: AgentToolsEnvironment.Session, siteGrants: Bool) async -> AgentToolResult {
         // One browser call at a time per session, in order.
-        await acquire(session.id)
+        guard await acquire(session.id) else {
+            return .refused("The call was cancelled.")
+        }
         defer { release(session.id) }
-        if let refusal = pauseRefusal(action, session: session) { return .refused(refusal) }
+        guard !Task.isCancelled else { return .refused("The call was cancelled.") }
+        let activeSession = environment.session(session.id) ?? session
+        if let refusal = pauseRefusal(action, session: activeSession) { return .refused(refusal) }
         guard let surface = environment.browser(session.id) else {
             return .refused("This session has no browser pane.")
         }
@@ -722,13 +746,17 @@ public final class AgentToolsCoordinator: AgentToolsHost {
         case .success(let described): element = described
         case .failure(let refusal): return .refused(refusal.message)
         }
+        guard !Task.isCancelled else { return .refused("The call was cancelled.") }
         let summary = action.summary(element: element)
 
-        // "Always" covers exactly the origin it was granted for, and only through bridges tied to their engine process.
-        if !(siteGrants && grants.allows(origin, session: session.id)) {
+        // "Always" covers exactly the origin it was granted for, only through bridges tied to their engine process,
+        // and only while the session's folder remains trusted.
+        let currentSession = environment.session(session.id) ?? activeSession
+        let folderTrusted = environment.isTrusted(currentSession.directory)
+        if !(siteGrants && folderTrusted && grants.allows(origin, session: session.id)) {
             let request = BrowserPermissionRequest(sessionID: session.id, tool: action.tool, summary: summary, origin: origin,
                                                    address: target.absoluteString, typedText: action.typedText,
-                                                   allowsAlways: siteGrants && environment.isTrusted(session.directory),
+                                                   allowsAlways: siteGrants && folderTrusted,
                                                    alwaysNote: siteGrants ? BrowserPermissionRequest.untrustedNote
                                                        : BrowserPermissionRequest.claudeOnlyNote)
             environment.showBrowser(session.id)
@@ -744,7 +772,12 @@ public final class AgentToolsCoordinator: AgentToolsHost {
                 break
             }
             // The user may have pressed Stop or Take over while the card was open.
-            if let refusal = pauseRefusal(action, session: environment.session(session.id) ?? session) { return .refused(refusal) }
+            if let refusal = pauseRefusal(action, session: environment.session(session.id) ?? currentSession) { return .refused(refusal) }
+        }
+
+        guard !Task.isCancelled else {
+            touch(session.id, action: nil)
+            return .refused("The call was cancelled.")
         }
 
         // The page may have moved while the card waited or the element was looked up (a redirect, page script, a link):
@@ -860,19 +893,47 @@ public final class AgentToolsCoordinator: AgentToolsHost {
 
     // MARK: Per-session order
 
-    private func acquire(_ sessionID: String) async {
+    /// Acquires the per-session browser lock. Returns false if cancelled before acquiring.
+    private func acquire(_ sessionID: String) async -> Bool {
+        if Task.isCancelled { return false }
         if !busy.contains(sessionID) {
             busy.insert(sessionID)
-            return
+            return true
         }
-        await withCheckedContinuation { queued[sessionID, default: []].append($0) }
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                    return
+                }
+                if !busy.contains(sessionID) {
+                    busy.insert(sessionID)
+                    continuation.resume(returning: true)
+                    return
+                }
+                queued[sessionID, default: []].append(QueueWaiter(id: waiterID, continuation: continuation))
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelQueuedWaiter(sessionID: sessionID, waiterID: waiterID)
+            }
+        }
+    }
+
+    private func cancelQueuedWaiter(sessionID: String, waiterID: UUID) {
+        guard var waiting = queued[sessionID],
+              let index = waiting.firstIndex(where: { $0.id == waiterID }) else { return }
+        let removed = waiting.remove(at: index)
+        queued[sessionID] = waiting.isEmpty ? nil : waiting
+        removed.continuation.resume(returning: false)
     }
 
     private func release(_ sessionID: String) {
         if var waiting = queued[sessionID], !waiting.isEmpty {
             let next = waiting.removeFirst()
             queued[sessionID] = waiting.isEmpty ? nil : waiting
-            next.resume()
+            next.continuation.resume(returning: true)
         } else {
             busy.remove(sessionID)
         }

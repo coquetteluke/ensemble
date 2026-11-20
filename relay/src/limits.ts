@@ -1,7 +1,13 @@
 // Limits that keep one mailbox, and the relay as a whole, inside the Workers free plan.
 
-/** Connections from one address that have not yet proved the access key. */
+/** Connections from one address per role that have not yet proved their key or token. */
 export const MAX_UNPROVEN_PER_ADDRESS = 3;
+/** Maximum unproven phone sockets held in one Durable Object across all addresses. */
+export const MAX_UNPROVEN_PHONE_TOTAL = 24;
+/** Maximum unproven host sockets held in one Durable Object across all addresses. */
+export const MAX_UNPROVEN_HOST_TOTAL = 8;
+/** Maximum unproven data sockets held in one Durable Object across all addresses. */
+export const MAX_UNPROVEN_DATA_TOTAL = 8;
 /** Addresses remembered for bad handshakes at once. */
 export const MAX_TRACKED_ADDRESSES = 256;
 

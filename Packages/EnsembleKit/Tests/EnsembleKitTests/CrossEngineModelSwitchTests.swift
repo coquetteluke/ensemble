@@ -3,6 +3,57 @@ import Synchronization
 import Testing
 @testable import EnsembleKit
 
+/// Two-way gate for deterministically pausing an async fake engine call mid-flight.
+private final class ThreadTestGate: @unchecked Sendable {
+    private struct State {
+        var arrived = false
+        var released = false
+        var arrivalWaiter: CheckedContinuation<Void, Never>?
+        var releaseWaiter: CheckedContinuation<Void, Never>?
+    }
+
+    private let state = Mutex(State())
+
+    func pause() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let (notify, resumeNow): (CheckedContinuation<Void, Never>?, Bool) = state.withLock { s in
+                s.arrived = true
+                let waiter = s.arrivalWaiter
+                s.arrivalWaiter = nil
+                if s.released {
+                    return (waiter, true)
+                } else {
+                    s.releaseWaiter = continuation
+                    return (waiter, false)
+                }
+            }
+            notify?.resume()
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    func waitUntilPaused() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let immediate = state.withLock { s -> Bool in
+                if s.arrived { return true }
+                s.arrivalWaiter = continuation
+                return false
+            }
+            if immediate { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let waiter: CheckedContinuation<Void, Never>? = state.withLock { s in
+            s.released = true
+            let w = s.releaseWaiter
+            s.releaseWaiter = nil
+            return w
+        }
+        waiter?.resume()
+    }
+}
+
 /// Mock engine that captures full prompt texts and scripted transcripts for cross-engine switch tests.
 private final class ThreadTestFakeEngine: RouterFakeEngine, EngineHistoryControl, EngineModelOptionsControl, EngineCommandsControl,
     EngineModelBilling, @unchecked Sendable {
@@ -25,6 +76,7 @@ private final class ThreadTestFakeEngine: RouterFakeEngine, EngineHistoryControl
         var transcripts: [String: [TranscriptItem]] = [:]
         var failNextPrompt: (any Error)?
         var failNextSetPermissionMode: (any Error)?
+        var nextCreateGate: ThreadTestGate?
     }
 
     let extra = Mutex(TranscriptState())
@@ -43,6 +95,21 @@ private final class ThreadTestFakeEngine: RouterFakeEngine, EngineHistoryControl
 
     func failNextSetPermissionMode(with error: any Error) {
         extra.withLock { $0.failNextSetPermissionMode = error }
+    }
+
+    func pauseNextCreate(with gate: ThreadTestGate) {
+        extra.withLock { $0.nextCreateGate = gate }
+    }
+
+    override func createSession(directory: String, model: ModelRef?, agent: String?, permissionMode: PermissionMode, parentID: String?) async throws -> EngineSession {
+        if let gate = extra.withLock({ state -> ThreadTestGate? in
+            let next = state.nextCreateGate
+            state.nextCreateGate = nil
+            return next
+        }) {
+            await gate.pause()
+        }
+        return try await super.createSession(directory: directory, model: model, agent: agent, permissionMode: permissionMode, parentID: parentID)
     }
 
     override func setPermissionMode(_ sessionID: String, mode: PermissionMode) async throws {
@@ -600,5 +667,120 @@ private final class ThreadTestFakeEngine: RouterFakeEngine, EngineHistoryControl
         await #expect(throws: EngineRouterError.signInNeedsTrustedFolder(providerID: "openai")) {
             try await router.switchModel(untrustedSession.id, model: gpt)
         }
+    }
+
+    @Test func concurrentSendDuringStagedCrossEngineSwitchQueuesSecondSend() async throws {
+        let (router, openCode, claude) = makeRouter()
+        let store = SessionStore(engine: router, threadLinksURL: nil)
+        await store.start()
+        defer { store.stopListening() }
+
+        let primary = try await store.newSession(directory: "/tmp/proj", model: gpt, permissionMode: .auto)
+        await store.send("Turn 1", to: primary.id)
+        openCode.send(.textDelta(sessionID: primary.id, itemID: "a1", delta: "Done with turn 1."))
+        openCode.send(.executionEnded(sessionID: primary.id, outcome: "completed", error: nil))
+        openCode.send(.activity(sessionID: primary.id, .idle))
+        try await waitUntil("turn 1 idle") { !primary.isWorking }
+
+        var deliveredCallbackIDs: [String] = []
+        store.onUserMessageSent = { deliveredCallbackIDs.append($0) }
+
+        #expect(await store.changeModel(haiku, for: primary.id) == .stagedForNextMessage(haiku))
+
+        let gate = ThreadTestGate()
+        claude.pauseNextCreate(with: gate)
+
+        let firstSend = Task { await store.send("First message on Claude", to: primary.id) }
+        await gate.waitUntilPaused()
+
+        // A second send arriving while the first is still preparing the cross-engine backing session must queue.
+        await store.send("Second message while switching", to: primary.id)
+        #expect(store.queue(for: primary.id).map(\.text) == ["Second message while switching"])
+
+        gate.release()
+        await firstSend.value
+
+        let claudeCreates = claude.calls.filter { $0.hasPrefix("create:") }
+        #expect(claudeCreates.count == 1)
+        #expect(store.sessions.map(\.id) == [primary.id])
+        #expect(store.queue(for: primary.id).map(\.text) == ["Second message while switching"])
+        let backingB = store.backingSessionID(for: primary.id)
+        #expect(backingB != primary.id)
+        #expect(claude.recordedPrompts(for: backingB).count == 1)
+        #expect(deliveredCallbackIDs == [primary.id])
+    }
+
+    @Test func deltaHandoffAnchoredByItemIDSurvivesItemCountDrift() async throws {
+        let (router, openCode, claude) = makeRouter()
+        let store = SessionStore(engine: router, threadLinksURL: nil)
+        await store.start()
+        defer { store.stopListening() }
+
+        let primary = try await store.newSession(directory: "/tmp/proj", model: gpt, permissionMode: .auto)
+        await store.send("Turn 1 prompt", to: primary.id)
+        openCode.send(.textDelta(sessionID: primary.id, itemID: "a1", delta: "Turn 1 reply"))
+        openCode.send(.toolUpdated(sessionID: primary.id, ToolCallInfo(id: "t1", name: "edit", title: "Core.swift", status: .succeeded)))
+        openCode.send(.executionEnded(sessionID: primary.id, outcome: "completed", error: nil))
+        openCode.send(.activity(sessionID: primary.id, .idle))
+        try await waitUntil("turn 1 finished") {
+            !primary.isWorking && primary.items.contains { $0.id == "t1" }
+        }
+
+        // Switch to Claude and run Turn 2.
+        #expect(await store.changeModel(haiku, for: primary.id) == .stagedForNextMessage(haiku))
+        await store.send("Turn 2 prompt", to: primary.id)
+        let backingB = store.backingSessionID(for: primary.id)
+        #expect(store.threadLinks.link(forBackingID: primary.id, primaryID: primary.id)?.lastHandedOffItemID == "t1")
+
+        claude.send(.textDelta(sessionID: backingB, itemID: "b1", delta: "Turn 2 reply"))
+        claude.send(.executionEnded(sessionID: backingB, outcome: "completed", error: nil))
+        claude.send(.activity(sessionID: backingB, .idle))
+        try await waitUntil("turn 2 finished") {
+            !primary.isWorking && primary.items.contains { $0.id == "b1" }
+        }
+
+        // Insert notices and errors before the anchor item to cause raw item-count drift.
+        primary.items.insert(contentsOf: [
+            .notice(id: "drift-n1", text: "Compacted earlier context"),
+            .error(id: "drift-e1", message: "Transient warning"),
+            .notice(id: "drift-n2", text: "Reconnected"),
+        ], at: 0)
+
+        // Switch back to OpenCode: delta slice must start strictly after anchor "t1", not at stale index count.
+        #expect(await store.changeModel(grok, for: primary.id) == .stagedForNextMessage(grok))
+        await store.send("Turn 3 prompt", to: primary.id)
+
+        let deltaSentToA = try #require(openCode.recordedPrompts(for: primary.id).last)
+        #expect(deltaSentToA.contains("New turns since the last message on this engine:"))
+        #expect(deltaSentToA.contains("Turn 2 prompt"))
+        #expect(deltaSentToA.contains("Turn 2 reply"))
+        #expect(!deltaSentToA.contains("Turn 1 prompt"))
+        #expect(!deltaSentToA.contains("Turn 1 reply"))
+        #expect(deltaSentToA.hasSuffix(CrossEngineHandoff.promptSeparator + "Turn 3 prompt"))
+
+        // Legacy saved JSON without `lastHandedOffItemID` still decodes cleanly and falls back to item count.
+        let legacyJSON = """
+        {
+          "engineID": "opencode",
+          "backingSessionID": "ses-legacy",
+          "lastHandedOffItemCount": 1,
+          "createdAt": "2026-11-18T12:00:00Z"
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let decoded = try decoder.decode(ThreadBackingLink.self, from: Data(legacyJSON.utf8))
+        #expect(decoded.lastHandedOffItemID == nil)
+        #expect(decoded.lastHandedOffItemCount == 1)
+
+        let legacySlice = CrossEngineHandoff.deltaItems(
+            from: [
+                .user(id: "u-old", text: "Old", date: Date()),
+                .user(id: "u-new", text: "New", date: Date()),
+            ],
+            lastHandedOffItemID: decoded.lastHandedOffItemID,
+            lastHandedOffItemCount: decoded.lastHandedOffItemCount
+        )
+        #expect(legacySlice.map(\.id) == ["u-new"])
     }
 }

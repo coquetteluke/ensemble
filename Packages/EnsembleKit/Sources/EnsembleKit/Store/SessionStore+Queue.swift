@@ -88,12 +88,14 @@ extension SessionStore {
         return steeringControl?.canSteer(primaryID) == true ? .steer : .stopAndSend
     }
 
-    /// Holds the message when the session is working. Returns true when it was held.
+    /// Holds the message when the session is working or already delivering a send. Returns true when it was held.
     func enqueueIfBusy(_ text: String, files: [URL], to sessionID: String) -> Bool {
-        guard let session = byID[sessionID], session.isWorking else { return false }
+        let primaryID = primarySessionID(for: sessionID)
+        guard let session = byID[primaryID],
+              session.isWorking || deliveringSessionIDs.contains(primaryID) else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !files.isEmpty else { return true }
-        queues[sessionID, default: []].append(QueuedMessage(text: trimmed, files: files))
+        queues[primaryID, default: []].append(QueuedMessage(text: trimmed, files: files))
         return true
     }
 
@@ -133,6 +135,7 @@ extension SessionStore {
             session.items.append(item)
             session.info.updated = Date()
             session.touch()
+            noteUserMessageSent(primaryID, text: message.text)
             do {
                 try await control.steer(primaryID, text: message.text, files: message.files)
             } catch {
@@ -211,7 +214,7 @@ extension SessionStore {
         guard let session = byID[sessionID], session.activity == .idle,
               let list = queues[sessionID], !list.isEmpty else { return }
         let runtime = queueRuntime[sessionID] ?? QueueRuntime()
-        guard !runtime.held, !runtime.sending else { return }
+        guard !runtime.held, !runtime.sending, !deliveringSessionIDs.contains(sessionID) else { return }
         let batch = queuedDelivery(for: sessionID) == .combined ? list : [list[0]]
         let rest = Array(list.dropFirst(batch.count))
         queues[sessionID] = rest.isEmpty ? nil : rest

@@ -49,8 +49,12 @@ extension RoomEngine {
     }
 
     func startJudging() async {
-        update { $0.phase = .judging }
-        if let judge = state.debate?.judgeID, isActive(judge) {
+        let judge = debateJudgeID
+        update {
+            $0.phase = .judging
+            $0.debate?.judgeID = judge
+        }
+        if let judge, isActive(judge) {
             await deliver(judge, OutgoingMessage(channel: .synthetic, text: judgeText(), duty: .verdict))
         } else {
             update { $0.pendingDecision = .judge }

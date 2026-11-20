@@ -298,15 +298,19 @@ public actor RemoteServer {
             for await (address, result) in group {
                 switch result {
                 case .success(let (listener, port)):
-                    if running {
+                    if running && config.bindAddresses.contains(address) && listeners[address] == nil {
                         listeners[address] = listener
                         listeningPorts[address] = port
                         failures[address] = nil
                     } else {
+                        listener.stateUpdateHandler = nil
+                        listener.newConnectionHandler = nil
                         listener.cancel()
                     }
                 case .failure(let error):
-                    failures[address] = Self.describe(error)
+                    if running && config.bindAddresses.contains(address) && listeners[address] == nil {
+                        failures[address] = Self.describe(error)
+                    }
                 }
             }
         }
@@ -346,7 +350,7 @@ public actor RemoteServer {
                         listener.cancel()
                         continuation.resume(returning: .failure(error))
                     } else {
-                        Task { await server?.listenerDied(address, error: error) }
+                        Task { await server?.listenerDied(address, listener: listener, error: error) }
                     }
                 case .cancelled:
                     if once.claim() { continuation.resume(returning: .failure(CancellationError())) }
@@ -358,8 +362,8 @@ public actor RemoteServer {
         }
     }
 
-    private func listenerDied(_ address: String, error: NWError) {
-        guard let l = listeners[address] else { return }
+    private func listenerDied(_ address: String, listener: NWListener, error: any Error) {
+        guard let l = listeners[address], l === listener else { return }
         l.stateUpdateHandler = nil
         l.newConnectionHandler = nil
         l.cancel()
@@ -650,9 +654,10 @@ public actor RemoteServer {
               clientNonce != serverNonce,
               RemoteHandshake.isValidClientProof(proof, token: token, serverNonce: serverNonce, clientNonce: clientNonce,
                                                        macKey: macKey, phoneKey: phoneKey) else {
-            limiter.recordFailure(peer.address)
             if let relayConnection = peer.relayConnection {
                 for c in relayFailureContinuations.values { c.yield(relayConnection) }
+            } else if !peer.address.hasPrefix("relay:") {
+                limiter.recordFailure(peer.address)
             }
             send(.error(RemoteError(.unauthorized, "This phone is not paired with this Mac. Scan the pairing code again.")),
                  replyTo: replyTo, to: id, thenClose: true)

@@ -291,7 +291,7 @@ public enum PreviewData {
             ],
             agents: agents,
             sessionAgentIDs: ["ses_db_debate": [opusAgentID, gptAgentID, grokAgentID]],
-            extraFolders: [mainSessionID: [home]],
+            extraFolders: [mainSessionID: [home + "/Developer/shared-kit"]],
             selectedSessionID: mainSessionID
         )
     }

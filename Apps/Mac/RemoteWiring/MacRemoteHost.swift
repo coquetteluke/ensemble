@@ -570,7 +570,15 @@ final class MacRemoteHost: RemoteHost {
             throw RemoteError(.badRequest, "A room keeps the permission mode it was made with.")
         case .session(let id):
             if remoteRoom(sessionID: id) != nil { throw RemoteError(.badRequest, "A room keeps the permission mode it was made with.") }
-            await store.setPermissionMode(mode, for: id)
+            guard let s = session(id), !s.isSubagent, !isHiddenSession(s.id), !roomAgentSessionIDs.contains(s.id) else {
+                throw MacRemoteHostError.sessionNotFound
+            }
+            await store.setPermissionMode(mode, for: s.id)
+            let current = session(s.id) ?? s
+            guard current.permissionMode == mode else {
+                throw RemoteError(.failed, store.lastError ?? "Could not change permission mode.")
+            }
+            broadcast(.permissionModeChanged(target: .session(s.id), mode: current.permissionMode))
         }
     }
 
@@ -845,6 +853,27 @@ final class MacRemoteHost: RemoteHost {
             throw RemoteError(.failed, "Second opinions are not ready on this Mac yet.")
         }
         broadcast(.transcriptUpdated(transcript: remoteTranscript(for: s)))
+    }
+
+    func archiveSession(sessionID: String, archived: Bool) async throws {
+        if remoteRoom(sessionID: sessionID) != nil {
+            throw RemoteError(.badRequest, "Rooms cannot be archived from the iPhone.")
+        }
+        guard let s = session(sessionID), !s.isSubagent, !isHiddenSession(s.id) else {
+            throw MacRemoteHostError.sessionNotFound
+        }
+        if roomAgentSessionIDs.contains(s.id) {
+            throw RemoteError(.badRequest, "Room sessions cannot be archived from the iPhone.")
+        }
+        await store.archive(s.id, archived: archived)
+        if let updated = session(s.id) {
+            guard updated.info.archived == archived else {
+                throw RemoteError(.failed, store.lastError ?? "Could not archive session.")
+            }
+            broadcast(.sessionUpserted(session: summary(updated)))
+        } else {
+            broadcast(.sessionRemoved(sessionID: s.id))
+        }
     }
 }
 

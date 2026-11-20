@@ -86,7 +86,7 @@ struct AppShortcut: Hashable {
 
 /// Every command the app has. The order is the palette's order when nothing is typed.
 enum AppCommandID: String, CaseIterable, Identifiable {
-    case newSession, newRoom, searchTranscripts, keyboardShortcuts, commandPalette, settings, customizations, pairIPhone
+    case newSession, newRoom, searchTranscripts, findInTranscript, keyboardShortcuts, commandPalette, settings, customizations, pairIPhone
     case sendMessage, stopAgent, openHub, openScheduled, promoteToRoom, archiveSession, forkSession, compactConversation, revealFolder
     case switchModel, switchMode, modeAsk, modeAcceptEdits, modeAuto, modePlan, modeBypass, changeEffort, toggleFastMode, sideQuestion, focusComposer
     case allowOnce, alwaysAllow, reject
@@ -104,6 +104,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .newSession: "New session"
         case .newRoom: "New room"
         case .searchTranscripts: "Search sessions"
+        case .findInTranscript: "Find in current view"
         case .keyboardShortcuts: "Show keyboard shortcuts"
         case .commandPalette: "Command palette"
         case .settings: "Open Settings"
@@ -161,7 +162,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
     var area: CommandArea {
         switch self {
         case .newSession, .newRoom, .settings, .customizations, .pairIPhone: .general
-        case .searchTranscripts, .keyboardShortcuts, .commandPalette: .search
+        case .searchTranscripts, .findInTranscript, .keyboardShortcuts, .commandPalette: .search
         case .sendMessage, .stopAgent, .openHub, .openScheduled, .promoteToRoom, .archiveSession, .forkSession, .compactConversation, .revealFolder: .sessions
         case .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass, .changeEffort, .toggleFastMode, .sideQuestion,
              .focusComposer: .composer
@@ -179,6 +180,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .newSession: "square.and.pencil"
         case .newRoom: "person.3"
         case .searchTranscripts: "magnifyingglass"
+        case .findInTranscript: "text.magnifyingglass"
         case .keyboardShortcuts: "keyboard"
         case .commandPalette: "command"
         case .settings: "gearshape"
@@ -239,6 +241,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .newSession: AppShortcut("n")
         case .newRoom: AppShortcut("n", [.command, .shift])
         case .searchTranscripts: AppShortcut("k")
+        case .findInTranscript: AppShortcut("f")
         case .keyboardShortcuts: AppShortcut("/")
         case .commandPalette: AppShortcut("p", [.command, .shift])
         case .settings: AppShortcut(",")
@@ -273,6 +276,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .newSession: ["chat", "start", "create"]
         case .newRoom: ["team", "debate", "round table", "agents", "together"]
         case .searchTranscripts: ["find", "transcripts", "messages", "history"]
+        case .findInTranscript: ["find", "search", "transcript", "filter", "in page"]
         case .keyboardShortcuts: ["keys", "help", "hotkeys"]
         case .settings: ["preferences", "options", "api keys", "accounts"]
         case .customizations: ["rules", "memory", "skills", "mcp", "hooks", "plugins", "agents", "claude.md"]
@@ -404,6 +408,8 @@ enum CommandRegistry {
         let session = context.window.route == .session ? store?.selected : nil
         switch id {
         case .newSession, .searchTranscripts: return store != nil
+        case .findInTranscript:
+            return store != nil && (context.window.route == .session || context.window.route == .room || context.window.route == .hub)
         case .newRoom: return context.search.rooms != nil
         case .sendMessage, .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass, .focusComposer,
              .archiveSession, .revealFolder, .compactConversation, .sideQuestion:
@@ -450,6 +456,8 @@ enum CommandRegistry {
         case .newSession: window.beginNewSession()
         case .newRoom: search.rooms?.beginNewRoom()
         case .searchTranscripts: search.show(.search)
+        case .findInTranscript:
+            NotificationCenter.default.post(name: .ensembleFindInCurrentView, object: nil)
         case .keyboardShortcuts: search.show(.shortcuts)
         case .commandPalette: search.show(.palette)
         case .settings: context.openSettings?()
@@ -549,6 +557,7 @@ enum CommandRegistry {
 extension Notification.Name {
     static let ensemblePromoteToRoom = Notification.Name("ensemble.promoteToRoom")
     static let ensembleCopyTranscriptMarkdown = Notification.Name("ensemble.copyTranscriptMarkdown")
+    static let ensembleFindInCurrentView = Notification.Name("ensemble.findInCurrentView")
 }
 
 extension View {

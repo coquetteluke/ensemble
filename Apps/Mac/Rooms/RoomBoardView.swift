@@ -30,6 +30,7 @@ struct RoomBoardThread: View {
                 BoardMessageRow(message: message, agents: agents, models: models,
                                 continued: continues(message, previous: previous))
             }
+            .id(message.id)
             .padding(.top, index == 0 ? 0 : theme.z(spacing(message, previous: previous)))
         }
     }

@@ -28,6 +28,7 @@ struct RoomView: View {
     var initialFollow = false
 
     @Environment(\.theme) private var theme
+    @Environment(\.isSnapshot) private var isSnapshot
     @State private var tab: RoomTab?
     @State private var selectedAgentID: UUID?
     @State private var agentSelectionSet = false
@@ -39,19 +40,47 @@ struct RoomView: View {
     /// Follow mode: the side panel shows whichever agent is working.
     @State private var followSet: Bool?
     @State private var followTracker = RoomFollow()
+    /// Board filter and jump-to-agent state.
+    @State private var boardFilter = RoomBoardFilter()
+    @State private var showBoardFilter = false
+    @State private var jumpTargetID: UUID?
+    @State private var jumpToken = 0
+    @State private var filterFocusToken = 0
 
     static let columnWidth: CGFloat = 760
     static let panelWidth: CGFloat = 303
     static let transcriptPanelWidth: CGFloat = 420
 
     var body: some View {
+        let onBoard = tabBinding.wrappedValue == .board
+        let allMessages = currentBoardMessages
+        let agentsByID = Dictionary(engine.agents.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let filteredCount = boardFilter.isActive ? boardFilter.filter(allMessages, agents: agentsByID).count : allMessages.count
+
         HStack(spacing: theme.z(0)) {
             VStack(spacing: theme.z(0)) {
                 RoomHeader(controller: controller, engine: engine, leadingInset: leadingInset,
                            trailingInset: showsSidePanel ? 0 : trailingInset)
                 AgentChipRow(controller: controller, engine: engine, selectedAgentID: agentSelection,
                              tab: tabBinding, showsTabs: engine.state.runMode == .debate || engine.state.debate != nil,
-                             follow: showsSidePanel && engine.agents.count > 1 ? followBinding : nil)
+                             follow: showsSidePanel && engine.agents.count > 1 ? followBinding : nil,
+                             filterOpen: onBoard ? $showBoardFilter : nil,
+                             filterActive: boardFilter.isActive,
+                             onFilterAgent: { filterBoard(to: $0) },
+                             onJumpToLatest: { jumpToLatestMessage(for: $0) })
+                if onBoard && showBoardFilter {
+                    RoomBoardFilterBar(
+                        filter: $boardFilter,
+                        agents: engine.agents,
+                        messages: allMessages,
+                        filteredCount: filteredCount,
+                        focusToken: filterFocusToken,
+                        onJumpToAgent: { jumpToLatestMessage(for: $0) },
+                        onClose: {
+                            withAnimation(.easeOut(duration: 0.12)) { showBoardFilter = false }
+                        }
+                    )
+                }
                 content
                 VStack(spacing: theme.z(0)) {
                     if engine.state.isPaused, let reason = engine.state.pauseReason {
@@ -76,6 +105,38 @@ struct RoomView: View {
         .environment(\.sessionDirectory, engine.state.spec.directory)
         .onChange(of: workingAgentIDs) { followWorkingAgent() }
         .onChange(of: isFollowing) { if isFollowing { followWorkingAgent() } }
+        .onChange(of: tab) { _, nextTab in
+            if nextTab == .rounds { jumpTargetID = nil }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ensembleFindInCurrentView)) { _ in
+            guard !isSnapshot else { return }
+            if tabBinding.wrappedValue != .board { tabBinding.wrappedValue = .board }
+            withAnimation(.easeOut(duration: 0.14)) { showBoardFilter = true }
+            filterFocusToken &+= 1
+        }
+    }
+
+    private var currentBoardMessages: [BoardMessage] {
+        let state = engine.state
+        if let step = RoomReplay.clamp(replayBinding.wrappedValue, board: state.board) {
+            return RoomReplay.messages(state.board, at: step)
+        }
+        return RoomBoardContent.rawBoardMessages(state)
+    }
+
+    private func filterBoard(to agentID: UUID) {
+        if tabBinding.wrappedValue != .board { tabBinding.wrappedValue = .board }
+        boardFilter.agentID = agentID
+        withAnimation(.easeOut(duration: 0.14)) { showBoardFilter = true }
+    }
+
+    private func jumpToLatestMessage(for agentID: UUID) {
+        guard let targetID = RoomBoardFilter.latestMessageID(for: agentID, in: engine.state.board) else { return }
+        if tabBinding.wrappedValue != .board { tabBinding.wrappedValue = .board }
+        if replayBinding.wrappedValue != nil { replayBinding.wrappedValue = nil }
+        if boardFilter.isActive { boardFilter.clear() }
+        jumpTargetID = targetID
+        jumpToken &+= 1
     }
 
     // MARK: Replay and Follow
@@ -149,8 +210,16 @@ struct RoomView: View {
                         .padding(.top, theme.z(6))
                         .modifier(AdaptiveInsetModifier(wide: 32, narrow: 16))
                 }
-                RoomScroll(scrollKey: scrollKey, roomID: engine.state.id) {
-                    RoomBoardContent(controller: controller, engine: engine, models: models, replayStep: step)
+                RoomScroll(scrollKey: scrollKey, roomID: engine.state.id,
+                           jumpMessageID: jumpTargetID, jumpToken: jumpToken) {
+                    RoomBoardContent(
+                        controller: controller,
+                        engine: engine,
+                        models: models,
+                        replayStep: step,
+                        boardFilter: boardFilter,
+                        onClearFilter: { boardFilter.clear() }
+                    )
                 }
             }
         }
@@ -181,13 +250,21 @@ struct RoomBoardContent: View {
     /// Replay: the board as it was after this many messages (`nil` is live). Live text, prompts and decisions are left
     /// out while replaying.
     var replayStep: Int?
+    var boardFilter = RoomBoardFilter()
+    var onClearFilter: (() -> Void)? = nil
     @Environment(\.theme) private var theme
     @State private var dismissedError: String?
 
     var body: some View {
         if let step = replayStep {
             let agentsByID = Dictionary(engine.agents.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            RoomBoardThread(messages: RoomReplay.messages(engine.state.board, at: step), agents: agentsByID, models: models)
+            let raw = RoomReplay.messages(engine.state.board, at: step)
+            let shown = boardFilter.filter(raw, agents: agentsByID)
+            if boardFilter.isActive && shown.isEmpty && !raw.isEmpty {
+                filteredEmptyState
+            } else {
+                RoomBoardThread(messages: shown, agents: agentsByID, models: models)
+            }
         } else {
             live
         }
@@ -196,6 +273,8 @@ struct RoomBoardContent: View {
     @ViewBuilder private var live: some View {
         let state = engine.state
         let agentsByID = Dictionary(engine.agents.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let rawMessages = Self.rawBoardMessages(state)
+        let shownMessages = boardMessages(state, agents: agentsByID)
         let live = engine.agents.compactMap { agent in controller.liveText(of: agent.id, in: engine).map { (agent, $0) } }
         let working = engine.agents.filter { agent in
             controller.activity(of: agent.id, in: engine) == .working && !live.contains { $0.0.id == agent.id }
@@ -208,7 +287,11 @@ struct RoomBoardContent: View {
             if state.board.isEmpty {
                 RoomEmptyState(engine: engine, models: models)
             }
-            RoomBoardThread(messages: boardMessages(state), agents: agentsByID, models: models)
+            if boardFilter.isActive && shownMessages.isEmpty && !rawMessages.isEmpty {
+                filteredEmptyState
+            } else {
+                RoomBoardThread(messages: shownMessages, agents: agentsByID, models: models)
+            }
             ForEach(live, id: \.0.id) { agent, text in
                 LiveAgentRow(agent: agent, text: text, models: models)
             }
@@ -216,7 +299,12 @@ struct RoomBoardContent: View {
                 WorkingAgentsRow(working: working, waiting: waiting)
             }
             RoomPermissionCards(controller: controller, engine: engine)
-            RoomDecisionArea(engine: engine, models: models)
+            if let verdictID = Self.verdictCardMessageID(state) {
+                RoomDecisionArea(engine: engine, models: models)
+                    .id(verdictID)
+            } else {
+                RoomDecisionArea(engine: engine, models: models)
+            }
             if let error = engine.lastError, error != dismissedError {
                 HStack(alignment: .top, spacing: theme.z(6)) {
                     ErrorRow(message: error)
@@ -234,16 +322,47 @@ struct RoomBoardContent: View {
             }
         }
     }
+
+    private var filteredEmptyState: some View {
+        HStack(spacing: theme.z(12)) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(theme.font(size: 15))
+                .foregroundStyle(theme.textTertiary)
+            Text("No board messages match this filter.")
+                .font(theme.font(size: 13))
+                .foregroundStyle(theme.textSecondary)
+            Spacer(minLength: theme.z(8))
+            if let onClearFilter {
+                Button("Clear filter", action: onClearFilter)
+                    .buttonStyle(SecondaryButtonStyle())
+            }
+        }
+        .padding(.horizontal, theme.z(14))
+        .padding(.vertical, theme.z(12))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).fill(theme.elevated.opacity(0.6)))
+        .overlay(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).strokeBorder(theme.separator))
+    }
 }
 
 extension RoomBoardContent {
+    /// The verdict board message currently rendered by `RoomDecisionArea` instead of `RoomBoardThread`.
+    static func verdictCardMessageID(_ state: RoomState) -> UUID? {
+        guard state.phase == .verdict, state.debate?.verdict != nil else { return nil }
+        return state.board.last(where: { $0.kind == .verdict })?.id
+    }
+
     /// While the verdict card is up, the verdict message itself is shown by the card.
-    func boardMessages(_ state: RoomState) -> [BoardMessage] {
+    static func rawBoardMessages(_ state: RoomState) -> [BoardMessage] {
         guard state.phase == .verdict, state.debate?.verdict != nil,
               let index = state.board.lastIndex(where: { $0.kind == .verdict }) else { return state.board }
         var list = state.board
         list.remove(at: index)
         return list
+    }
+
+    func boardMessages(_ state: RoomState, agents: [UUID: AgentSpec] = [:]) -> [BoardMessage] {
+        boardFilter.filter(Self.rawBoardMessages(state), agents: agents)
     }
 }
 
@@ -322,11 +441,14 @@ private struct RoomEmptyState: View {
 struct RoomScroll<Content: View>: View {
     let scrollKey: Int
     let roomID: UUID
+    var jumpMessageID: UUID? = nil
+    var jumpToken: Int = 0
     @ViewBuilder let content: Content
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
     @State private var pinnedToBottom = true
     @State private var position = ScrollPosition(edge: .bottom)
+    @State private var lastHandledJumpToken = 0
 
     var body: some View {
         if isSnapshot {
@@ -335,37 +457,55 @@ struct RoomScroll<Content: View>: View {
                 .frame(maxWidth: .infinity, minHeight: theme.z(0), maxHeight: .infinity, alignment: .bottom)
                 .clipped()
         } else {
-            ScrollView { padded }
-                .scrollPosition($position)
-                .defaultScrollAnchor(.bottom)
-                .onScrollGeometryChange(for: Bool.self) { geometry in
-                    geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
-                } action: { _, atBottom in
-                    pinnedToBottom = atBottom
-                }
-                .onChange(of: scrollKey) {
-                    if pinnedToBottom { position.scrollTo(edge: .bottom) }
-                }
-                .overlay(alignment: .bottom) {
-                    if !pinnedToBottom {
-                        Button {
-                            withAnimation(.easeOut(duration: 0.2)) { position.scrollTo(edge: .bottom) }
-                        } label: {
-                            Image(systemName: "arrow.down")
-                                .font(theme.font(size: 12, weight: .semibold))
-                                .foregroundStyle(theme.textPrimary)
-                                .frame(width: theme.z(30), height: theme.z(30))
-                                .background(Circle().fill(theme.elevated))
-                                .overlay(Circle().strokeBorder(theme.border))
-                                .shadow(color: .black.opacity(0.25), radius: theme.z(6), y: theme.z(2))
-                        }
-                        .buttonStyle(.plain)
-                        .help("Jump to the newest message")
-                        .padding(.bottom, theme.z(10))
+            ScrollViewReader { proxy in
+                ScrollView { padded }
+                    .scrollPosition($position)
+                    .defaultScrollAnchor(.bottom)
+                    .onScrollGeometryChange(for: Bool.self) { geometry in
+                        geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 80
+                    } action: { _, atBottom in
+                        pinnedToBottom = atBottom
                     }
-                }
-                .clipped()
-                .id(roomID)
+                    .onChange(of: scrollKey) {
+                        if pinnedToBottom { position.scrollTo(edge: .bottom) }
+                    }
+                    .onAppear { performPendingJump(proxy: proxy) }
+                    .onChange(of: jumpToken) { performPendingJump(proxy: proxy) }
+                    .overlay(alignment: .bottom) {
+                        if !pinnedToBottom {
+                            Button {
+                                withAnimation(.easeOut(duration: 0.2)) { position.scrollTo(edge: .bottom) }
+                            } label: {
+                                Image(systemName: "arrow.down")
+                                    .font(theme.font(size: 12, weight: .semibold))
+                                    .foregroundStyle(theme.textPrimary)
+                                    .frame(width: theme.z(30), height: theme.z(30))
+                                    .background(Circle().fill(theme.elevated))
+                                    .overlay(Circle().strokeBorder(theme.border))
+                                    .shadow(color: .black.opacity(0.25), radius: theme.z(6), y: theme.z(2))
+                            }
+                            .buttonStyle(.plain)
+                            .help("Jump to the newest message")
+                            .padding(.bottom, theme.z(10))
+                        }
+                    }
+                    .clipped()
+                    .id(roomID)
+            }
+        }
+    }
+
+    private func performPendingJump(proxy: ScrollViewProxy) {
+        guard jumpToken != lastHandledJumpToken, let targetID = jumpMessageID else { return }
+        lastHandledJumpToken = jumpToken
+        withAnimation(.easeOut(duration: 0.2)) {
+            proxy.scrollTo(targetID, anchor: .center)
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(80))
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo(targetID, anchor: .center)
+            }
         }
     }
 
@@ -564,6 +704,11 @@ struct AgentChipRow: View {
     var showsTabs: Bool
     /// Follow mode's switch; nil hides it (no side panel, or one agent).
     var follow: Binding<Bool>?
+    /// Board filter toggle; nil hides it.
+    var filterOpen: Binding<Bool>? = nil
+    var filterActive: Bool = false
+    var onFilterAgent: ((UUID) -> Void)? = nil
+    var onJumpToLatest: ((UUID) -> Void)? = nil
     @Environment(\.theme) private var theme
 
     var body: some View {
@@ -576,7 +721,10 @@ struct AgentChipRow: View {
                                   activity: controller.activity(of: agent.id, in: engine),
                                   isLead: engine.leadID == agent.id && engine.state.spec.mode != .solo,
                                   leadLabel: engine.state.runMode == .debate ? "Judge" : "Lead",
-                                  selected: selectedAgentID == agent.id) {
+                                  selected: selectedAgentID == agent.id,
+                                  onOpenTranscript: { selectedAgentID = agent.id },
+                                  onFilterAgent: onFilterAgent.map { cb in { cb(agent.id) } },
+                                  onJumpToLatest: onJumpToLatest.map { cb in { cb(agent.id) } }) {
                             selectedAgentID = selectedAgentID == agent.id ? nil : agent.id
                         }
                     }
@@ -584,6 +732,10 @@ struct AgentChipRow: View {
                 .padding(.vertical, theme.z(1))
             }
             .scrollIndicators(.never)
+            if let filterOpen {
+                BoardFilterToggle(isOpen: filterOpen, isActive: filterActive)
+                    .fixedSize()
+            }
             if let follow {
                 FollowToggle(isOn: follow)
                     .fixedSize()
@@ -605,6 +757,9 @@ struct AgentChip: View {
     let isLead: Bool
     let leadLabel: String
     let selected: Bool
+    var onOpenTranscript: (() -> Void)? = nil
+    var onFilterAgent: (() -> Void)? = nil
+    var onJumpToLatest: (() -> Void)? = nil
     let action: () -> Void
     @Environment(\.theme) private var theme
     @State private var hovering = false
@@ -640,8 +795,324 @@ struct AgentChip: View {
         .buttonStyle(.plain)
         .fixedSize()
         .onHover { hovering = $0 }
+        .contextMenu {
+            if onFilterAgent != nil || onJumpToLatest != nil {
+                Button("Open transcript") { (onOpenTranscript ?? action)() }
+                if let onFilterAgent {
+                    Button("Filter board to \(agent.name)", action: onFilterAgent)
+                }
+                if let onJumpToLatest {
+                    Button("Jump to latest message", action: onJumpToLatest)
+                }
+            }
+        }
         .help("\(agent.name): \(activity.label). Click to see its session.")
         .accessibilityLabel("\(agent.name), \(model), \(activity.label)")
+    }
+}
+
+/// Compact toggle button in `AgentChipRow` for opening and closing the board filter bar.
+private struct BoardFilterToggle: View {
+    @Binding var isOpen: Bool
+    let isActive: Bool
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        let highlighted = isOpen || isActive
+        Button {
+            withAnimation(.easeOut(duration: 0.14)) { isOpen.toggle() }
+        } label: {
+            HStack(spacing: theme.z(5)) {
+                Image(systemName: isActive ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                    .font(theme.font(size: 11.5))
+                Text("Filter")
+                    .font(theme.font(size: 12, weight: .medium))
+                if isActive {
+                    Circle()
+                        .fill(theme.accent)
+                        .frame(width: theme.z(5), height: theme.z(5))
+                }
+            }
+            .foregroundStyle(isActive ? theme.accent : (highlighted || hovering ? theme.textPrimary : theme.textSecondary))
+            .padding(.horizontal, theme.z(9))
+            .frame(height: theme.z(26))
+            .background(
+                RoundedRectangle(cornerRadius: theme.z(7), style: .continuous)
+                    .fill(isActive ? theme.accent.opacity(0.13) : (highlighted ? theme.selection : (hovering ? theme.elevatedHover : theme.elevated)))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: theme.z(7), style: .continuous)
+                    .strokeBorder(isActive ? theme.accent.opacity(0.45) : theme.border)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(isOpen ? "Hide board filter" : "Filter board messages (Command-F)")
+        .accessibilityLabel("Filter board")
+        .accessibilityValue(isActive ? "Active" : (isOpen ? "Open" : "Off"))
+    }
+}
+
+/// Compact filter bar below `AgentChipRow` for filtering room board messages by category, agent, or search text.
+private struct RoomBoardFilterBar: View {
+    @Binding var filter: RoomBoardFilter
+    let agents: [AgentSpec]
+    let messages: [BoardMessage]
+    let filteredCount: Int
+    let focusToken: Int
+    let onJumpToAgent: (UUID) -> Void
+    let onClose: () -> Void
+    @Environment(\.theme) private var theme
+    @FocusState private var searchFocused: Bool
+
+    var body: some View {
+        let counts = RoomBoardFilter.messageCountsByAgent(in: messages)
+        VStack(alignment: .leading, spacing: theme.z(7)) {
+            HStack(spacing: theme.z(8)) {
+                HStack(spacing: theme.z(6)) {
+                    Image(systemName: "magnifyingglass")
+                        .font(theme.font(size: 11))
+                        .foregroundStyle(theme.textTertiary)
+                    TextField("", text: $filter.query, prompt: Text("Filter board").foregroundStyle(theme.textTertiary))
+                        .textFieldStyle(.plain)
+                        .font(theme.font(size: 12))
+                        .foregroundStyle(theme.textPrimary)
+                        .focused($searchFocused)
+                        .onExitCommand {
+                            if !filter.query.isEmpty {
+                                filter.query = ""
+                            } else if !filter.isActive {
+                                onClose()
+                            } else {
+                                searchFocused = false
+                            }
+                        }
+                    if !filter.query.isEmpty {
+                        Button {
+                            filter.query = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(theme.font(size: 11))
+                                .foregroundStyle(theme.textTertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Clear search text")
+                    }
+                }
+                .padding(.horizontal, theme.z(8))
+                .frame(height: theme.z(26))
+                .frame(minWidth: theme.z(140), maxWidth: theme.z(240))
+                .background(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).fill(theme.elevated))
+                .overlay(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous)
+                    .strokeBorder(searchFocused ? theme.accent.opacity(0.55) : theme.border, lineWidth: 1))
+
+                AdaptiveScroll(.horizontal, snapshotAlignment: .leading) {
+                    HStack(spacing: theme.z(4)) {
+                        ForEach(RoomBoardCategory.allCases) { category in
+                            RoomFilterCategoryPill(
+                                label: category.label,
+                                selected: filter.category == category
+                            ) {
+                                filter.category = category
+                            }
+                        }
+                    }
+                }
+                .scrollIndicators(.never)
+
+                Spacer(minLength: theme.z(4))
+
+                if filter.isActive {
+                    Text("Showing \(filteredCount) of \(messages.count)")
+                        .font(theme.font(size: 11.5).monospacedDigit())
+                        .foregroundStyle(theme.textTertiary)
+                        .lineLimit(1)
+                        .fixedSize()
+                    Button {
+                        filter.clear()
+                    } label: {
+                        Text("Clear")
+                            .font(theme.font(size: 11.5, weight: .medium))
+                            .foregroundStyle(theme.accent)
+                            .padding(.horizontal, theme.z(7))
+                            .frame(height: theme.z(22))
+                            .background(RoundedRectangle(cornerRadius: theme.z(5), style: .continuous).fill(theme.accent.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                    .fixedSize()
+                    .help("Clear all board filters")
+                } else {
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(theme.font(size: 10, weight: .semibold))
+                            .foregroundStyle(theme.textTertiary)
+                            .frame(width: theme.z(22), height: theme.z(22))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Hide filter bar")
+                }
+            }
+
+            if !agents.isEmpty {
+                AdaptiveScroll(.horizontal, snapshotAlignment: .leading) {
+                    HStack(spacing: theme.z(5)) {
+                        RoomFilterAgentAllPill(selected: filter.agentID == nil) {
+                            filter.agentID = nil
+                        }
+                        ForEach(agents) { agent in
+                            let count = counts[agent.id] ?? 0
+                            RoomFilterAgentPill(
+                                agent: agent,
+                                count: count,
+                                selected: filter.agentID == agent.id,
+                                onToggle: {
+                                    filter.agentID = filter.agentID == agent.id ? nil : agent.id
+                                },
+                                onJump: count > 0 ? { onJumpToAgent(agent.id) } : nil
+                            )
+                        }
+                    }
+                    .padding(.vertical, theme.z(1))
+                }
+                .scrollIndicators(.never)
+            }
+        }
+        .padding(.horizontal, theme.z(20))
+        .padding(.bottom, theme.z(8))
+        .onChange(of: focusToken) {
+            searchFocused = true
+        }
+        .onAppear {
+            if focusToken > 0 { searchFocused = true }
+        }
+    }
+}
+
+private struct RoomFilterCategoryPill: View {
+    let label: String
+    let selected: Bool
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(theme.font(size: 11.5, weight: selected ? .semibold : .medium))
+                .foregroundStyle(selected ? theme.textPrimary : (hovering ? theme.textPrimary : theme.textSecondary))
+                .lineLimit(1)
+                .padding(.horizontal, theme.z(8))
+                .frame(height: theme.z(24))
+                .background(
+                    RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                        .fill(selected ? theme.selection : (hovering ? theme.hover : .clear))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                        .strokeBorder(selected ? theme.border : .clear, lineWidth: 1)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .onHover { hovering = $0 }
+    }
+}
+
+private struct RoomFilterAgentAllPill: View {
+    let selected: Bool
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text("All agents")
+                .font(theme.font(size: 11.5, weight: selected ? .semibold : .medium))
+                .foregroundStyle(selected ? theme.textPrimary : (hovering ? theme.textPrimary : theme.textSecondary))
+                .lineLimit(1)
+                .padding(.horizontal, theme.z(8))
+                .frame(height: theme.z(24))
+                .background(
+                    RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                        .fill(selected ? theme.selection : (hovering ? theme.elevatedHover : theme.elevated))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                        .strokeBorder(selected ? theme.accent.opacity(0.45) : theme.border, lineWidth: 1)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .onHover { hovering = $0 }
+    }
+}
+
+private struct RoomFilterAgentPill: View {
+    let agent: AgentSpec
+    let count: Int
+    let selected: Bool
+    let onToggle: () -> Void
+    let onJump: (() -> Void)?
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+    @State private var jumpHovering = false
+
+    var body: some View {
+        let agentColor = Color(hexString: agent.colorHex)
+        HStack(spacing: theme.z(4)) {
+            Button(action: onToggle) {
+                HStack(spacing: theme.z(5)) {
+                    AgentDot(hex: agent.colorHex, size: 7)
+                    Text(agent.name)
+                        .font(theme.font(size: 11.5, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(theme.textPrimary)
+                        .lineLimit(1)
+                    Text("\(count)")
+                        .font(theme.font(size: 10.5).monospacedDigit())
+                        .foregroundStyle(theme.textTertiary)
+                        .fixedSize()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(selected ? "Show all agents" : "Filter board to \(agent.name)")
+
+            if let onJump, selected || hovering {
+                Button(action: onJump) {
+                    Image(systemName: "arrow.down.to.line")
+                        .font(theme.font(size: 9.5, weight: .semibold))
+                        .foregroundStyle(jumpHovering ? theme.accent : theme.textSecondary)
+                        .frame(width: theme.z(18), height: theme.z(18))
+                        .background(
+                            RoundedRectangle(cornerRadius: theme.z(4), style: .continuous)
+                                .fill(jumpHovering ? theme.accent.opacity(0.14) : .clear)
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .onHover { jumpHovering = $0 }
+                .help("Jump to \(agent.name)'s latest message")
+                .accessibilityLabel("Jump to \(agent.name)'s latest message")
+            }
+        }
+        .padding(.leading, theme.z(8))
+        .padding(.trailing, (onJump != nil && (selected || hovering)) ? theme.z(4) : theme.z(8))
+        .frame(height: theme.z(24))
+        .background(
+            RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                .fill(selected ? agentColor.opacity(theme.isDark ? 0.16 : 0.11) : (hovering ? theme.elevatedHover : theme.elevated))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.z(6), style: .continuous)
+                .strokeBorder(selected ? agentColor.opacity(0.7) : theme.border, lineWidth: 1)
+        )
+        .fixedSize()
+        .onHover { hovering = $0 }
     }
 }
 

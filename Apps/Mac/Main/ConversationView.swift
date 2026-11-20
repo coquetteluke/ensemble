@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import EnsembleKit
 
 /// Transcript, composer and status line for one session.
@@ -16,6 +17,11 @@ struct ConversationView: View {
     @State private var position = ScrollPosition(edge: .bottom)
     /// The status line is too narrow for the "Work in a copy" switch; the composer's More menu offers it instead.
     @State private var worktreeSwitchInMore = false
+    @State private var showFind = false
+    @State private var findQuery = ""
+    @State private var findIndex = 0
+    @State private var findScrollToken = 0
+    @FocusState private var findFieldFocused: Bool
     @Environment(\.transcriptActions) private var parentActions
 
     static let columnWidth: CGFloat = 760
@@ -23,9 +29,37 @@ struct ConversationView: View {
     static let narrowWidth: CGFloat = 480
 
     var body: some View {
+        let findResult = showFind ? TranscriptFinder.search(findQuery, in: session.items) : .empty
+        let findHighlight: TranscriptFindHighlight? = showFind && !findResult.isEmpty
+            ? findResult.highlight(at: findIndex, scrollToken: findScrollToken)
+            : nil
+
         VStack(spacing: 0) {
             transcript
                 .environment(\.transcriptActions, enrichedTranscriptActions)
+                .environment(\.transcriptFindHighlight, findHighlight)
+                .overlay(alignment: .topTrailing) {
+                    if showFind && !isSnapshot {
+                        TranscriptFindBar(
+                            query: $findQuery,
+                            focused: $findFieldFocused,
+                            statusText: findResult.statusText(at: findIndex),
+                            hasMatches: !findResult.isEmpty,
+                            onPrevious: {
+                                findIndex = findResult.previousIndex(before: findIndex)
+                                findScrollToken &+= 1
+                            },
+                            onNext: {
+                                findIndex = findResult.nextIndex(after: findIndex)
+                                findScrollToken &+= 1
+                            },
+                            onClose: closeFind
+                        )
+                        .padding(.top, theme.z(10))
+                        .padding(.trailing, theme.z(16))
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                }
             ComposerColumn {
                 // "Trust this folder?" when the session's engine skips or refuses the folder's own settings.
                 SessionTrustCard(store: store, session: session)
@@ -45,6 +79,33 @@ struct ConversationView: View {
         .environment(\.sessionDirectory, session.directory)
         // Plan cards in the transcript answer through the store (`PlanCardView`).
         .environment(\.interactionStore, store)
+        .onChange(of: window.findRequestToken) {
+            guard !isSnapshot else { return }
+            withAnimation(.easeOut(duration: 0.14)) { showFind = true }
+            findFieldFocused = true
+        }
+        .onChange(of: session.id) {
+            closeFind()
+        }
+        .onChange(of: findQuery) {
+            findIndex = 0
+            findScrollToken &+= 1
+        }
+        .onChange(of: findResult.matchCount) { _, count in
+            if count == 0 {
+                findIndex = 0
+            } else if findIndex >= count {
+                findIndex = count - 1
+            }
+        }
+        .background(FindEscapeMonitor(isActive: showFind, shouldHandle: { showFind }, onEscape: closeFind))
+    }
+
+    private func closeFind() {
+        withAnimation(.easeOut(duration: 0.12)) { showFind = false }
+        findQuery = ""
+        findIndex = 0
+        findFieldFocused = false
     }
 
     private var activeRooms: RoomsController? {
@@ -225,5 +286,143 @@ struct SubagentBanner: View {
         .padding(.horizontal, theme.z(12))
         .padding(.vertical, theme.z(8))
         .background(RoundedRectangle(cornerRadius: theme.z(9), style: .continuous).fill(theme.accent.opacity(0.08)))
+    }
+}
+
+/// Floating live Find bar anchored to the top trailing corner of a session transcript.
+private struct TranscriptFindBar: View {
+    @Binding var query: String
+    var focused: FocusState<Bool>.Binding
+    let statusText: String
+    let hasMatches: Bool
+    let onPrevious: () -> Void
+    let onNext: () -> Void
+    let onClose: () -> Void
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        HStack(spacing: theme.z(6)) {
+            Image(systemName: "magnifyingglass")
+                .font(theme.font(size: 11.5, weight: .medium))
+                .foregroundStyle(theme.textTertiary)
+            TextField("", text: $query, prompt: Text("Find in transcript").foregroundStyle(theme.textTertiary))
+                .textFieldStyle(.plain)
+                .font(theme.font(size: 12.5))
+                .foregroundStyle(theme.textPrimary)
+                .focused(focused)
+                .frame(minWidth: theme.z(110), idealWidth: theme.z(170), maxWidth: theme.z(210))
+                .onSubmit {
+                    if NSEvent.modifierFlags.contains(.shift) {
+                        onPrevious()
+                    } else {
+                        onNext()
+                    }
+                }
+                .onExitCommand(perform: onClose)
+                .onAppear { focused.wrappedValue = true }
+            if !statusText.isEmpty {
+                Text(statusText)
+                    .font(theme.font(size: 11.5).monospacedDigit())
+                    .foregroundStyle(hasMatches ? theme.textSecondary : theme.textTertiary)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            Rectangle()
+                .fill(theme.separator)
+                .frame(width: 1, height: theme.z(14))
+            HStack(spacing: theme.z(2)) {
+                FindBarButton(symbol: "chevron.up", help: "Previous match (Shift-Return)", disabled: !hasMatches, action: onPrevious)
+                FindBarButton(symbol: "chevron.down", help: "Next match (Return)", disabled: !hasMatches, action: onNext)
+                FindBarButton(symbol: "xmark", help: "Close find (Esc)", disabled: false, action: onClose)
+            }
+        }
+        .padding(.horizontal, theme.z(10))
+        .frame(height: theme.z(34))
+        .background(
+            RoundedRectangle(cornerRadius: theme.z(10), style: .continuous)
+                .fill(theme.elevated)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.z(10), style: .continuous)
+                .strokeBorder(theme.border, lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(theme.isDark ? 0.32 : 0.12), radius: theme.z(10), y: theme.z(3))
+        .onKeyPress(.escape) {
+            onClose()
+            return .handled
+        }
+    }
+}
+
+private struct FindBarButton: View {
+    let symbol: String
+    let help: String
+    let disabled: Bool
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(theme.font(size: 10.5, weight: .semibold))
+                .foregroundStyle(disabled ? theme.textTertiary.opacity(0.45) : (hovering ? theme.textPrimary : theme.textSecondary))
+                .frame(width: theme.z(22), height: theme.z(22))
+                .background(
+                    RoundedRectangle(cornerRadius: theme.z(5), style: .continuous)
+                        .fill(!disabled && hovering ? theme.hover : .clear)
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .onHover { hovering = $0 }
+        .help(help)
+        .accessibilityLabel(help)
+    }
+}
+
+/// Intercepts bare Escape while the live Find bar is open so closing Find never triggers `Session > Stop`.
+private struct FindEscapeMonitor: View {
+    let isActive: Bool
+    let shouldHandle: () -> Bool
+    let onEscape: () -> Void
+    @Environment(\.isSnapshot) private var isSnapshot
+    @State private var monitor: Any?
+
+    var body: some View {
+        Color.clear
+            .onAppear { sync() }
+            .onChange(of: isActive) { sync() }
+            .onDisappear { remove() }
+    }
+
+    private func sync() {
+        if isActive && !isSnapshot {
+            install()
+        } else {
+            remove()
+        }
+    }
+
+    private func install() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let handled = MainActor.assumeIsolated { handle(event) }
+            return handled ? nil : event
+        }
+    }
+
+    private func remove() {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        monitor = nil
+    }
+
+    private func handle(_ event: NSEvent) -> Bool {
+        guard shouldHandle(), event.keyCode == 53 else { return false }
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control])
+        guard modifiers.isEmpty else { return false }
+        onEscape()
+        return true
     }
 }

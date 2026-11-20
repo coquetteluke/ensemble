@@ -2,6 +2,17 @@
 import AppKit
 import WebKit
 
+/// A console line paired with the origin that produced it, for origin-isolated agent console reads.
+public struct AgentBrowserConsoleEntry: Equatable, Sendable {
+    public var line: BrowserConsoleLine
+    public var origin: String?
+
+    public init(line: BrowserConsoleLine, origin: String? = nil) {
+        self.line = line
+        self.origin = origin
+    }
+}
+
 /// A browser the agent tools can drive: the browser pane's page (`BrowserPage` in the app), or a plain web view in
 /// tests. The driver only runs `BrowserAgentScripts` in `agentWorld`, loads pages through `agentOpen` (which applies the
 /// pane's own navigation rules), and reads the console the pane already keeps.
@@ -13,8 +24,24 @@ public protocol AgentBrowserSurface: AnyObject {
     /// The page's address, or nil before one opens.
     var agentURL: URL? { get }
     var agentConsole: [BrowserConsoleLine] { get }
+    /// Console lines tagged with the page origin that produced them.
+    var agentConsoleEntries: [AgentBrowserConsoleEntry] { get }
     /// Opens a page the way the address bar does.
     func agentOpen(_ url: URL)
+    /// Locks main-frame navigations to `expectedOrigin` during an agent navigation, or clears the lock when nil.
+    func agentSetNavigationOriginLock(_ expectedOrigin: String?)
+    /// Target address of a cross-origin redirect blocked while the navigation origin lock was active, if any.
+    var agentBlockedNavigationTarget: String? { get }
+}
+
+public extension AgentBrowserSurface {
+    var agentConsoleEntries: [AgentBrowserConsoleEntry] {
+        let origin = BrowserAgentOrigin.origin(of: agentURL)
+        return agentConsole.map { AgentBrowserConsoleEntry(line: $0, origin: origin) }
+    }
+
+    func agentSetNavigationOriginLock(_ expectedOrigin: String?) {}
+    var agentBlockedNavigationTarget: String? { nil }
 }
 
 /// What a browser action did.
@@ -55,12 +82,12 @@ public enum BrowserAgentDriver {
             return await screenshot(surface)
         case .console(let errorsOnly):
             if let moved = originChange(expected: origin, on: surface) { return BrowserAgentOutcome(result: .refused(moved)) }
-            return BrowserAgentOutcome(result: console(surface.agentConsole, errorsOnly: errorsOnly, url: surface.agentURL))
+            return BrowserAgentOutcome(result: console(surface.agentConsoleEntries, expectedOrigin: origin, errorsOnly: errorsOnly, url: surface.agentURL))
         case .navigate(let url):
             guard BrowserAgentOrigin.origin(of: url) == origin else {
                 return BrowserAgentOutcome(result: .refused(movedMessage(url.absoluteString)))
             }
-            return await navigate(to: url, on: surface)
+            return await navigate(to: url, on: surface, expectedOrigin: origin)
         case .click(let ref):
             return await act(surface, script: BrowserAgentScripts.click, arguments: ["ref": ref, "expectedOrigin": origin]) { json in
                 "Clicked \(ref)\(json["what"]?.stringValue.map { " (\($0))" } ?? "")."
@@ -175,6 +202,15 @@ public enum BrowserAgentDriver {
         }
     }
 
+    /// The newest console lines matching `expectedOrigin`, page text fenced and labelled as untrusted.
+    public static func console(_ entries: [AgentBrowserConsoleEntry], expectedOrigin: String, errorsOnly: Bool, url: URL?) -> AgentToolResult {
+        let matching = entries.compactMap { entry -> BrowserConsoleLine? in
+            guard entry.origin == expectedOrigin else { return nil }
+            return entry.line
+        }
+        return console(matching, errorsOnly: errorsOnly, url: url)
+    }
+
     /// The newest console lines, page text fenced and labelled as untrusted.
     public static func console(_ lines: [BrowserConsoleLine], errorsOnly: Bool, url: URL?) -> AgentToolResult {
         let chosen = lines.filter { !errorsOnly || $0.level == .error }.suffix(consoleLines)
@@ -195,18 +231,31 @@ public enum BrowserAgentDriver {
 
     // MARK: Acting
 
-    static func navigate(to url: URL, on surface: any AgentBrowserSurface) async -> BrowserAgentOutcome {
+    static func navigate(to url: URL, on surface: any AgentBrowserSurface, expectedOrigin origin: String) async -> BrowserAgentOutcome {
         let webView = surface.agentWebView
+        surface.agentSetNavigationOriginLock(origin)
+        defer { surface.agentSetNavigationOriginLock(nil) }
         surface.agentOpen(url)
-        // Wait for the load to start (or for the address to change), then for it to finish.
+        // Wait for the load to start (or for the address to change or a redirect to be blocked), then for it to finish.
         let clock = ContinuousClock()
         let start = clock.now
-        while !webView.isLoading, clock.now - start < .seconds(2), surface.agentURL?.absoluteString != url.absoluteString {
+        while !webView.isLoading, clock.now - start < .seconds(2),
+              surface.agentBlockedNavigationTarget == nil,
+              surface.agentURL?.absoluteString != url.absoluteString {
+            if Task.isCancelled { break }
             try? await Task.sleep(for: .milliseconds(30))
         }
         while webView.isLoading, clock.now - start < navigationTimeout {
-            if Task.isCancelled { break }
+            if Task.isCancelled || surface.agentBlockedNavigationTarget != nil { break }
             try? await Task.sleep(for: .milliseconds(50))
+        }
+        if Task.isCancelled {
+            webView.stopLoading()
+            return BrowserAgentOutcome(result: .refused("The call was cancelled."))
+        }
+        if let blocked = surface.agentBlockedNavigationTarget {
+            webView.stopLoading()
+            return BrowserAgentOutcome(result: .refused("Blocked cross-origin redirect to \(AgentToolText.clean(blocked, limit: 300)). Agents may only stay on the approved origin \(origin)."))
         }
         let now = Self.liveURL(of: surface) ?? url
         if let refusal = BrowserAgentOrigin.refusal(for: now) {
@@ -214,8 +263,11 @@ public enum BrowserAgentDriver {
             webView.stopLoading()
             return BrowserAgentOutcome(result: .refused("The page went to \(now.absoluteString). \(refusal)"))
         }
-        let expectedOrigin: Any = BrowserAgentOrigin.origin(of: now) ?? NSNull()
-        let signIn = (try? await run(BrowserAgentScripts.signIn, on: surface, arguments: ["expectedOrigin": expectedOrigin])) == .bool(true)
+        guard BrowserAgentOrigin.origin(of: now) == origin else {
+            webView.stopLoading()
+            return BrowserAgentOutcome(result: .refused("The page redirected to \(AgentToolText.clean(now.absoluteString, limit: 300)), outside the approved origin \(origin)."))
+        }
+        let signIn = (try? await run(BrowserAgentScripts.signIn, on: surface, arguments: ["expectedOrigin": origin])) == .bool(true)
         let title = AgentToolText.clean(webView.title ?? "", limit: 120)
         var text = "Opened \(now.absoluteString)"
         if webView.isLoading { text += " (still loading)" }

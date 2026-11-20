@@ -326,6 +326,67 @@ import Testing
             }
         }
     }
+
+    @Test func missingMailbox4004DoesNotSuppressDirectUnauthorized() async throws {
+        let fake = try await FakeRelay.start()
+        defer { fake.stop() }
+
+        let wrongConfig = RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Wrong Mac",
+                                                     helloTimeout: .seconds(10), acceptedHosts: ["127.0.0.1"])
+        let wrongServer = RemoteServer(host: DemoRemoteHost(), token: RemoteToken.generate(), configuration: wrongConfig)
+        try await wrongServer.start()
+        let wrongPort = Int(try #require(await wrongServer.boundPort))
+        defer { Task { await wrongServer.stop() } }
+
+        let unclaimedRelay = RemotePairing.Relay(url: fake.url.absoluteString, mailbox: RelayIdentity.make().mailboxID)
+        let token = RemoteToken.generate()
+
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        do {
+            _ = try await RelayDialer.connect(relay: unclaimedRelay, token: token, session: session, timeout: .seconds(5))
+            Issue.record("Expected RelayDialer.connect on missing mailbox to throw .failed")
+        } catch let error as RemoteError {
+            #expect(error.code == .failed)
+            #expect(error.message == "Your Mac has not registered on the relay yet")
+        }
+
+        let pairing = RemotePairing(hosts: ["127.0.0.1"], port: wrongPort, token: token,
+                                    macName: "Relay Mac", relay: unclaimedRelay)
+        let c = RemoteClient(pairing: pairing, deviceName: "Test iPhone", deviceID: "phone-\(UUID().uuidString)")
+        c.handshakeTimeout = .seconds(10)
+        c.start()
+        defer { c.stop() }
+
+        try await waitUntil("direct unauthorized refusal to reject when relay returns 4004") {
+            if case .rejected = c.state { return true }
+            return false
+        }
+        c.stop()
+        await wrongServer.stop()
+    }
+
+    @Test func primaryRelayMacOfflinePreservedWhenFallbackRelayFails() async throws {
+        try await withHarness { h in
+            await h.relay.stop()
+            try await pollUntil("the Mac's control socket to close") { !h.fake.hostIsReady(h.mailbox) }
+
+            let fallbackRelay = RemotePairing.Relay(url: h.fake.url.absoluteString, mailbox: RelayIdentity.make().mailboxID)
+            let pairing = RemotePairing(hosts: [], port: remoteDefaultPort, token: h.token,
+                                        macName: "Relay Mac", relay: h.pairingRelay, previousRelay: fallbackRelay)
+            let c = RemoteClient(pairing: pairing, deviceName: "Test iPhone", deviceID: "phone-\(UUID().uuidString)")
+            c.handshakeTimeout = .seconds(10)
+            c.start()
+            defer { c.stop() }
+
+            try await waitUntil("primary relay macOffline to be preserved over fallback failure") {
+                if case .macOffline = c.state { return true }
+                return false
+            }
+            #expect(c.statusText == "Your Mac is not connected to the relay")
+            c.stop()
+        }
+    }
 }
 
 /// Forwards TCP bytes after a fixed initial delay, so a test can make a direct path finish slightly after the relay

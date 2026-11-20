@@ -36,7 +36,7 @@ import Testing
     @Test func worktreeCommitAndMerge() async throws {
         let repo = try makeRepo()
         defer { try? FileManager.default.removeItem(at: repo) }
-        let ops = ProcessGitOps()
+        let ops = ProcessGitOps.trustingEverything
         let plain = FileManager.default.temporaryDirectory.appendingPathComponent("ensemble-plain-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: plain, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: plain) }
@@ -78,7 +78,7 @@ import Testing
         try "app\n".write(to: sub.appendingPathComponent("main.txt"), atomically: true, encoding: .utf8)
         try git(["add", "-A"], in: repo)
         try git(["commit", "-q", "-m", "app"], in: repo)
-        let ops = ProcessGitOps()
+        let ops = ProcessGitOps.trustingEverything
 
         let top = try await ops.createWorktree(repo: repo.path, branch: "ensemble/room/top")
         #expect(RoomWorktreePaths.relative(top, inside: repo.path) == ".ensemble/worktrees/ensemble-room-top")
@@ -91,7 +91,7 @@ import Testing
     @Test func conflictingMergeReportsFiles() async throws {
         let repo = try makeRepo()
         defer { try? FileManager.default.removeItem(at: repo) }
-        let ops = ProcessGitOps()
+        let ops = ProcessGitOps.trustingEverything
         let a = try await ops.createWorktree(repo: repo.path, branch: "ensemble/room/a")
         let b = try await ops.createWorktree(repo: repo.path, branch: "ensemble/room/b")
         try "from a\n".write(toFile: a + "/shared.txt", atomically: true, encoding: .utf8)

@@ -94,6 +94,19 @@ public final class SessionStore {
     @ObservationIgnored var permissionBackingSessions: [String: String] = [:]
     /// Per-backing-session usage accumulated into a primary thread.
     @ObservationIgnored var backingUsage: [String: [String: Usage]] = [:]
+    /// Primary session ids currently executing `deliver(...)` (including pre-send model/engine switches).
+    @ObservationIgnored var deliveringSessionIDs: Set<String> = []
+    /// Primary session ids currently restarting onto another engine in `changeModel(...)`.
+    @ObservationIgnored var restartingSessionIDs: Set<String> = []
+    /// Called with the primary session id when a user message is delivered to the engine.
+    /// Messages another agent delivered (`message_agent`, framed as untrusted peer data) are not the user's turn, so
+    /// they never reach this hook: otherwise each delivery would reset the agent-to-agent hop limit.
+    @ObservationIgnored public var onUserMessageSent: (@MainActor @Sendable (String) -> Void)?
+
+    func noteUserMessageSent(_ primaryID: String, text: String) {
+        guard !AgentToolText.isUntrustedPeerFrame(text) else { return }
+        onUserMessageSent?(primaryID)
+    }
 
     private enum EditableField: Hashable { case title, archived, model }
 
@@ -298,11 +311,8 @@ public final class SessionStore {
         let resolvedID = sessionID.map { primarySessionID(for: $0) }
         selectedSessionID = resolvedID
         guard let resolvedID, let model = byID[resolvedID] else { return }
-        if !model.transcriptLoaded, loadTasks[resolvedID] == nil {
-            loadTasks[resolvedID] = Task { [weak self] in
-                await self?.loadSession(resolvedID)
-                self?.loadTasks[resolvedID] = nil
-            }
+        if !model.transcriptLoaded {
+            _ = loadTask(for: resolvedID)
         } else {
             Task { [weak self] in await self?.refreshPanels(resolvedID) }
         }
@@ -312,22 +322,44 @@ public final class SessionStore {
         }
     }
 
-    /// Loads the full transcript, context and changed files for a session.
+    /// Loads the full transcript, context and changed files for a session, coalescing concurrent loads.
     public func loadSession(_ sessionID: String) async {
         let primaryID = primarySessionID(for: sessionID)
+        guard byID[primaryID] != nil else { return }
+        await loadTask(for: primaryID).value
+    }
+
+    private func loadTask(for primaryID: String) -> Task<Void, Never> {
+        if let existing = loadTasks[primaryID] { return existing }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.loadTasks[primaryID] = nil }
+            await self.performLoadSession(primaryID)
+        }
+        loadTasks[primaryID] = task
+        return task
+    }
+
+    private func performLoadSession(_ primaryID: String) async {
         guard let model = byID[primaryID] else { return }
+        let itemsBeforeLoad = model.items
         do {
             let links = threadLinks.links(for: primaryID)
-            var items = links.isEmpty
+            let fetched = links.isEmpty
                 ? try await engine.transcript(primaryID)
                 : try await loadMergedTranscript(for: primaryID, links: links)
-            for request in model.pendingPermissions where !items.contains(where: { $0.id == request.id }) {
-                items.append(.permission(request))
-            }
-            model.items = items
+            guard byID[primaryID] === model else { return }
+            model.items = Self.mergeLoadedTranscript(
+                fetched: fetched,
+                beforeLoad: itemsBeforeLoad,
+                current: model.items,
+                pendingPermissions: model.pendingPermissions,
+                isWorking: model.isWorking
+            )
             model.transcriptLoaded = true
             model.touch()
         } catch {
+            guard byID[primaryID] === model else { return }
             model.items.append(.error(id: "load-\(UUID().uuidString)", message: "Could not load this session: \(error.localizedDescription)"))
             model.touch()
         }
@@ -337,6 +369,76 @@ public final class SessionStore {
             }
         }
         await refreshPanels(primaryID)
+    }
+
+    /// Merges a fetched transcript with live or optimistic items appended before or during the fetch so
+    /// streaming replies, active tools, and newly sent turns are never wiped by a late transcript load.
+    private static func mergeLoadedTranscript(
+        fetched: [TranscriptItem],
+        beforeLoad: [TranscriptItem],
+        current: [TranscriptItem],
+        pendingPermissions: [PermissionRequest],
+        isWorking: Bool
+    ) -> [TranscriptItem] {
+        var merged = fetched
+        var indexByID: [String: Int] = [:]
+        for (index, item) in merged.enumerated() {
+            indexByID[item.id] = index
+        }
+        for request in pendingPermissions where indexByID[request.id] == nil {
+            indexByID[request.id] = merged.count
+            merged.append(.permission(request))
+        }
+
+        let beforeByID = Dictionary(beforeLoad.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
+        for item in current {
+            let beforeItem = beforeByID[item.id]
+            let wasPresentBefore = beforeItem != nil
+            let changedDuringLoad = !wasPresentBefore || beforeItem != item
+            let isActivelyLive = isLiveTranscriptItem(item)
+
+            if let existingIndex = indexByID[item.id] {
+                if changedDuringLoad || isActivelyLive {
+                    merged[existingIndex] = item
+                }
+                continue
+            }
+
+            if !wasPresentBefore || isActivelyLive {
+                indexByID[item.id] = merged.count
+                merged.append(item)
+            } else if isWorking, isOptimisticUserItem(item), !isDuplicateOptimisticUser(item, in: fetched) {
+                indexByID[item.id] = merged.count
+                merged.append(item)
+            }
+        }
+        return merged
+    }
+
+    private static func isLiveTranscriptItem(_ item: TranscriptItem) -> Bool {
+        switch item {
+        case .agentText(_, _, _, let streaming): streaming
+        case .reasoning(_, _, let streaming): streaming
+        case .tool(let tool): tool.status == .running || tool.status == .pending
+        default: false
+        }
+    }
+
+    private static func isOptimisticUserItem(_ item: TranscriptItem) -> Bool {
+        if case .user(let id, _, _) = item {
+            return id.hasPrefix("user-")
+        }
+        return false
+    }
+
+    private static func isDuplicateOptimisticUser(_ item: TranscriptItem, in fetched: [TranscriptItem]) -> Bool {
+        guard case .user(_, let text, _) = item else { return false }
+        for candidate in fetched.reversed() {
+            if case .user(_, let fetchedText, _) = candidate {
+                return CrossEngineHandoff.stripHandoff(from: fetchedText) == text
+            }
+        }
+        return false
     }
 
     public func refreshPanels(_ sessionID: String) async {
@@ -577,6 +679,8 @@ public final class SessionStore {
         guard let session = byID[primaryID] else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !files.isEmpty else { return }
+        deliveringSessionIDs.insert(primaryID)
+        defer { deliveringSessionIDs.remove(primaryID) }
         let shown = Self.shownText(trimmed, files: files)
 
         // Over its provider's daily spending cap (`UsageCaps.swift`): shown as not sent, nothing reaches the engine.
@@ -642,6 +746,7 @@ public final class SessionStore {
         session.info.updated = Date()
         session.touch()
         queueRuntime[primaryID]?.held = false
+        noteUserMessageSent(primaryID, text: trimmed)
         do {
             try await engine.prompt(targetBackingID, text: promptText, files: files)
         } catch {
@@ -708,6 +813,7 @@ public final class SessionStore {
         let previousModel = session.info.model
         let previousPlanSupport = planSupport[primaryID]
         let itemsBeforeSwitch = session.items
+        let lastAnchorID = CrossEngineHandoff.lastAnchorItemID(in: itemsBeforeSwitch)
         let currentEngineID = await engineRegistrationID(forSession: currentBackingID, fallbackModel: session.info.model)
 
         var createdBackingID: String?
@@ -717,9 +823,15 @@ public final class SessionStore {
                 engineID: currentEngineID,
                 model: session.info.model,
                 permissionMode: session.permissionMode,
-                handedOffCount: itemsBeforeSwitch.count
+                handedOffCount: itemsBeforeSwitch.count,
+                handedOffItemID: lastAnchorID
             )
-            threadLinks.updateHandedOffCount(itemsBeforeSwitch.count, forBackingID: currentBackingID, primaryID: primaryID)
+            threadLinks.updateHandedOffCount(
+                itemsBeforeSwitch.count,
+                lastItemID: lastAnchorID,
+                forBackingID: currentBackingID,
+                primaryID: primaryID
+            )
 
             let targetID: String
             let handoffPrefix: String
@@ -739,14 +851,18 @@ public final class SessionStore {
                 if reusable.permissionMode != session.permissionMode {
                     try await engine.setPermissionMode(targetID, mode: session.permissionMode)
                 }
-                let startIndex = min(max(0, reusable.lastHandedOffItemCount), itemsBeforeSwitch.count)
-                let deltaItems = Array(itemsBeforeSwitch[startIndex...])
+                let deltaItems = CrossEngineHandoff.deltaItems(
+                    from: itemsBeforeSwitch,
+                    lastHandedOffItemID: reusable.lastHandedOffItemID,
+                    lastHandedOffItemCount: reusable.lastHandedOffItemCount
+                )
                 handoffPrefix = CrossEngineHandoff.build(items: deltaItems, maxChars: CrossEngineHandoff.defaultMaxChars, isDelta: true)
 
                 var updated = reusable
                 updated.model = targetModel
                 updated.permissionMode = session.permissionMode
                 updated.lastHandedOffItemCount = itemsBeforeSwitch.count
+                updated.lastHandedOffItemID = lastAnchorID
                 threadLinks.upsertLink(updated, forPrimary: primaryID, makeActive: true)
             } else {
                 handoffPrefix = CrossEngineHandoff.build(items: itemsBeforeSwitch, maxChars: CrossEngineHandoff.defaultMaxChars, isDelta: false)
@@ -770,7 +886,8 @@ public final class SessionStore {
                     backingSessionID: targetID,
                     model: targetModel,
                     permissionMode: session.permissionMode,
-                    lastHandedOffItemCount: itemsBeforeSwitch.count
+                    lastHandedOffItemCount: itemsBeforeSwitch.count,
+                    lastHandedOffItemID: lastAnchorID
                 )
                 threadLinks.upsertLink(link, forPrimary: primaryID, makeActive: true)
             }

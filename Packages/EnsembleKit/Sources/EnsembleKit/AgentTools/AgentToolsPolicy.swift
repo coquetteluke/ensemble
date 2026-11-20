@@ -87,8 +87,14 @@ public struct ProposalLimiter: Equatable, Sendable {
 public enum ProposalFolder {
     /// The folder to use, with every symlink resolved, or why not.
     public static func resolve(_ requested: String?, sessionFolder: String, knownFolders: [String]) -> Result<String, ProposalFolderProblem> {
-        let base = WorkspaceTrust.resolvedPath(sessionFolder) ?? sessionFolder
-        let asked = requested ?? sessionFolder
+        let trimmedSession = sessionFolder.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSession.isEmpty, let base = WorkspaceTrust.resolvedPath(trimmedSession), !base.isEmpty else {
+            return .failure(.missing(requested ?? sessionFolder))
+        }
+        let asked = requested ?? trimmedSession
+        guard !asked.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .failure(.missing(asked))
+        }
         let standard = (asked as NSString).standardizingPath
         // Nil for a dangling link or a loop.
         guard let resolved = WorkspaceTrust.resolvedPath(standard) else { return .failure(.missing(asked)) }
@@ -97,7 +103,11 @@ public enum ProposalFolder {
             return .failure(.missing(asked))
         }
         if resolved == base || resolved.hasPrefix(base.hasSuffix("/") ? base : base + "/") { return .success(resolved) }
-        let known = knownFolders.map { WorkspaceTrust.resolvedPath($0) ?? $0 }
+        let known = knownFolders.compactMap { folder -> String? in
+            let trimmed = folder.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            return WorkspaceTrust.resolvedPath(trimmed)
+        }
         if known.contains(resolved) { return .success(resolved) }
         return .failure(.outside(asked))
     }
@@ -347,35 +357,49 @@ public struct AgentExchangeLimiter: Equatable, Sendable {
             recordedAt: now
         )
         if let targetSessionID {
-            inbound[targetSessionID] = chain
+            recordInbound(chain, for: targetSessionID, now: now)
         }
         for alias in targetAliases where !alias.isEmpty {
-            inbound[alias] = chain
+            recordInbound(chain, for: alias, now: now)
         }
         return .success(lease)
     }
 
     /// Propagates an active hop lease to a temporary helper session created by `ask_agent`.
     public mutating func attachHelper(_ helperSessionID: String, lease: HopLease, turn: String = "0", now: Date = Date()) {
-        inbound[helperSessionID] = InboundChain(rootKey: lease.rootKey, depth: lease.depth, turnAtDelivery: turn, recordedAt: now)
+        recordInbound(
+            InboundChain(rootKey: lease.rootKey, depth: lease.depth, turnAtDelivery: turn, recordedAt: now),
+            for: helperSessionID,
+            now: now
+        )
     }
 
     /// Propagates an active hop lease to additional target session ids (such as room members opened on delivery).
     public mutating func propagate(lease: HopLease, to sessionIDs: [String], turn: String = "0", now: Date = Date()) {
         let chain = InboundChain(rootKey: lease.rootKey, depth: lease.depth, turnAtDelivery: turn, recordedAt: now)
         for id in sessionIDs where !id.isEmpty {
-            if let existing = inbound[id],
-               now.timeIntervalSince(existing.recordedAt) <= Self.chainTTL,
-               existing.depth > chain.depth {
-                continue
-            }
-            inbound[id] = chain
+            recordInbound(chain, for: id, now: now)
         }
     }
 
     /// Clears inbound chain state when a user speaks directly or a session is removed.
     public mutating func reset(session sessionID: String) {
         inbound[sessionID] = nil
+    }
+
+    /// Alias for `reset(session:)` when the user takes a turn in `sessionID`.
+    public mutating func noteUserTurn(in sessionID: String) {
+        reset(session: sessionID)
+    }
+
+    private mutating func recordInbound(_ chain: InboundChain, for id: String, now: Date) {
+        if let existing = inbound[id] {
+            let elapsed = now.timeIntervalSince(existing.recordedAt)
+            if elapsed >= -60, elapsed <= Self.chainTTL, existing.depth > chain.depth {
+                return
+            }
+        }
+        inbound[id] = chain
     }
 
     private func activeChain(for sessionIDs: [String], now: Date) -> InboundChain? {

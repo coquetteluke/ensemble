@@ -10,7 +10,10 @@ import {
   IDLE_DELETE_MS,
   MAX_PHONES,
   MAX_TRACKED_ADDRESSES,
+  MAX_UNPROVEN_DATA_TOTAL,
+  MAX_UNPROVEN_HOST_TOTAL,
   MAX_UNPROVEN_PER_ADDRESS,
+  MAX_UNPROVEN_PHONE_TOTAL,
   MAX_WAITING,
   PAIR_TIMEOUT_MS,
 } from "./limits";
@@ -76,8 +79,6 @@ function today(): number {
 const MAX_PHONE_FRAME = 1024 * 1024;
 /** Largest frame the Mac may send to a phone. Under the platform's 32 MiB received-message limit. */
 const MAX_MAC_FRAME = 16 * 1024 * 1024;
-/** Maximum unproven sockets across all addresses and roles held in one Durable Object at once. */
-const MAX_UNPROVEN_TOTAL = 24;
 
 const enc = new TextEncoder();
 
@@ -117,21 +118,24 @@ export class Mailbox extends DurableObject<Env> {
     const [client, server] = [pair[0], pair[1]];
     const deadline = Date.now() + CHALLENGE_TIMEOUT_MS;
 
-    // A blocked address gets no challenge and the Mac hears nothing. Unproven sockets across all roles are capped
-    // both per address and per Durable Object so connections cannot be opened ahead of time in bulk.
-    const blocked = addr !== "" && (await this.isBlocked(addr));
+    // A blocked phone address gets no challenge and the Mac hears nothing. Host and data sockets are never blocked by
+    // phone handshake failures, so bad phones on a shared NAT cannot lock out the Mac. Unproven sockets are capped per
+    // role (per address and across the Durable Object) so idle phones cannot exhaust capacity for host or data sockets.
+    const blocked = role === "phone" && addr !== "" && (await this.isBlocked(addr));
     let unprovenForAddr = 0;
-    let unprovenTotal = 0;
+    let unprovenForRole = 0;
+    const roleTotalCap =
+      role === "phone" ? MAX_UNPROVEN_PHONE_TOTAL : role === "host" ? MAX_UNPROVEN_HOST_TOTAL : MAX_UNPROVEN_DATA_TOTAL;
     if (!blocked) {
       for (const w of this.ctx.getWebSockets()) {
         if (w.readyState !== WebSocket.READY_STATE_OPEN) continue;
         const a = w.deserializeAttachment() as Attachment | null;
-        if (!a || a.authed) continue;
-        unprovenTotal++;
+        if (!a || a.authed || a.role !== role) continue;
+        unprovenForRole++;
         if (addr !== "" && a.addr === addr) unprovenForAddr++;
       }
     }
-    if (blocked || unprovenForAddr >= MAX_UNPROVEN_PER_ADDRESS || unprovenTotal >= MAX_UNPROVEN_TOTAL) {
+    if (blocked || unprovenForAddr >= MAX_UNPROVEN_PER_ADDRESS || unprovenForRole >= roleTotalCap) {
       server.accept();
       this.safeClose(server, blocked ? Close.unauthorized : Close.limit, blocked ? "unauthorized" : "busy");
       return new Response(null, { status: 101, webSocket: client });
@@ -210,7 +214,7 @@ export class Mailbox extends DurableObject<Env> {
     try {
       if (att?.role === "host" && att.authed) await this.ctx.storage.put("lastUsed", Date.now());
       // Counts this socket has not yet written would vanish with it, so they go into the stored budget now.
-      if (att?.dMsgs || att?.dBytes) await this.foldClosing(ws, att);
+      if (att?.dMsgs || att?.dBytes) await this.foldClosing(ws);
       if (att?.deadline !== undefined || att?.role === "host" || att?.dMsgs || att?.dBytes) await this.rearm();
     } catch {
       // Storage trouble must not surface from a close or error handler.
@@ -235,7 +239,7 @@ export class Mailbox extends DurableObject<Env> {
   private async phoneMessage(ws: WebSocket, att: Attachment, message: string | ArrayBuffer) {
     if (att.paired) {
       if (byteLength(message, MAX_PHONE_FRAME) > MAX_PHONE_FRAME) return this.closeBoth(ws, att, Close.tooBig, "too big");
-      if (await this.overBudget(ws, att, message)) return;
+      if (await this.overBudget(ws, message)) return;
       const data = this.pairedSocket(`data:${att.conn}`);
       if (!data || !this.safeSend(data, message)) return this.safeClose(ws, Close.macOffline, "mac offline");
       return;
@@ -305,7 +309,7 @@ export class Mailbox extends DurableObject<Env> {
   private async dataMessage(ws: WebSocket, att: Attachment, message: string | ArrayBuffer) {
     if (att.paired) {
       if (byteLength(message, MAX_MAC_FRAME) > MAX_MAC_FRAME) return this.closeBoth(ws, att, Close.tooBig, "too big");
-      if (await this.overBudget(ws, att, message)) return;
+      if (await this.overBudget(ws, message)) return;
       const phone = this.pairedSocket(`phone:${att.conn}`);
       if (!phone || !this.safeSend(phone, message)) return this.safeClose(ws, Close.protocol, "no phone");
       return;
@@ -368,6 +372,18 @@ export class Mailbox extends DurableObject<Env> {
     }
   }
 
+  /** Re-reads a host socket's attachment after an await, rejecting closed sockets and already-authed duplicates. */
+  private freshUnauthedHost(ws: WebSocket): Attachment | null {
+    if (ws.readyState !== WebSocket.READY_STATE_OPEN) return null;
+    const latest = ws.deserializeAttachment() as Attachment | null;
+    if (!latest) return null;
+    if (latest.authed) {
+      this.safeClose(ws, Close.protocol, "protocol");
+      return null;
+    }
+    return latest;
+  }
+
   private async claim(ws: WebSocket, att: Attachment, hostKey: string, accessKey: string, sig: string) {
     if (att.addr) {
       // The limiter is named by the address hash, so the address itself is never stored. If it cannot answer, the
@@ -378,29 +394,50 @@ export class Mailbox extends DurableObject<Env> {
       } catch {
         allowed = false;
       }
+      if (!this.freshUnauthedHost(ws)) return;
       if (!allowed) {
         this.safeSend(ws, encodeControl({ t: "error", code: "limit", message: "Too many claims from this address." }));
         return this.safeClose(ws, Close.limit, "limit");
       }
     }
-    if (await this.ctx.storage.get("hostKey")) return this.safeClose(ws, Close.taken, "taken");
-    if (!(await verifyHost(hostKey, sig, att.id, att.nonce!))) return this.safeClose(ws, Close.unauthorized, "unauthorized");
+    if (await this.ctx.storage.get("hostKey")) {
+      if (!this.freshUnauthedHost(ws)) return;
+      return this.safeClose(ws, Close.taken, "taken");
+    }
+    const beforeVerify = this.freshUnauthedHost(ws);
+    if (!beforeVerify || !beforeVerify.nonce) return;
+    if (!(await verifyHost(hostKey, sig, beforeVerify.id, beforeVerify.nonce))) {
+      if (!this.freshUnauthedHost(ws)) return;
+      return this.safeClose(ws, Close.unauthorized, "unauthorized");
+    }
     // The signature check awaited, so look again before writing: the first claim wins.
-    if (await this.ctx.storage.get("hostKey")) return this.safeClose(ws, Close.taken, "taken");
+    if (await this.ctx.storage.get("hostKey")) {
+      if (!this.freshUnauthedHost(ws)) return;
+      return this.safeClose(ws, Close.taken, "taken");
+    }
+    if (!this.freshUnauthedHost(ws)) return;
     await this.ctx.storage.put({ hostKey, accessKey, lastUsed: Date.now() });
-    await this.becomeHost(ws, att);
+    await this.becomeHost(ws);
   }
 
-  private async auth(ws: WebSocket, att: Attachment, sig: string) {
+  private async auth(ws: WebSocket, _att: Attachment, sig: string) {
     const hostKey = await this.ctx.storage.get<string>("hostKey");
+    const beforeVerify = this.freshUnauthedHost(ws);
+    if (!beforeVerify) return;
     if (!hostKey) return this.safeClose(ws, Close.noMailbox, "no such mailbox");
-    if (!(await verifyHost(hostKey, sig, att.id, att.nonce!))) return this.safeClose(ws, Close.unauthorized, "unauthorized");
+    if (!beforeVerify.nonce || !(await verifyHost(hostKey, sig, beforeVerify.id, beforeVerify.nonce))) {
+      if (!this.freshUnauthedHost(ws)) return;
+      return this.safeClose(ws, Close.unauthorized, "unauthorized");
+    }
+    if (!this.freshUnauthedHost(ws)) return;
     await this.ctx.storage.put("lastUsed", Date.now());
-    await this.becomeHost(ws, att);
+    await this.becomeHost(ws);
   }
 
   /** Marks this socket as the control socket and closes any older one. */
-  private async becomeHost(ws: WebSocket, att: Attachment) {
+  private async becomeHost(ws: WebSocket) {
+    const latest = this.freshUnauthedHost(ws);
+    if (!latest) return;
     for (const other of this.ctx.getWebSockets("host")) {
       if (other === ws) continue;
       const otherAtt = other.deserializeAttachment() as Attachment | null;
@@ -410,7 +447,7 @@ export class Mailbox extends DurableObject<Env> {
         this.safeClose(other, Close.taken, "replaced");
       }
     }
-    ws.serializeAttachment({ ...att, authed: true, nonce: undefined, deadline: undefined } satisfies Attachment);
+    ws.serializeAttachment({ ...latest, authed: true, nonce: undefined, deadline: undefined } satisfies Attachment);
     this.safeSend(ws, encodeControl({ t: "ready" }));
     await this.loadBudget();
     if (this.budgetSpent()) {
@@ -519,10 +556,11 @@ export class Mailbox extends DurableObject<Env> {
   }
 
   /** Every paired socket's unwritten counts, from the attachments. */
-  private pending(): { messages: number; bytes: number } {
+  private pending(exclude?: WebSocket): { messages: number; bytes: number } {
     let messages = 0;
     let bytes = 0;
     for (const w of this.ctx.getWebSockets()) {
+      if (w === exclude) continue;
       const a = w.deserializeAttachment() as Attachment | null;
       messages += a?.dMsgs ?? 0;
       bytes += a?.dBytes ?? 0;
@@ -551,12 +589,14 @@ export class Mailbox extends DurableObject<Env> {
    * is ended with close 4029 (nothing is injected into the forwarded stream, where the other side could fake it),
    * waiting phones and the Mac's control socket are told with a `limit` frame, and the day is written at once.
    */
-  private async overBudget(ws: WebSocket, att: Attachment, message: string | ArrayBuffer): Promise<boolean> {
+  private async overBudget(ws: WebSocket, message: string | ArrayBuffer): Promise<boolean> {
     await this.loadBudget();
     this.rollBudget();
-    const first = !att.dMsgs && !att.dBytes;
+    const latest = ws.deserializeAttachment() as Attachment | null;
+    if (!latest || ws.readyState !== WebSocket.READY_STATE_OPEN) return true;
+    const first = !latest.dMsgs && !latest.dBytes;
     const size = typeof message === "string" ? enc.encode(message).byteLength : message.byteLength;
-    ws.serializeAttachment({ ...att, dMsgs: (att.dMsgs ?? 0) + 1, dBytes: (att.dBytes ?? 0) + size } satisfies Attachment);
+    ws.serializeAttachment({ ...latest, dMsgs: (latest.dMsgs ?? 0) + 1, dBytes: (latest.dBytes ?? 0) + size } satisfies Attachment);
     const p = this.pending();
     const over = this.budget.messages + p.messages > DAILY_MESSAGES || this.budget.bytes + p.bytes > DAILY_BYTES;
 
@@ -564,7 +604,7 @@ export class Mailbox extends DurableObject<Env> {
       this.tellHostBudgetSpent(false);
       await this.flushBudget();
       const reason = `limit ${this.resetsAt()}`;
-      const peerTag = att.role === "phone" ? `data:${att.conn}` : `phone:${att.conn}`;
+      const peerTag = latest.role === "phone" ? `data:${latest.conn}` : `phone:${latest.conn}`;
       for (const s of [ws, this.pairedSocket(peerTag)]) if (s) this.safeClose(s, Close.limit, reason);
       for (const s of this.ctx.getWebSockets()) {
         const a = s.deserializeAttachment() as Attachment | null;
@@ -596,13 +636,14 @@ export class Mailbox extends DurableObject<Env> {
   }
 
   /** Adds every socket's unwritten counts to the stored totals, zeroes them, and writes. */
-  private async flushBudget() {
+  private async flushBudget(exclude?: WebSocket) {
     await this.loadBudget();
     this.rollBudget();
-    const p = this.pending();
+    const p = this.pending(exclude);
     this.budget.messages += p.messages;
     this.budget.bytes += p.bytes;
     for (const w of this.ctx.getWebSockets()) {
+      if (w === exclude) continue;
       const a = w.deserializeAttachment() as Attachment | null;
       if (!a || (!a.dMsgs && !a.dBytes)) continue;
       try {
@@ -617,17 +658,19 @@ export class Mailbox extends DurableObject<Env> {
   }
 
   /** A closing socket's own counts go into the stored totals before they are lost with it. */
-  private async foldClosing(ws: WebSocket, att: Attachment) {
+  private async foldClosing(ws: WebSocket) {
     await this.loadBudget();
     this.rollBudget();
-    this.budget.messages += att.dMsgs ?? 0;
-    this.budget.bytes += att.dBytes ?? 0;
+    const latest = ws.deserializeAttachment() as Attachment | null;
+    if (!latest || (!latest.dMsgs && !latest.dBytes)) return;
+    this.budget.messages += latest.dMsgs ?? 0;
+    this.budget.bytes += latest.dBytes ?? 0;
     try {
-      ws.serializeAttachment({ ...att, dMsgs: undefined, dBytes: undefined } satisfies Attachment);
+      ws.serializeAttachment({ ...latest, dMsgs: undefined, dBytes: undefined } satisfies Attachment);
     } catch {
       // Already gone.
     }
-    await this.flushBudget();
+    await this.flushBudget(ws);
   }
 
   // The alarm ----------------------------------------------------------------------------------------------

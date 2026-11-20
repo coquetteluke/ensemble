@@ -126,7 +126,8 @@ extension RoomEngine {
     }
 
     func built(_ builder: UUID, parsed: ParsedReply, text: String) async {
-        guard state.phase == .building, var rt = state.roundTable, rt.builderID == builder else { return }
+        let run = state.run
+        guard state.phase == .building, !state.isPaused, var rt = state.roundTable, rt.builderID == builder else { return }
         rt.buildTurns += 1
         rt.builderDone = parsed.done
         rt.lastBuildUpdate = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -141,8 +142,14 @@ extension RoomEngine {
         if let sid = state.sessions[builder], let changes = try? await api.changedFiles(sid) {
             files = changes.map(\.path)
         }
+        guard state.run == run, !state.isPaused, state.phase == .building, state.roundTable?.builderID == builder else { return }
+        let activeReviewers = roundTableReviewers
+        guard !activeReviewers.isEmpty else {
+            await concludeReviewRound()
+            return
+        }
         let request = roundTableReviewText(builder: builder, update: parsed.boardText, files: files)
-        await deliverAll(reviewers.map { ($0, OutgoingMessage(channel: .synthetic, text: request, duty: .roundTableReview)) })
+        await deliverAll(activeReviewers.map { ($0, OutgoingMessage(channel: .synthetic, text: request, duty: .roundTableReview)) })
     }
 
     func roundTableReviewed(_ reviewer: UUID, parsed: ParsedReply) async {
@@ -164,7 +171,7 @@ extension RoomEngine {
         guard state.phase == .building, state.pendingDecision == nil, let rt = state.roundTable, let builder = rt.builderID else { return }
         guard !isPending({ $0 == .roundTableReview || $0 == .build }) else { return }
         let reviews = agents.map(\.id).compactMap { id in rt.reviews[id].map { (id, $0) } }
-        if let offer = reviews.first(where: { if case .takeover = $0.1 { true } else { false } }) {
+        if let offer = reviews.first(where: { if case .takeover = $0.1 { isActive($0.0) } else { false } }) {
             if takeoverIsAutomatic {
                 await performTakeover(to: offer.0)
             } else {
@@ -199,6 +206,25 @@ extension RoomEngine {
 
     func performTakeover(to newBuilder: UUID) async {
         guard var rt = state.roundTable else { return }
+        guard isActive(newBuilder) else {
+            rt.pendingTakeoverID = nil
+            rt.reviews[newBuilder] = nil
+            update {
+                $0.roundTable = rt
+                if case .takeover(let id)? = $0.pendingDecision, id == newBuilder {
+                    $0.pendingDecision = nil
+                }
+            }
+            notice("\(name(newBuilder)) has reached its spending cap and cannot take over building.")
+            if let builder = rt.builderID, isActive(builder) {
+                await concludeReviewRound()
+            } else if let next = roundTableReviewersAfterCap(excluding: newBuilder).first {
+                await performTakeover(to: next)
+            } else {
+                await pauseRoom(reason: "Paused: no agent is left to build.", interrupt: true)
+            }
+            return
+        }
         let old = rt.builderID
         rt.builderID = newBuilder
         rt.pendingTakeoverID = nil
@@ -238,6 +264,10 @@ extension RoomEngine {
     }
 
     func roundTableContinueWithout(_ id: UUID, openDuties: [TurnPurpose]) async {
+        if state.phase == .checkingGoal || openDuties.contains(.goalCheck) {
+            await reassignGoalCheck(without: id)
+            return
+        }
         guard var rt = state.roundTable else { return }
         switch state.phase {
         case .discussing:
@@ -252,6 +282,25 @@ extension RoomEngine {
                 }
             }
         case .building:
+            if case .takeover(let offerID)? = state.pendingDecision, offerID == id {
+                rt.pendingTakeoverID = nil
+                rt.reviews[id] = nil
+                update {
+                    $0.pendingDecision = nil
+                    $0.roundTable = rt
+                }
+                notice("\(name(id)) reached its spending cap, so its takeover offer was cancelled.")
+                if rt.builderID == id {
+                    if let next = roundTableReviewersAfterCap(excluding: id).first {
+                        await performTakeover(to: next)
+                    } else {
+                        await pauseRoom(reason: "Paused: no agent is left to build.", interrupt: true)
+                    }
+                } else if !isPending({ $0 == .roundTableReview }) {
+                    await concludeReviewRound()
+                }
+                return
+            }
             if rt.builderID == id {
                 if let next = roundTableReviewersAfterCap(excluding: id).first {
                     await performTakeover(to: next)
@@ -263,6 +312,8 @@ extension RoomEngine {
                 update { $0.roundTable = rt }
                 if !isPending({ $0 == .roundTableReview }) { await concludeReviewRound() }
             }
+        case .checkingGoal:
+            await reassignGoalCheck(without: id)
         default:
             break
         }

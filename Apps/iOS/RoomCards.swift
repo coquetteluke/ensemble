@@ -23,10 +23,14 @@ struct RoomStateChip: View {
     }
 }
 
-/// Horizontal bar showing room state and participant agents. Tapping opens the Members sheet when provided.
+/// Horizontal bar showing room state and participant agents. Tapping an agent filters the board when `onSelectAgent`
+/// is provided, or opens the Members sheet when only `onTapMembers` is provided.
 struct RoomAgentsBar: View {
     let room: RemoteRoom
-    var onTapMembers: (() -> Void)?
+    var selectedAgentID: UUID? = nil
+    var agentCounts: [UUID: Int] = [:]
+    var onSelectAgent: ((UUID?) -> Void)? = nil
+    var onTapMembers: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 0) {
@@ -50,12 +54,14 @@ struct RoomAgentsBar: View {
                             .padding(.vertical, 5)
                             .background(RemoteTheme.card, in: Capsule())
                             .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+                            .frame(minHeight: RemoteTheme.minTapTarget)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+                .padding(.vertical, 4)
             }
             .background(RemoteTheme.sidebar)
             Rectangle().fill(RemoteTheme.separator).frame(height: 1)
@@ -64,21 +70,46 @@ struct RoomAgentsBar: View {
 
     @ViewBuilder
     private func agentChip(_ agent: RemoteAgent) -> some View {
+        let isSelected = onSelectAgent != nil && selectedAgentID == agent.id
+        let count = agentCounts[agent.id] ?? 0
+        let countLabel = count > 0 ? ", \(count) \(count == 1 ? "message" : "messages")" : ""
+
         let chip = HStack(spacing: 6) {
             Circle().fill(Color(remoteHex: agent.colorHex)).frame(width: 8, height: 8)
             Text(agent.name)
                 .font(RemoteTheme.font(size: 12.5, weight: .semibold, relativeTo: .caption))
                 .foregroundStyle(RemoteTheme.primaryText)
+            if count > 0 {
+                Text("\(count)")
+                    .font(RemoteTheme.font(size: 11, weight: .semibold, relativeTo: .caption2).monospacedDigit())
+                    .foregroundStyle(isSelected ? RemoteTheme.accent : RemoteTheme.tertiaryText)
+            }
             AgentActivityIcon(agent: agent)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(RemoteTheme.cardRaised, in: Capsule())
-        .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+        .background(isSelected ? RemoteTheme.accent.opacity(0.16) : RemoteTheme.cardRaised, in: Capsule())
+        .overlay(
+            Capsule().strokeBorder(
+                isSelected ? RemoteTheme.accent : RemoteTheme.border,
+                lineWidth: isSelected ? 1.5 : 0.75
+            )
+        )
+        .frame(minHeight: RemoteTheme.minTapTarget)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(agent.name), \(RoomText.activity(agent))")
+        .accessibilityLabel("\(agent.name), \(RoomText.activity(agent))\(countLabel)")
 
-        if let onTapMembers {
+        if let onSelectAgent {
+            Button {
+                onSelectAgent(isSelected ? nil : agent.id)
+            } label: {
+                chip
+            }
+            .buttonStyle(.plain)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .accessibilityHint(isSelected ? "Clear agent filter" : "Filter board to \(agent.name)")
+        } else if let onTapMembers {
             Button(action: onTapMembers) { chip }
                 .buttonStyle(.plain)
         } else {

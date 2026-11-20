@@ -75,6 +75,8 @@ public extension EnvironmentValues {
     @Entry var transcriptViewMode: TranscriptViewMode? = nil
     /// A message to scroll to and flash, set when a search result is opened.
     @Entry var transcriptFocus: TranscriptFocus? = nil
+    /// Persistent row highlights while live Find-in-Transcript is open.
+    @Entry var transcriptFindHighlight: TranscriptFindHighlight? = nil
 }
 
 /// How much of a transcript is shown. Control-O cycles through them; the choice is saved.
@@ -182,6 +184,7 @@ public struct TranscriptList: View {
     @Environment(\.theme) private var theme
     @Environment(\.transcriptViewMode) private var forcedMode
     @Environment(\.transcriptFocus) private var focus
+    @Environment(\.transcriptFindHighlight) private var findHighlight
     @Environment(\.transcriptActions) private var actions
     @AppStorage(TranscriptViewMode.storageKey) private var savedMode = TranscriptViewMode.normal.rawValue
     @State private var appliedFocusToken: Int?
@@ -214,8 +217,13 @@ public struct TranscriptList: View {
                     // Rows keep their own open or closed state; a new mode starts them over.
                     .id(mode)
                     .environment(\.transcriptViewMode, mode)
-                    .onAppear { applyFocus(blocks, proxy: proxy) }
+                    .onAppear {
+                        applyFocus(blocks, proxy: proxy)
+                        scrollToActiveFindMatch(blocks, proxy: proxy)
+                    }
                     .onChange(of: focus) { applyFocus(blocks, proxy: proxy) }
+                    .onChange(of: findHighlight?.activeItemID) { scrollToActiveFindMatch(blocks, proxy: proxy) }
+                    .onChange(of: findHighlight?.scrollToken) { scrollToActiveFindMatch(blocks, proxy: proxy) }
                     .onChange(of: items.count) { applyFocus(blocks, proxy: proxy) }
             }
         }
@@ -253,9 +261,21 @@ public struct TranscriptList: View {
                     }
                 }
                 .background {
-                    if highlightedBlockID == block.id {
+                    let isActiveFind = findHighlight?.activeItemID.map { block.contains(itemID: $0) } ?? false
+                    let isMatchedFind = !isActiveFind && (findHighlight?.matchedItemIDs.contains { block.contains(itemID: $0) } ?? false)
+                    if highlightedBlockID == block.id || isActiveFind {
                         RoundedRectangle(cornerRadius: theme.z(9), style: .continuous)
-                            .fill(theme.accent.opacity(0.13))
+                            .fill(theme.accent.opacity(theme.isDark ? 0.16 : 0.12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: theme.z(9), style: .continuous)
+                                    .strokeBorder(theme.accent.opacity(isActiveFind ? 0.55 : 0.0), lineWidth: 1)
+                            )
+                            .padding(.horizontal, -theme.z(10))
+                            .padding(.vertical, -theme.z(6))
+                            .transition(.opacity)
+                    } else if isMatchedFind {
+                        RoundedRectangle(cornerRadius: theme.z(9), style: .continuous)
+                            .fill(theme.accent.opacity(theme.isDark ? 0.07 : 0.05))
                             .padding(.horizontal, -theme.z(10))
                             .padding(.vertical, -theme.z(6))
                             .transition(.opacity)
@@ -363,6 +383,15 @@ public struct TranscriptList: View {
             onOpenTarget: { targetID in actions.openSession(targetID) },
             onDismiss: { actions.dismissAgentExchange(exchange) }
         )
+    }
+
+    /// Scrolls to the active Find-in-Transcript match without flashing or clearing its highlight.
+    private func scrollToActiveFindMatch(_ blocks: [TranscriptBlock], proxy: ScrollViewProxy) {
+        guard let activeID = findHighlight?.activeItemID,
+              let block = blocks.first(where: { $0.contains(itemID: activeID) }) else { return }
+        withAnimation(.easeOut(duration: 0.18)) {
+            proxy.scrollTo(block.id, anchor: .center)
+        }
     }
 
     /// Scrolls to the focused message once it is loaded, then flashes its row.
@@ -493,8 +522,8 @@ public struct TranscriptItemView: View {
                 isLatestReply: isLatestReply,
                 onContinueWithModel: onContinueWithModel
             )
-        case .reasoning(_, let text, let streaming):
-            ReasoningRow(text: text, streaming: streaming, expanded: (mode ?? .normal) != .normal)
+        case .reasoning(let id, let text, let streaming):
+            ReasoningRow(id: id, text: text, streaming: streaming, expanded: (mode ?? .normal) != .normal)
         case .tool(let tool):
             if ToolCategory(tool.name) == .subagent {
                 SubagentCardView(tool: tool)
@@ -921,16 +950,24 @@ public struct AgentNameTag: View {
 
 /// Collapsed "Thinking" row that expands to the model's reasoning.
 public struct ReasoningRow: View {
+    let id: String?
     let text: String
     let streaming: Bool
     @State private var expanded = false
     @State private var hovering = false
     @Environment(\.theme) private var theme
+    @Environment(\.transcriptFindHighlight) private var findHighlight
 
-    public init(text: String, streaming: Bool, expanded: Bool = false) {
+    public init(id: String? = nil, text: String, streaming: Bool, expanded: Bool = false) {
+        self.id = id
         self.text = text
         self.streaming = streaming
         self._expanded = State(initialValue: expanded)
+    }
+
+    private var isActiveFindMatch: Bool {
+        guard let id else { return false }
+        return findHighlight?.activeItemID == id
     }
 
     public var body: some View {
@@ -967,6 +1004,19 @@ public struct ReasoningRow: View {
                 }
                 .padding(.leading, theme.z(7))
                 .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .onAppear {
+            if isActiveFindMatch, !expanded { expanded = true }
+        }
+        .onChange(of: findHighlight?.activeItemID) {
+            if isActiveFindMatch, !expanded {
+                withAnimation(.easeOut(duration: 0.15)) { expanded = true }
+            }
+        }
+        .onChange(of: findHighlight?.scrollToken) {
+            if isActiveFindMatch, !expanded {
+                withAnimation(.easeOut(duration: 0.15)) { expanded = true }
             }
         }
     }

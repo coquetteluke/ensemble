@@ -8,18 +8,22 @@ public struct ThreadBackingLink: Codable, Hashable, Sendable {
     public var model: ModelRef?
     public var permissionMode: PermissionMode?
     /// Number of items in the primary transcript that this backing session has already seen
-    /// (natively or via an earlier handoff), used for delta handoffs when switching back.
+    /// (natively or via an earlier handoff), used as a fallback for delta handoffs when switching back.
     public var lastHandedOffItemCount: Int
+    /// ID of the last substantive transcript item (user, assistant reply, tool, or board message)
+    /// already seen by this backing session, anchoring delta handoffs against index drift.
+    public var lastHandedOffItemID: String?
     public var createdAt: Date
 
     public init(engineID: String, backingSessionID: String, model: ModelRef? = nil,
                 permissionMode: PermissionMode? = nil, lastHandedOffItemCount: Int = 0,
-                createdAt: Date = Date()) {
+                lastHandedOffItemID: String? = nil, createdAt: Date = Date()) {
         self.engineID = engineID
         self.backingSessionID = backingSessionID
         self.model = model
         self.permissionMode = permissionMode
         self.lastHandedOffItemCount = lastHandedOffItemCount
+        self.lastHandedOffItemID = lastHandedOffItemID
         self.createdAt = createdAt
     }
 }
@@ -182,12 +186,14 @@ public final class SessionThreadLinks {
 
     /// Ensures the primary session itself has a link entry before switching away to another engine.
     public func ensurePrimaryLink(primaryID: String, engineID: String, model: ModelRef?,
-                                  permissionMode: PermissionMode, handedOffCount: Int) {
+                                  permissionMode: PermissionMode, handedOffCount: Int,
+                                  handedOffItemID: String? = nil) {
         loadIfNeeded()
         var record = threads[primaryID] ?? SessionThreadRecord(primarySessionID: primaryID, activeBackingSessionID: primaryID, activeModel: model)
         if !record.links.contains(where: { $0.backingSessionID == primaryID }) {
             record.links.insert(ThreadBackingLink(engineID: engineID, backingSessionID: primaryID, model: model,
-                                                  permissionMode: permissionMode, lastHandedOffItemCount: handedOffCount), at: 0)
+                                                  permissionMode: permissionMode, lastHandedOffItemCount: handedOffCount,
+                                                  lastHandedOffItemID: handedOffItemID), at: 0)
             threads[primaryID] = record
             rebuildIndexes()
             save()
@@ -212,11 +218,12 @@ public final class SessionThreadLinks {
         save()
     }
 
-    public func updateHandedOffCount(_ count: Int, forBackingID backingID: String, primaryID: String) {
+    public func updateHandedOffCount(_ count: Int, lastItemID: String? = nil, forBackingID backingID: String, primaryID: String) {
         loadIfNeeded()
         guard var record = threads[primaryID],
               let index = record.links.firstIndex(where: { $0.backingSessionID == backingID }) else { return }
         record.links[index].lastHandedOffItemCount = count
+        record.links[index].lastHandedOffItemID = lastItemID
         threads[primaryID] = record
         save()
     }
@@ -283,6 +290,35 @@ public enum CrossEngineHandoff {
     private static let pemBlockPattern = try! NSRegularExpression(
         pattern: #"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"#
     )
+
+    /// ID of the last substantive item (user, assistant reply, tool, or board message) in `items`.
+    public static func lastAnchorItemID(in items: [TranscriptItem]) -> String? {
+        for item in items.reversed() {
+            switch item {
+            case .user, .agentText, .tool, .board:
+                return item.id
+            case .reasoning, .permission, .error, .notice:
+                continue
+            }
+        }
+        return nil
+    }
+
+    /// Computes the delta slice of `items` strictly after `lastHandedOffItemID` when found, falling back to
+    /// `lastHandedOffItemCount` only when no anchor ID is recorded or present in `items`.
+    public static func deltaItems(
+        from items: [TranscriptItem],
+        lastHandedOffItemID: String?,
+        lastHandedOffItemCount: Int
+    ) -> [TranscriptItem] {
+        if let anchorID = lastHandedOffItemID,
+           let anchorIndex = items.lastIndex(where: { $0.id == anchorID }) {
+            let nextIndex = items.index(after: anchorIndex)
+            return nextIndex < items.endIndex ? Array(items[nextIndex...]) : []
+        }
+        let startIndex = min(max(0, lastHandedOffItemCount), items.count)
+        return Array(items[startIndex...])
+    }
 
     /// Summarizes recent user prompts, assistant conclusions, and edited files/tools within `maxChars`.
     public static func build(items: [TranscriptItem], maxChars: Int = defaultMaxChars, isDelta: Bool = false) -> String {

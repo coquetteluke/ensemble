@@ -65,6 +65,8 @@ public final class RoomEngine {
 
     @ObservationIgnored var listener: Task<Void, Never>?
     @ObservationIgnored var busy: Set<UUID> = []
+    /// Agents currently running post-turn async cleanup (`flushHeld` / `collectText`); guarded from new reservations.
+    @ObservationIgnored var finishing: Set<UUID> = []
     @ObservationIgnored var buffers: [UUID: TextBuffer] = [:]
     @ObservationIgnored var turnDuty: [UUID: TurnPurpose] = [:]
     @ObservationIgnored var lastText: [UUID: String] = [:]
@@ -83,6 +85,10 @@ public final class RoomEngine {
     @ObservationIgnored public var spendingCapCheck: @MainActor (ModelRef) -> SpendingCapRefusal? = { model in
         UsageTracker.appWide?.refusal(for: model)
     }
+    /// Called when the user sends a message or starts a user-initiated run in this room.
+    @ObservationIgnored public var onUserTurn: (@MainActor (UUID, [String]) -> Void)?
+    /// App-wide observer for user turns in rooms (used on macOS to reset cross-session hop limits).
+    public static var appWideUserTurnObserver: (@MainActor (UUID, [String]) -> Void)?
 
     public init(state: RoomState, api: any OpenCodeAPI, store: any RoomStore, git: (any GitOps)? = nil) {
         self.state = state
@@ -281,6 +287,7 @@ public final class RoomEngine {
         }
         if !named { targets = agents.map(\.id) }
         let everyone = Set(targets) == Set(agents.map(\.id))
+        notifyUserTurn()
         post(BoardMessage(from: .user, to: everyone ? [] : targets, kind: .chat, text: body))
         resetRelayBudget()
         for target in targets {
@@ -297,6 +304,38 @@ public final class RoomEngine {
         }
     }
 
+    /// Delivers a cross-session message from another Ensemble agent to this room without attributing it to the user,
+    /// resetting the room's relay wake budget, or starting a run as a user prompt.
+    public func receiveExternalAgentMessage(_ payload: String, from senderLabel: String? = nil) async {
+        let body = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return }
+        let cleanLabel = senderLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let boardText = (cleanLabel?.isEmpty == false) ? "Message from \(cleanLabel!):\n\(body)" : body
+        post(BoardMessage(from: .room, kind: .notice, text: boardText))
+        if [.idle, .finished, .stopped].contains(state.phase) {
+            await startRun(task: body, mode: state.spec.mode, fromUser: false, resetBudget: false)
+            return
+        }
+        for target in agents.map(\.id) {
+            guard isActive(target) else {
+                notice("\(name(target)) has reached its spending cap, so the external agent message was not delivered.")
+                continue
+            }
+            var duty: TurnPurpose?
+            if state.runMode == .solo {
+                duty = .solo
+                if state.phase != .working { update { $0.phase = .working } }
+            }
+            await deliver(target, OutgoingMessage(channel: .synthetic, text: "[Room] \(body)", duty: duty))
+        }
+    }
+
+    private func notifyUserTurn() {
+        let sessionIDs = Array(state.sessions.values)
+        onUserTurn?(state.id, sessionIDs)
+        Self.appWideUserTurnObserver?(state.id, sessionIDs)
+    }
+
     /// Interrupts every session and stops scheduling. `resume()` continues from the saved phase.
     public func pause() async {
         await pauseRoom(reason: "Paused.", interrupt: true)
@@ -308,6 +347,7 @@ public final class RoomEngine {
             lastError = "Every agent has reached its spending cap. Raise a cap to continue."
             return
         }
+        let run = state.run
         let toNudge = state.interruptedAgents.filter { isActive($0) && !(state.duties[$0] ?? []).isEmpty }
         update {
             $0.isPaused = false
@@ -316,8 +356,9 @@ public final class RoomEngine {
         }
         notice("Resumed.")
         resetRelayBudget()
-        for id in agents.map(\.id) where !busy.contains(id) { await flushHeld(id) }
-        for id in toNudge where !busy.contains(id) {
+        for id in agents.map(\.id) where !busy.contains(id) && !finishing.contains(id) { await flushHeld(id) }
+        guard state.run == run, !state.isPaused, state.phase != .stopped else { return }
+        for id in toNudge where !busy.contains(id) && !finishing.contains(id) && !state.isPaused && state.run == run {
             let duty = state.duties[id]?.first?.purpose
             if hasWorkingSubagents(id) {
                 // Its subagents still work; the engine wakes it with their result.
@@ -326,7 +367,7 @@ public final class RoomEngine {
             }
             await deliver(id, OutgoingMessage(channel: .synthetic, text: resumeText(), nudge: duty))
         }
-        for id in agents.map(\.id) where !busy.contains(id) && !hasWorkingSubagents(id) && !state.isPaused {
+        for id in agents.map(\.id) where !busy.contains(id) && !finishing.contains(id) && !hasWorkingSubagents(id) && !state.isPaused && state.run == run {
             if let next = dequeue(id) { await deliver(id, next) }
         }
         await checkQuiescence()
@@ -345,7 +386,10 @@ public final class RoomEngine {
             $0.pendingDecision = nil
             $0.interruptedAgents = []
         }
+        turnDuty = [:]
         deferredDuty = [:]
+        buffers = [:]
+        liveText = [:]
         for task in settleTasks.values { task.cancel() }
         settleTasks = [:]
         notice("Stopped. The sessions and the board stay.")
@@ -385,7 +429,7 @@ public final class RoomEngine {
 
     // MARK: - Runs
 
-    func startRun(task: String, mode: RoomMode, fromUser: Bool) async {
+    func startRun(task: String, mode: RoomMode, fromUser: Bool, resetBudget: Bool = true) async {
         update {
             $0.run += 1
             $0.runMode = mode
@@ -402,16 +446,26 @@ public final class RoomEngine {
             $0.interruptedAgents = []
             if mode == .debate { $0.debate = nil }
         }
-        resetRelayBudget()
-        if fromUser { post(BoardMessage(from: .user, kind: .chat, text: task)) }
+        turnDuty = [:]
+        deferredDuty = [:]
+        buffers = [:]
+        liveText = [:]
+        if resetBudget { resetRelayBudget() }
+        if fromUser {
+            notifyUserTurn()
+            post(BoardMessage(from: .user, kind: .chat, text: task))
+        }
+        let run = state.run
         guard !activeAgentIDs.isEmpty else {
             await pauseRoom(reason: "Every agent has reached its spending cap.", interrupt: false)
             return
         }
         if state.briefedMode != mode {
             for id in activeAgentIDs { await inform(id, modeSwitchText(mode)) }
+            guard state.run == run, state.phase != .stopped, !state.isPaused else { return }
             update { $0.briefedMode = mode }
         }
+        guard state.run == run, state.phase != .stopped, !state.isPaused else { return }
         switch mode {
         case .solo: await startSolo(task: task, fromUser: fromUser)
         case .team: await startTeam(task: task)
@@ -497,25 +551,40 @@ public final class RoomEngine {
     }
 
     func turnEnded(_ id: UUID, outcome: String, error: String?) async {
-        busy.remove(id)
-        await flushHeld(id)
-        // A duty deferred while its subagents worked counts for the turn their result started.
+        let run = state.run
+        // Extract per-turn duty and streamed buffer synchronously before any await so a new turn cannot race with cleanup.
         let duty = turnDuty.removeValue(forKey: id) ?? deferredDuty.removeValue(forKey: id)
-        let text = await collectText(id)
+        let streamedBuffer = buffers.removeValue(forKey: id) ?? TextBuffer()
         liveText[id] = nil
+        busy.remove(id)
+        finishing.insert(id)
+        await flushHeld(id)
+        let text = await collectText(id, streamed: streamedBuffer)
+        finishing.remove(id)
         if state.cappedAgents.contains(id) {
-            activity[id] = .capped
+            if !busy.contains(id) { activity[id] = .capped }
             // A turn that finished as the cap was hit is paid for: show it, but move nothing.
-            if outcome != "interrupted" {
+            if outcome != "interrupted", state.run == run, state.phase != .stopped {
                 let body = parser.parse(text).boardText
                 if !body.isEmpty { post(BoardMessage(from: .agent(id), kind: .chat, text: body)) }
             }
             return
         }
-        activity[id] = .idle
+        if !busy.contains(id) { activity[id] = .idle }
+        if state.run != run {
+            if !state.isPaused, state.phase != .stopped, !busy.contains(id), !hasWorkingSubagents(id), let next = dequeue(id) {
+                await deliver(id, next)
+            }
+            return
+        }
         let interrupted = outcome == "interrupted"
-        if interrupted && (state.isPaused || state.phase == .stopped) { return }
-        if !interrupted, state.interruptedAgents.contains(id) {
+        if interrupted {
+            if state.isPaused || state.phase == .stopped { return }
+            // An interrupted turn (including a delayed interrupt after resume or restart) must never fulfill duties.
+            await afterTurn(id, turnDuty: nil, addressed: false)
+            return
+        }
+        if state.interruptedAgents.contains(id) {
             update { $0.interruptedAgents.removeAll { $0 == id } }
         }
         if outcome == "failed" {
@@ -525,13 +594,14 @@ public final class RoomEngine {
         let parsed = parser.parse(text)
         let purpose = duty ?? state.duties[id]?.first?.purpose ?? .chat
         await postAndRelay(id, parsed: parsed, text: text, purpose: purpose)
-        guard state.phase != .stopped else { return }
+        guard state.run == run, state.phase != .stopped, !state.isPaused else { return }
         await applyDuties(id, parsed: parsed, text: text)
+        guard state.run == run, state.phase != .stopped, !state.isPaused else { return }
         await afterTurn(id, turnDuty: duty, addressed: !parsed.addressed.isEmpty)
     }
 
-    func collectText(_ id: UUID) async -> String {
-        let buffer = buffers.removeValue(forKey: id) ?? TextBuffer()
+    func collectText(_ id: UUID, streamed buffer: TextBuffer? = nil) async -> String {
+        let buffer = buffer ?? (buffers.removeValue(forKey: id) ?? TextBuffer())
         let streamed = buffer.text
         if !streamed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return streamed }
         guard let sid = state.sessions[id], let items = try? await api.transcript(sid) else { return "" }
@@ -622,20 +692,33 @@ public final class RoomEngine {
     /// Sends a message that asks the agent to act (`prompt` or `injectSynthetic` with `wake: true`).
     /// If the agent is busy or the room is paused, the message waits in the agent's outbox.
     func deliver(_ id: UUID, _ message: OutgoingMessage) async {
+        let run = state.run
+        let allowStopped = state.phase == .stopped && message.channel == .prompt && message.duty == nil && message.nudge == nil
         await flushHeld(id)
+        guard state.run == run, allowStopped || state.phase != .stopped else { return }
         guard let sid = reserve(id, message) else { return }
-        await transmit(id, sid, message)
+        await transmit(id, sid, message, run: run, allowStopped: allowStopped)
     }
 
     /// Delivers several messages so that every duty is on record before the first one is sent.
     func deliverAll(_ items: [(UUID, OutgoingMessage)]) async {
+        let run = state.run
         for id in Set(items.map(\.0)) { await flushHeld(id) }
+        guard state.run == run, state.phase != .stopped else { return }
         var ready: [(UUID, String, OutgoingMessage)] = []
         for (id, message) in items {
             if let sid = reserve(id, message) { ready.append((id, sid, message)) }
         }
-        for (id, sid, message) in ready {
-            await transmit(id, sid, message)
+        for (index, item) in ready.enumerated() {
+            let (id, sid, message) = item
+            guard state.run == run, !state.isPaused, state.phase != .stopped else {
+                let requeue = state.run == run && state.isPaused && state.phase != .stopped
+                for remaining in ready[index...] {
+                    rollbackReserved(remaining.0, remaining.2, requeue: requeue && isActive(remaining.0))
+                }
+                return
+            }
+            await transmit(id, sid, message, run: run, allowStopped: false)
         }
     }
 
@@ -643,7 +726,7 @@ public final class RoomEngine {
     /// `nil` when the message was queued or dropped.
     private func reserve(_ id: UUID, _ message: OutgoingMessage) -> String? {
         guard isActive(id), let sid = state.sessions[id] else { return nil }
-        if state.isPaused || busy.contains(id) || hasWorkingSubagents(id) {
+        if state.isPaused || busy.contains(id) || finishing.contains(id) || hasWorkingSubagents(id) {
             update { $0.outbox[id, default: []].append(message) }
             return nil
         }
@@ -657,13 +740,12 @@ public final class RoomEngine {
         return sid
     }
 
-    private func transmit(_ id: UUID, _ sid: String, _ message: OutgoingMessage) async {
-        if let model = agent(id)?.model, let refusal = spendingCapCheck(model) {
-            // The provider's daily cap is reached: nothing is sent, the message waits in the outbox, and the room
-            // pauses with the reason. Resume sends it once the cap is raised or the day is over.
-            busy.remove(id)
-            turnDuty[id] = nil
-            activity[id] = .idle
+    /// Undoes a `reserve` slot that was not transmitted, optionally putting the message back at the front of the outbox.
+    private func rollbackReserved(_ id: UUID, _ message: OutgoingMessage, requeue: Bool) {
+        busy.remove(id)
+        turnDuty[id] = nil
+        activity[id] = state.cappedAgents.contains(id) ? .capped : .idle
+        if requeue {
             update {
                 if let duty = message.duty, let i = $0.duties[id]?.lastIndex(where: { $0.purpose == duty }) {
                     $0.duties[id]?.remove(at: i)
@@ -671,10 +753,37 @@ public final class RoomEngine {
                 if $0.duties[id]?.isEmpty == true { $0.duties[id] = nil }
                 $0.outbox[id, default: []].insert(message, at: 0)
             }
+        } else if let duty = message.duty, state.duties[id] != nil {
+            update {
+                if let i = $0.duties[id]?.lastIndex(where: { $0.purpose == duty }) {
+                    $0.duties[id]?.remove(at: i)
+                }
+                if $0.duties[id]?.isEmpty == true { $0.duties[id] = nil }
+            }
+        }
+    }
+
+    private func transmit(_ id: UUID, _ sid: String, _ message: OutgoingMessage, run: Int, allowStopped: Bool) async {
+        guard state.run == run, !state.isPaused, allowStopped || state.phase != .stopped, isActive(id) else {
+            let requeue = state.run == run && state.isPaused && (allowStopped || state.phase != .stopped) && isActive(id)
+            rollbackReserved(id, message, requeue: requeue)
+            return
+        }
+        if let model = agent(id)?.model, let refusal = spendingCapCheck(model) {
+            // The provider's daily cap is reached: nothing is sent, the message waits in the outbox, and the room
+            // pauses with the reason. Resume sends it once the cap is raised or the day is over.
+            rollbackReserved(id, message, requeue: true)
             await pauseRoom(reason: "Paused. \(refusal.message)", interrupt: false)
             return
         }
-        if message.duty == .work || message.nudge == .work { await allowWorktreeEdits(id) }
+        if message.duty == .work || message.nudge == .work {
+            await allowWorktreeEdits(id)
+            guard state.run == run, !state.isPaused, allowStopped || state.phase != .stopped, isActive(id) else {
+                let requeue = state.run == run && state.isPaused && (allowStopped || state.phase != .stopped) && isActive(id)
+                rollbackReserved(id, message, requeue: requeue)
+                return
+            }
+        }
         do {
             switch message.channel {
             case .prompt: try await api.prompt(sid, text: message.text, files: [])
@@ -683,7 +792,8 @@ public final class RoomEngine {
         } catch {
             busy.remove(id)
             turnDuty[id] = nil
-            activity[id] = .idle
+            activity[id] = state.cappedAgents.contains(id) ? .capped : .idle
+            guard state.run == run, allowStopped || state.phase != .stopped else { return }
             let reason = "Could not reach \(name(id)): \(error.localizedDescription)"
             lastError = reason
             if let duty = message.duty {
@@ -703,7 +813,7 @@ public final class RoomEngine {
     /// step, so the reply the room parses would gain an answer to it.
     func inform(_ id: UUID, _ text: String) async {
         guard isActive(id), let sid = state.sessions[id] else { return }
-        if busy.contains(id) {
+        if busy.contains(id) || finishing.contains(id) {
             update { $0.held[id, default: []].append(text) }
             return
         }
@@ -862,8 +972,8 @@ public final class RoomEngine {
     /// Called when nobody is busy and nothing is queued. Agents that still owe something get a nudge or
     /// a fallback, so a run never stalls silently.
     func checkQuiescence() async {
-        guard !state.isPaused, state.pendingDecision == nil, state.phase.isRunning, busy.isEmpty, workingSubagents.isEmpty,
-              state.outbox.values.allSatisfy(\.isEmpty) else { return }
+        guard !state.isPaused, state.pendingDecision == nil, state.phase.isRunning, busy.isEmpty, finishing.isEmpty,
+              workingSubagents.isEmpty, state.outbox.values.allSatisfy(\.isEmpty) else { return }
         let waiting = agents.map(\.id).filter { isActive($0) && !(state.duties[$0] ?? []).isEmpty }
         if waiting.isEmpty {
             await roomStalled()
@@ -892,11 +1002,38 @@ public final class RoomEngine {
             await nextSpeaker()
         case .building:
             await concludeReviewRound()
+        case .checkingGoal:
+            await reassignGoalCheck()
         case .planning, .judging:
             await pauseRoom(reason: "Paused: nobody is left to finish this step.", interrupt: false)
         default:
             break
         }
+    }
+
+    /// Reassigns an active goal check when the checking agent is capped or dropped, or blocks cleanly if none remain.
+    func reassignGoalCheck(without excludedID: UUID? = nil) async {
+        guard state.phase == .checkingGoal else { return }
+        guard var goal = state.goal, goal.isActive else {
+            update { $0.phase = .finished }
+            return
+        }
+        if isPending({ $0 == .goalCheck }) { return }
+        let candidate: UUID? = {
+            if let checker = goalCheckerID, checker != excludedID, isActive(checker) { return checker }
+            return activeAgentIDs.first { $0 != excludedID }
+        }()
+        guard let checker = candidate else {
+            let line = GoalDriver.block(&goal, reason: "No agent is left to check the goal")
+            update {
+                $0.goal = goal
+                $0.phase = .finished
+            }
+            if let line { notice(line) }
+            return
+        }
+        notice("\(name(checker)) takes over checking the goal.")
+        await deliver(checker, OutgoingMessage(channel: .synthetic, text: goalCheckText(goal), duty: .goalCheck))
     }
 
     // MARK: - Subagents
@@ -976,6 +1113,10 @@ public final class RoomEngine {
         if activeAgentIDs.isEmpty {
             let reason = agents.count == 1 ? "Paused: \(name(id)) reached its spending cap." : "Paused: every agent has reached its spending cap."
             await pauseRoom(reason: reason, interrupt: true)
+            return
+        }
+        if state.phase == .checkingGoal || openDuties.contains(.goalCheck) {
+            await reassignGoalCheck(without: id)
             return
         }
         switch state.runMode {

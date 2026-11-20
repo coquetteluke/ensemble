@@ -17,9 +17,11 @@ start `mock_llm.py` with it.
 | A real dot path | `git config marker` | `write` to `.git/config` (the test rejects the prompt) |
 | Another agent's worktree | `other worktree marker` | `write` into Ada's worktree (the test rejects the prompt) |
 
-The work rules write to `.ensemble/worktrees/ensemble-mock-team-<agent>/`, the worktree `ProcessGitOps` makes for a
-room titled `Mock Team` with agents named `Ada` and `Byron` (branch `ensemble/mock-team/<agent>`). Keep the test's
-room title and agent names in step with this file.
+Room worktree folders end in short room and agent id suffixes (branch `ensemble/mock-team-<room id>/<agent>-<agent id>`),
+so the work rules write to `{{worktree}}/<file>`. `mock_llm.py` fills `{{worktree}}` with
+`.ensemble/worktrees/<folder>` from the agent's own brief (`Work only in your own git worktree: ...`), or else from the
+newest worktree path any message mentions, which is how Byron's subagent finds his worktree. The `other worktree
+marker` rule keeps a fixed path on purpose: any path outside Byron's own worktree must still ask.
 
 `pause-script.json` streams the opening argument slowly so the pause test can interrupt it mid-turn.
 

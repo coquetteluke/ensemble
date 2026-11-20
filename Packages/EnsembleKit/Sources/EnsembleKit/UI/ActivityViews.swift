@@ -10,11 +10,17 @@ public struct ActivityGroupView: View {
     @State private var expanded: Bool
     @State private var hovering = false
     @Environment(\.theme) private var theme
+    @Environment(\.transcriptFindHighlight) private var findHighlight
 
     public init(items: [TranscriptItem], resolutions: [String: PermissionResolution] = [:], expanded: Bool = false) {
         self.items = items
         self.resolutions = resolutions
         self._expanded = State(initialValue: expanded)
+    }
+
+    private var containsActiveFindMatch: Bool {
+        guard let activeID = findHighlight?.activeItemID else { return false }
+        return items.contains { $0.id == activeID }
     }
 
     public var body: some View {
@@ -69,6 +75,19 @@ public struct ActivityGroupView: View {
                 .transition(.opacity)
             }
         }
+        .onAppear {
+            if containsActiveFindMatch, !expanded { expanded = true }
+        }
+        .onChange(of: findHighlight?.activeItemID) {
+            if containsActiveFindMatch, !expanded {
+                withAnimation(.easeOut(duration: 0.15)) { expanded = true }
+            }
+        }
+        .onChange(of: findHighlight?.scrollToken) {
+            if containsActiveFindMatch, !expanded {
+                withAnimation(.easeOut(duration: 0.15)) { expanded = true }
+            }
+        }
     }
 
     @ViewBuilder private func step(_ item: TranscriptItem) -> some View {
@@ -79,8 +98,8 @@ public struct ActivityGroupView: View {
             } else {
                 ToolCardView(tool: tool)
             }
-        case .reasoning(_, let text, let streaming):
-            ReasoningRow(text: text, streaming: streaming)
+        case .reasoning(let id, let text, let streaming):
+            ReasoningRow(id: id, text: text, streaming: streaming)
         case .permission(let request):
             PermissionCardView(request: request, resolution: resolutions[request.id])
         default:

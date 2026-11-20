@@ -71,13 +71,13 @@ struct CommandPalettePanel: View {
         .padding(.vertical, theme.z(6))
 
         if isSnapshot {
-            rows.frame(maxHeight: theme.z(430), alignment: .top).fixedSize(horizontal: false, vertical: true).clipped()
+            rows.frame(maxHeight: theme.z(420), alignment: .top).fixedSize(horizontal: false, vertical: true).clipped()
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
                     rows.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
                 }
-                .frame(height: min(max(contentHeight, theme.z(44)), theme.z(430)))
+                .frame(height: min(max(contentHeight, theme.z(44)), theme.z(420)))
                 .onChange(of: search.paletteSelection) {
                     guard entries.indices.contains(search.paletteSelection) else { return }
                     proxy.scrollTo(entries[search.paletteSelection].id)

@@ -76,6 +76,6 @@ Luke is moving this Ensemble session from Claude Code to Antigravity. This note 
 - iPhone: a prompt the safety check then answers can flash briefly on the phone.
 
 ## Memory sync (new today)
-- Claude's memories and yours sync both ways every minute: `~/bin/memory-sync`, launchd job `com.lukegarito.memory-sync`, which starts at login.
+- Claude's memories and yours sync both ways every minute: `~/bin/memory-sync`, a launchd job, which starts at login.
 - Your memories are the topic files in `~/.gemini/memory/`, indexed in `~/.gemini/GEMINI.md`. Save lasting facts there as "## " sections, and they reach Claude within about a minute.
 - Log: `~/Library/Logs/memory-sync.log`.

@@ -304,7 +304,7 @@ struct SessionWorktreeTests {
     @Test @MainActor func roomCopiesAreListedAndRemovedOnlyWhenTheRoomIsFinished() async throws {
         let repo = try Repo()
         try repo.trust.trust(repo.root)
-        let roomPath = try await ProcessGitOps().createWorktree(repo: repo.root, branch: "ensemble/room1/ada")
+        let roomPath = try await ProcessGitOps.trustingEverything.createWorktree(repo: repo.root, branch: "ensemble/room1/ada")
         #expect(roomPath.hasSuffix("/repo/.ensemble/worktrees/ensemble-room1-ada"))
         let ada = AgentSpec(name: "Ada", model: ModelRef(providerID: "mock", id: "mock-1"), colorHex: "#ff0000")
         var room = RoomState(spec: RoomSpec(title: "Parser split", directory: repo.root, agents: [ada], mode: .team))

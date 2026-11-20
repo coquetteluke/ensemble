@@ -153,6 +153,17 @@ public final class RemoteClient {
     public func start() {
         generation += 1
         let gen = generation
+        loopTask?.cancel()
+        loopTask = nil
+        pingTask?.cancel()
+        pingTask = nil
+        localUpdatesTask?.cancel()
+        localUpdatesTask = nil
+        socket?.cancel(with: .normalClosure, reason: nil)
+        socket = nil
+        channel = nil
+        connectedRelay = nil
+        failAllPending(RemoteError(.failed, "Disconnected"))
         if let host = localHost {
             startInProcess(host, generation: gen)
             return
@@ -270,14 +281,16 @@ public final class RemoteClient {
                 startPing(task)
                 loadInitialState()
                 await receiveLoop(task, generation: gen)
-                pingTask?.cancel()
+                task.cancel(with: .goingAway, reason: nil)
                 if socket === task {
                     socket = nil
                     channel = nil
                     connectedRelay = nil
                 }
-                failAllPending(RemoteError(.failed, "Lost the connection to the Mac"))
                 guard isCurrent(gen) else { return }
+                pingTask?.cancel()
+                pingTask = nil
+                failAllPending(RemoteError(.failed, "Lost the connection to the Mac"))
                 state = .waiting(retryIn: 1)
                 try? await Task.sleep(for: .seconds(1))
 
@@ -531,6 +544,7 @@ public final class RemoteClient {
         if let primary { relays.append(primary) }
         if let fallback, fallback != primary { relays.append(fallback) }
         var lastError: (any Error)?
+        var primaryAuthoritativeError: RemoteError?
         for relay in relays {
             try Task.checkCancellation()
             do {
@@ -547,10 +561,18 @@ public final class RemoteClient {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                if relay == primary, let remoteError = error as? RemoteError {
+                    switch remoteError.code {
+                    case .macOffline, .limit, .unauthorized:
+                        primaryAuthoritativeError = remoteError
+                    default:
+                        break
+                    }
+                }
                 lastError = error
             }
         }
-        throw lastError ?? RemoteError(.failed, "Could not reach the relay.")
+        throw primaryAuthoritativeError ?? lastError ?? RemoteError(.failed, "Could not reach the relay.")
     }
 
     private nonisolated static func handshake(over task: URLSessionWebSocketTask, token: String,
@@ -859,12 +881,17 @@ public final class RemoteClient {
 
     /// Opens a chat (a session or a room's transcript) and streams its changes until another is opened.
     public func open(sessionID: String) async throws {
-        if openSessionID != sessionID {
-            if let old = openSessionID { _ = try? await request(.closeSession(sessionID: old)) }
+        let old = openSessionID
+        if old != sessionID {
             openSessionID = sessionID
             openTranscript = nil
+            if let old { _ = try? await request(.closeSession(sessionID: old)) }
         }
+        guard openSessionID == sessionID else { return }
         try await request(.openSession(sessionID: sessionID))
+        if openSessionID != sessionID {
+            _ = try? await request(.closeSession(sessionID: sessionID))
+        }
     }
 
     /// Stops streaming the open chat.
@@ -959,6 +986,11 @@ public final class RemoteClient {
         try await request(.secondOpinion(RemoteSecondOpinionRequest(
             sessionID: sessionID, itemID: itemID, replyText: replyText, providerID: providerID, modelID: modelID
         )))
+    }
+
+    /// Archives or unarchives a solo session on the Mac.
+    public func archive(sessionID: String, archived: Bool = true) async throws {
+        try await request(.archiveSession(RemoteArchiveSession(sessionID: sessionID, archived: archived)))
     }
 
     /// Display name for a `(providerID, modelID)` pair using `availableModels`.

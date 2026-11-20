@@ -173,8 +173,10 @@ private final class CloseTracker: NSObject, URLSessionWebSocketDelegate, Sendabl
         switch close.code {
         case RelayWire.CloseCode.unauthorized:
             return RemoteError(.unauthorized, "Invalid pairing token. Scan the pairing code on your Mac again.")
-        case RelayWire.CloseCode.macOffline, RelayWire.CloseCode.noMailbox:
+        case RelayWire.CloseCode.macOffline:
             return RemoteError(.macOffline, "Your Mac is not connected to the relay")
+        case RelayWire.CloseCode.noMailbox:
+            return RemoteError(.failed, "Your Mac has not registered on the relay yet")
         case RelayWire.CloseCode.limit:
             if close.reason == "busy" {
                 return RemoteError(.busy, "Too many phones are connected to this Mac.")

@@ -147,6 +147,9 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: .ensembleCopyTranscriptMarkdown)) { _ in
             copyTranscriptMarkdown()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .ensembleFindInCurrentView)) { _ in
+            window.findRequestToken &+= 1
+        }
         .claudeImport(store: store)
         .alert("Something went wrong", isPresented: errorShown, presenting: store.lastError) { _ in
             Button("OK") { store.lastError = nil }

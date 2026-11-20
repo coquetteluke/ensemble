@@ -1,5 +1,6 @@
-import { SELF } from "cloudflare:test";
+import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import type { Mailbox } from "../src/mailbox";
 import { auth, b64url, claim, connect, newKey, randomID, sign } from "./helpers";
 
 describe("host socket", () => {
@@ -109,5 +110,50 @@ describe("host socket", () => {
     expect(await host.quiet()).toBe(true);
     host.send({ t: "ready" });
     expect(await host.closeCode()).toBe(4002);
+  });
+
+  it("a closed host socket finishing auth does not evict the live host", async () => {
+    const id = randomID();
+    const key = await newKey();
+    const live = await claim(id, key, undefined, "2001:db8:c9::1");
+    expect((await live.next()).t).toBe("ready");
+
+    const stub = env.MAILBOX.getByName(id);
+    const second = await connect(id, "host", "2001:db8:c9::2");
+    const ch = await second.next();
+    const sig = await sign(key, id, ch.nonce);
+
+    await runInDurableObject(stub, async (inst: Mailbox, state) => {
+      await state.storage.put("lastUsed", 123);
+      const pendingHost = state.getWebSockets("host").find((w) => {
+        const a = w.deserializeAttachment() as { authed?: boolean } | null;
+        return a?.authed === false;
+      })!;
+      // Close before auth finishes its awaits, simulating a disconnect during verifyHost.
+      const authPromise = inst.webSocketMessage(pendingHost, JSON.stringify({ t: "auth", sig }));
+      pendingHost.close(1000, "gone");
+      await authPromise;
+      expect(await state.storage.get<number>("lastUsed")).toBe(123);
+    });
+
+    expect(live.closed).toBeNull();
+    expect(await live.quiet()).toBe(true);
+    live.ws.close(1000);
+    await live.closeCode();
+  });
+
+  it("pipelined duplicate auth frames on one host socket close with 4002", async () => {
+    const id = randomID();
+    const key = await newKey();
+    const first = await claim(id, key, undefined, "2001:db8:c9::3");
+    expect((await first.next()).t).toBe("ready");
+
+    const second = await connect(id, "host", "2001:db8:c9::4");
+    const ch = await second.next();
+    const sig = await sign(key, id, ch.nonce);
+    second.send({ t: "auth", sig });
+    second.send({ t: "auth", sig });
+    expect(await second.closeCode()).toBe(4002);
+    expect(await first.closeCode()).toBe(4009);
   });
 });

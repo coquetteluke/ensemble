@@ -243,7 +243,7 @@ struct RoomLiveTests {
             let spec = RoomSpec(title: "Mock Debate", directory: h.path, agents: [ada, byron], mode: .debate,
                                 leadAgentID: ada.id, permissionMode: .auto, debateRounds: 2)
             let store = InMemoryRoomStore()
-            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: store, git: ProcessGitOps())
+            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: store, git: ProcessGitOps.trustingEverything)
             defer { engine.close() }
             h.track(engine.state.sessions.values)
             #expect(engine.state.sessions.count == 2)
@@ -286,7 +286,7 @@ struct RoomLiveTests {
             let spec = RoomSpec(title: "Mock Team", directory: h.path, agents: [ada, byron], mode: .team,
                                 leadAgentID: ada.id, permissionMode: .auto)
             let store = InMemoryRoomStore()
-            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: store, git: ProcessGitOps())
+            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: store, git: ProcessGitOps.trustingEverything)
             defer { engine.close() }
             h.track(engine.state.sessions.values)
 
@@ -305,7 +305,7 @@ struct RoomLiveTests {
             #expect(state.assignments.allSatisfy { $0.status == .merged })
             #expect(state.assignments.first { $0.agentID == ada.id }?.reviewerID == byron.id)
             #expect(state.assignments.first { $0.agentID == byron.id }?.reviewerID == ada.id)
-            #expect(state.assignments.first { $0.agentID == ada.id }?.branch == "ensemble/mock-team/ada")
+            #expect(state.assignments.first { $0.agentID == ada.id }?.branch == engine.expectedBranch("Ada", roomSlug: "mock-team"))
             #expect(state.assignments.first { $0.agentID == ada.id }?.changedFiles == ["ada.txt"])
             #expect(state.assignments.first { $0.agentID == byron.id }?.changedFiles == ["byron.txt"])
 
@@ -315,8 +315,8 @@ struct RoomLiveTests {
             #expect(board.filter { $0.kind == .assignment }.map(\.to) == [[ada.id], [byron.id]])
             #expect(board.filter { $0.kind == .review }.count == 2)
             #expect(board.filter { $0.kind == .review }.allSatisfy { $0.text.contains("APPROVE") })
-            #expect(board.contains { $0.from == .room && $0.text == "Merged ensemble/mock-team/ada into main." })
-            #expect(board.contains { $0.from == .room && $0.text == "Merged ensemble/mock-team/byron into main." })
+            #expect(board.contains { $0.from == .room && $0.text == "Merged \(engine.expectedBranch("Ada", roomSlug: "mock-team")) into main." })
+            #expect(board.contains { $0.from == .room && $0.text == "Merged \(engine.expectedBranch("Byron", roomSlug: "mock-team")) into main." })
             #expect(board.last { $0.from == .agent(ada.id) }?.text.hasPrefix("Summary:") == true)
             // Messages for a busy agent's information wait until its turn ends (`RoomState.held`). Before, OpenCode read
             // them inside the running turn and the agent answered there, so a review gained the mock's "OK." reply.
@@ -327,14 +327,14 @@ struct RoomLiveTests {
 
             // Branches, worktrees and the merged files on main.
             let branches = try h.git(["branch", "--list", "ensemble/*"])
-            #expect(branches.contains("ensemble/mock-team/ada"))
-            #expect(branches.contains("ensemble/mock-team/byron"))
+            #expect(branches.contains(engine.expectedBranch("Ada", roomSlug: "mock-team")))
+            #expect(branches.contains(engine.expectedBranch("Byron", roomSlug: "mock-team")))
             #expect(try h.git(["rev-parse", "--abbrev-ref", "HEAD"]).trimmingCharacters(in: .whitespacesAndNewlines) == "main")
             #expect(try String(contentsOfFile: h.path + "/ada.txt", encoding: .utf8) == "Hello from Ada\n")
             #expect(try String(contentsOfFile: h.path + "/byron.txt", encoding: .utf8) == "Hello from Byron\n")
             let log = try h.git(["log", "--format=%s", "main"])
-            #expect(log.contains("Merge ensemble/mock-team/ada"))
-            #expect(log.contains("Merge ensemble/mock-team/byron"))
+            #expect(log.contains("Merge \(engine.expectedBranch("Ada", roomSlug: "mock-team"))"))
+            #expect(log.contains("Merge \(engine.expectedBranch("Byron", roomSlug: "mock-team"))"))
             #expect(try h.git(["status", "--porcelain"]).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             #expect(engine.lastError == nil)
             #expect(fallbackNotices(engine).isEmpty, "\(fallbackNotices(engine))")
@@ -348,7 +348,7 @@ struct RoomLiveTests {
             let spec = RoomSpec(title: "Mock Team", directory: h.path, agents: [ada, byron], mode: .team,
                                 leadAgentID: ada.id, permissionMode: .ask)
             let store = InMemoryRoomStore()
-            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: store, git: ProcessGitOps())
+            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: store, git: ProcessGitOps.trustingEverything)
             defer { engine.close() }
             h.track(engine.state.sessions.values)
             let roomSessions = Set(engine.state.sessions.values)
@@ -382,7 +382,7 @@ struct RoomLiveTests {
             let spec = RoomSpec(title: "Mock Pause", directory: h.path, agents: [ada, byron], mode: .debate,
                                 leadAgentID: ada.id, permissionMode: .auto, debateRounds: 1)
             let store = InMemoryRoomStore()
-            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: store, git: ProcessGitOps())
+            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: store, git: ProcessGitOps.trustingEverything)
             defer { engine.close() }
             h.track(engine.state.sessions.values)
 
@@ -422,7 +422,7 @@ struct RoomLiveTests {
             let (ada, byron) = agents()
             let spec = RoomSpec(title: "Mock Team", directory: h.path, agents: [ada, byron], mode: .team,
                                 leadAgentID: ada.id, permissionMode: .auto)
-            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: InMemoryRoomStore(), git: ProcessGitOps())
+            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: InMemoryRoomStore(), git: ProcessGitOps.trustingEverything)
             defer { engine.close() }
             h.track(engine.state.sessions.values)
 
@@ -435,7 +435,7 @@ struct RoomLiveTests {
             let byronSession = try #require(engine.sessionID(for: byron.id))
             let rules = try await h.client.permissionRules(byronSession)
             #expect(PermissionRules.mode(for: rules) == .auto)
-            #expect(PermissionRules.worktree(in: rules) == ".ensemble/worktrees/ensemble-mock-team-byron")
+            #expect(PermissionRules.worktree(in: rules) == ".ensemble/worktrees/" + engine.expectedWorktreeFolder("Byron", roomSlug: "mock-team"))
 
             // The same agent, same session: a real dot path asks, and so does another agent's worktree.
             let config = h.path + "/.git/config"
@@ -471,7 +471,7 @@ struct RoomLiveTests {
             let (ada, byron) = agents()
             let spec = RoomSpec(title: "Mock Team", directory: h.path, agents: [ada, byron], mode: .team,
                                 leadAgentID: ada.id, permissionMode: .auto)
-            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: InMemoryRoomStore(), git: ProcessGitOps())
+            let engine = try await RoomEngine.create(spec: spec, api: h.client, store: InMemoryRoomStore(), git: ProcessGitOps.trustingEverything)
             defer { engine.close() }
             h.track(engine.state.sessions.values)
 

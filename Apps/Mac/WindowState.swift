@@ -133,6 +133,13 @@ final class WindowState {
         set { if let pane = activePane { pane.composerFocusToken = newValue } else { focusTokenValue = newValue } }
     }
 
+    private var findRequestTokenValue = 0
+    /// Bumped to open or focus Find in the current view (the focused pane's, in split view).
+    var findRequestToken: Int {
+        get { activePane?.findRequestToken ?? findRequestTokenValue }
+        set { if let pane = activePane { pane.findRequestToken = newValue } else { findRequestTokenValue = newValue } }
+    }
+
     private var requestedMenuValue: ComposerMenu?
     /// A composer menu a slash command asked to open (the composer opens it and clears this).
     var requestedMenu: ComposerMenu? {

@@ -11,6 +11,11 @@ struct FindingCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .textEditing) {
             Divider()
+            Button("Find in Current View\u{2026}") {
+                NotificationCenter.default.post(name: .ensembleFindInCurrentView, object: nil)
+            }
+            .appShortcut(.findInTranscript)
+            .disabled(!hasStore)
             Button("Search Sessions\u{2026}") { search.toggle(.search) }
                 .appShortcut(.searchTranscripts)
                 .disabled(!hasStore)

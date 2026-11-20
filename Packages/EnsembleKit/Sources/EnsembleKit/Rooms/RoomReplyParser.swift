@@ -88,6 +88,18 @@ public struct RoomReplyParser: Sendable {
         var inFence = false
         var lastContentLine: String?
 
+        func flushChanges() {
+            guard let lines = changesLines else { return }
+            changesLines = nil
+            let text = Self.joinSection(lines)
+            guard !Self.isEmptyChanges(text) else { return }
+            if let existing = reply.changes, !existing.isEmpty {
+                reply.changes = existing + "\n" + text
+            } else {
+                reply.changes = text
+            }
+        }
+
         var i = 0
         while i < lines.count {
             let raw = lines[i]
@@ -139,23 +151,24 @@ public struct RoomReplyParser: Sendable {
                 switch kw {
                 case .plan(let rest):
                     planLines = rest.isEmpty ? [] : [rest]
-                    changesLines = nil
+                    flushChanges()
                     assignIndex = nil
                     i += 1
                     continue
                 case .assign(let name, let task):
                     reply.assignments.append(ParsedAssignment(name: name, task: task))
                     assignIndex = reply.assignments.count - 1
-                    changesLines = nil
+                    flushChanges()
                 case .done:
                     reply.done = true
-                    changesLines = nil
+                    flushChanges()
                     assignIndex = nil
                 case .approve:
                     reply.approve = true
-                    changesLines = nil
+                    flushChanges()
                     assignIndex = nil
                 case .changes(let rest):
+                    flushChanges()
                     changesLines = rest.isEmpty ? [] : [rest]
                     assignIndex = nil
                     i += 1
@@ -164,17 +177,17 @@ public struct RoomReplyParser: Sendable {
                     continue
                 case .agree:
                     reply.agree = true
-                    changesLines = nil
+                    flushChanges()
                     assignIndex = nil
                 case .takeover:
                     reply.takeover = true
-                    changesLines = nil
+                    flushChanges()
                     assignIndex = nil
                 case .verdict(let rest):
                     verdictLines = rest.isEmpty ? [] : [rest]
+                    flushChanges()
                     // "VERDICT: APPROVE" in a review still counts as the review word.
                     applyReviewWord(in: rest, to: &reply)
-                    changesLines = nil
                     assignIndex = nil
                     planLines?.append(raw)
                     i += 1
@@ -202,10 +215,7 @@ public struct RoomReplyParser: Sendable {
 
         if let planLines { reply.plan = Self.joinSection(planLines) }
         if let verdictLines { reply.verdict = Self.joinSection(verdictLines) }
-        if let changesLines {
-            let text = Self.joinSection(changesLines)
-            reply.changes = Self.isEmptyChanges(text) ? nil : text
-        }
+        flushChanges()
 
         if let last = lastContentLine { applyTrailingKeyword(last, to: &reply) }
 
@@ -278,7 +288,13 @@ public struct RoomReplyParser: Sendable {
         switch Self.reviewWord(in: s) {
         case .approve?: reply.approve = true
         case .changes(let rest)?:
-            if !Self.isEmptyChanges(rest) { reply.changes = rest }
+            if !Self.isEmptyChanges(rest) {
+                if let existing = reply.changes, !existing.isEmpty {
+                    reply.changes = existing + "\n" + rest
+                } else {
+                    reply.changes = rest
+                }
+            }
         default: break
         }
     }

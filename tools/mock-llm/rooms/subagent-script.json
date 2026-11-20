@@ -5,7 +5,7 @@
      "text": "My helper wrote byron.txt in my worktree.\nDONE"},
     {"match": ["helper marker"],
      "steps": [
-       {"tool": {"name": "write", "arguments": {"path": ".ensemble/worktrees/ensemble-mock-team-byron/byron.txt", "content": "Hello from Byron's helper\n"}},
+       {"tool": {"name": "write", "arguments": {"path": "{{worktree}}/byron.txt", "content": "Hello from Byron's helper\n"}},
         "delay": 1.5},
        {"text": "Wrote byron.txt.", "delay": 0.3}
      ]},
@@ -16,11 +16,11 @@
      "text": "I read the change and it does what the assignment asks.\nAPPROVE"},
     {"match": ["Your assignment: create ada.txt"],
      "steps": [
-       {"tool": {"name": "write", "arguments": {"path": ".ensemble/worktrees/ensemble-mock-team-ada/ada.txt", "content": "Hello from Ada\n"}}},
+       {"tool": {"name": "write", "arguments": {"path": "{{worktree}}/ada.txt", "content": "Hello from Ada\n"}}},
        {"text": "Wrote ada.txt in my worktree.\nDONE"}
      ]},
     {"match": ["Your assignment: create byron.txt"],
-     "tool": {"name": "subagent", "arguments": {"agent": "general", "description": "Write byron.txt", "prompt": "helper marker: write byron.txt in the worktree"}},
+     "tool": {"name": "subagent", "arguments": {"agent": "general", "description": "Write byron.txt", "prompt": "helper marker: write byron.txt in {{worktree}}"}},
      "then": "I started a helper to write byron.txt."},
     {"match": ["Post a short summary"],
      "text": "Summary: Ada wrote ada.txt and Byron's helper wrote byron.txt. Both pieces were reviewed and merged."},

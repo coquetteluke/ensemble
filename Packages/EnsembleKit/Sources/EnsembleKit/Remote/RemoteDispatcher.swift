@@ -60,6 +60,9 @@ public enum RemoteDispatcher {
             case .secondOpinion(let req):
                 try await host.requestSecondOpinion(req)
                 return .ack
+            case .archiveSession(let req):
+                try await host.archiveSession(sessionID: req.sessionID, archived: req.archived)
+                return .ack
             }
         } catch let error as RemoteError {
             return .error(error)

@@ -16,12 +16,12 @@
      "text": "I read the change and it does what the assignment asks.\nAPPROVE"},
     {"match": ["Your assignment: create ada.txt"],
      "steps": [
-       {"tool": {"name": "write", "arguments": {"path": ".ensemble/worktrees/ensemble-mock-team-ada/ada.txt", "content": "Hello from Ada\n"}}},
+       {"tool": {"name": "write", "arguments": {"path": "{{worktree}}/ada.txt", "content": "Hello from Ada\n"}}},
        {"text": "Wrote ada.txt in my worktree.\nDONE"}
      ]},
     {"match": ["Your assignment: create byron.txt"],
      "steps": [
-       {"tool": {"name": "write", "arguments": {"path": ".ensemble/worktrees/ensemble-mock-team-byron/byron.txt", "content": "Hello from Byron\n"}}},
+       {"tool": {"name": "write", "arguments": {"path": "{{worktree}}/byron.txt", "content": "Hello from Byron\n"}}},
        {"text": "Wrote byron.txt in my worktree.\nDONE"}
      ]},
     {"match": ["Post a short summary"],

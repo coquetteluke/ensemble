@@ -54,11 +54,21 @@ struct HubBoardContent: View {
 
     @State private var showOld = false
     @State private var actionError: String?
+    @State private var filter = HubFilter()
+    @State private var confirmArchiveFinished = false
+    @State private var archivingFinished = false
+    @State private var pendingArchiveIDs: [String] = []
 
-    private var groups: [HubBucket: [SessionSummary]] { HubBoard.group(client.sessions) }
+    private var projects: [HubProjectOption] { HubFilter.projects(from: client.sessions) }
+    private var filteredSessions: [SessionSummary] { filter.filter(client.sessions) }
+    private var groups: [HubBucket: [SessionSummary]] { HubBoard.group(filteredSessions) }
     private var visibleBuckets: [HubBucket] {
         let grouped = groups
         return [HubBucket.needsYou, .running, .finished].filter { !(grouped[$0] ?? []).isEmpty }
+    }
+    private var showFilterBar: Bool { client.sessions.count >= 3 || filter.isActive }
+    private var hasNoMatches: Bool {
+        filter.isActive && !client.sessions.isEmpty && visibleBuckets.isEmpty && (groups[.old]?.isEmpty ?? true)
     }
 
     var body: some View {
@@ -68,8 +78,19 @@ struct HubBoardContent: View {
                     HubConnectionBanner(client: client)
                 }
 
+                if showFilterBar {
+                    HubFilterBar(
+                        filter: $filter,
+                        projects: projects
+                    )
+                }
+
                 if client.sessions.isEmpty {
                     HubEmptyState(client: client)
+                } else if hasNoMatches {
+                    HubEmptyFilterState {
+                        withAnimation(.snappy) { filter.clear() }
+                    }
                 }
 
                 ForEach(visibleBuckets, id: \.self) { bucket in
@@ -79,8 +100,13 @@ struct HubBoardContent: View {
                         rows: rows,
                         client: client,
                         selectedSessionID: selectedSessionID,
+                        archivingFinished: archivingFinished,
                         open: open,
                         onAct: runAction,
+                        onRequestArchiveFinished: bucket == .finished ? { ids in
+                            pendingArchiveIDs = ids
+                            confirmArchiveFinished = true
+                        } : nil,
                         onError: { actionError = $0 }
                     )
                 }
@@ -88,7 +114,7 @@ struct HubBoardContent: View {
                 if let old = groups[.old], !old.isEmpty {
                     HubOldSection(
                         rows: old,
-                        expanded: $showOld,
+                        expanded: filter.isActive ? .constant(true) : $showOld,
                         client: client,
                         selectedSessionID: selectedSessionID,
                         open: open,
@@ -102,19 +128,220 @@ struct HubBoardContent: View {
             .padding(.bottom, 24)
         }
         .remoteScreen()
+        .scrollDismissesKeyboard(.interactively)
         .refreshable {
             if !client.state.isConnected && !client.isInProcess {
                 client.reconnectNow()
             }
             try? await client.refreshHub()
         }
+        .onChange(of: projects) { _, currentProjects in
+            guard let selectedDir = filter.selectedDirectory else { return }
+            let normalized = HubFilter.normalizedDirectory(selectedDir)
+            if !currentProjects.contains(where: { HubFilter.normalizedDirectory($0.directory) == normalized }) {
+                filter.selectedDirectory = nil
+            }
+        }
         .actionErrorAlert($actionError)
+        .alert(
+            "Archive \(pendingArchiveIDs.count) finished \(pendingArchiveIDs.count == 1 ? "session" : "sessions")?",
+            isPresented: $confirmArchiveFinished
+        ) {
+            Button("Cancel", role: .cancel) {
+                pendingArchiveIDs = []
+            }
+            Button("Archive", role: .destructive) {
+                let ids = pendingArchiveIDs
+                pendingArchiveIDs = []
+                archiveSessions(ids)
+            }
+        } message: {
+            Text("Archived sessions leave the hub and stay searchable on your Mac.")
+        }
+    }
+
+    private func archiveSessions(_ ids: [String]) {
+        guard !ids.isEmpty, !archivingFinished else { return }
+        archivingFinished = true
+        Task {
+            defer { archivingFinished = false }
+            var attempted = 0
+            var failures: [String] = []
+            for id in ids {
+                guard let current = client.sessions.first(where: { $0.id == id }),
+                      current.roomID == nil,
+                      !current.archived,
+                      HubBoard.bucket(for: current) == .finished else { continue }
+                attempted += 1
+                do {
+                    try await client.archive(sessionID: id)
+                } catch {
+                    failures.append(error.localizedDescription)
+                }
+            }
+            if attempted > 0 {
+                try? await client.refreshHub()
+            }
+            if let first = failures.first {
+                if failures.count == 1 {
+                    actionError = first
+                } else {
+                    actionError = "Could not archive \(failures.count) of \(attempted) sessions. \(first)"
+                }
+            }
+        }
     }
 
     private func runAction(_ work: @escaping () async throws -> Void) {
         Task {
             do { try await work() } catch { actionError = error.localizedDescription }
         }
+    }
+}
+
+// MARK: - Filter bar & empty filter state
+
+private struct HubFilterBar: View {
+    @Binding var filter: HubFilter
+    let projects: [HubProjectOption]
+
+    private var totalProjectSessions: Int {
+        projects.reduce(0) { $0 + $1.count }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
+                    .foregroundStyle(RemoteTheme.tertiaryText)
+                TextField("Filter sessions...", text: $filter.query)
+                    .font(RemoteTheme.font(size: 14.5, relativeTo: .body))
+                    .foregroundStyle(RemoteTheme.primaryText)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .submitLabel(.search)
+                if !filter.query.isEmpty {
+                    Button {
+                        filter.query = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(RemoteTheme.font(size: 15, relativeTo: .footnote))
+                            .foregroundStyle(RemoteTheme.tertiaryText)
+                            .frame(minWidth: 32, minHeight: 38)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
+                }
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, filter.query.isEmpty ? 12 : 4)
+            .frame(minHeight: 40)
+            .background(RemoteTheme.card, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(RemoteTheme.border, lineWidth: 0.75)
+            )
+
+            if projects.count >= 2 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        projectPill(
+                            label: "All",
+                            count: totalProjectSessions,
+                            needsYouCount: 0,
+                            selected: filter.selectedDirectory == nil
+                        ) {
+                            withAnimation(.snappy) {
+                                filter.selectedDirectory = nil
+                            }
+                        }
+
+                        ForEach(projects) { project in
+                            let selected = filter.selectedDirectory.map {
+                                HubFilter.normalizedDirectory($0) == project.directory
+                            } ?? false
+                            projectPill(
+                                label: project.label,
+                                count: project.count,
+                                needsYouCount: project.needsYouCount,
+                                selected: selected
+                            ) {
+                                withAnimation(.snappy) {
+                                    filter.selectedDirectory = selected ? nil : project.directory
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func projectPill(
+        label: String,
+        count: Int,
+        needsYouCount: Int,
+        selected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                if needsYouCount > 0 {
+                    Circle()
+                        .fill(RemoteTheme.warning)
+                        .frame(width: 6, height: 6)
+                }
+                Text(label)
+                    .font(RemoteTheme.font(size: 12.5, weight: selected ? .semibold : .medium, relativeTo: .caption))
+                    .foregroundStyle(selected ? RemoteTheme.primaryText : RemoteTheme.secondaryText)
+                    .lineLimit(1)
+                if count > 0 {
+                    Text("\(count)")
+                        .font(RemoteTheme.font(size: 11, weight: .semibold, relativeTo: .caption2).monospacedDigit())
+                        .foregroundStyle(selected ? RemoteTheme.accent : RemoteTheme.tertiaryText)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(selected ? RemoteTheme.accent.opacity(0.16) : RemoteTheme.card, in: Capsule())
+            .overlay(
+                Capsule().strokeBorder(
+                    selected ? RemoteTheme.accent : RemoteTheme.border,
+                    lineWidth: selected ? 1.5 : 0.75
+                )
+            )
+            .frame(minHeight: RemoteTheme.minTapTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityLabel(
+            needsYouCount > 0
+                ? "\(label), \(count) sessions, \(needsYouCount) needs you"
+                : "\(label), \(count) sessions"
+        )
+    }
+}
+
+private struct HubEmptyFilterState: View {
+    let onClear: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(RemoteTheme.tertiaryText)
+            Text("No sessions match your filter")
+                .font(RemoteTheme.font(size: 15.5, weight: .medium, relativeTo: .subheadline))
+                .foregroundStyle(RemoteTheme.secondaryText)
+                .multilineTextAlignment(.center)
+            Button("Clear filters", action: onClear)
+                .buttonStyle(RemoteSecondaryButtonStyle())
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 48)
     }
 }
 
@@ -200,13 +427,28 @@ private struct HubSectionBlock: View {
     let rows: [SessionSummary]
     let client: RemoteClient
     let selectedSessionID: String?
+    var archivingFinished = false
     let open: (ChatRoute) -> Void
     let onAct: (@escaping () async throws -> Void) -> Void
+    var onRequestArchiveFinished: (([String]) -> Void)? = nil
     let onError: (String) -> Void
 
+    private var archivableIDs: [String] {
+        guard bucket == .finished else { return [] }
+        return HubFilter.archivableFinishedSessionIDs(from: rows)
+    }
+
     var body: some View {
+        let idsToArchive = archivableIDs
+        let showArchiveAll = !idsToArchive.isEmpty && client.state.isConnected && onRequestArchiveFinished != nil
         VStack(alignment: .leading, spacing: RemoteTheme.cardGap) {
-            HubSectionHeader(bucket: bucket, count: rows.count)
+            HubSectionHeader(
+                bucket: bucket,
+                count: rows.count,
+                trailingLabel: showArchiveAll ? "Archive all" : nil,
+                trailingBusy: archivingFinished,
+                onTrailingTap: showArchiveAll ? { onRequestArchiveFinished?(idsToArchive) } : nil
+            )
             ForEach(rows) { session in
                 HubSessionCard(
                     session: session,
@@ -276,6 +518,9 @@ private struct HubOldSection: View {
 private struct HubSectionHeader: View {
     let bucket: HubBucket
     let count: Int
+    var trailingLabel: String? = nil
+    var trailingBusy = false
+    var onTrailingTap: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -292,6 +537,32 @@ private struct HubSectionHeader: View {
                     (bucket == .needsYou ? RemoteTheme.warning.opacity(0.16) : RemoteTheme.cardRaised),
                     in: Capsule()
                 )
+            if let trailingLabel, let onTrailingTap {
+                Spacer(minLength: 8)
+                Button(action: onTrailingTap) {
+                    HStack(spacing: 5) {
+                        if trailingBusy {
+                            Spinner(size: 10)
+                        } else {
+                            Image(systemName: "archivebox")
+                                .font(RemoteTheme.font(size: 11, weight: .medium, relativeTo: .caption))
+                        }
+                        Text(trailingBusy ? "Archiving..." : trailingLabel)
+                            .font(RemoteTheme.font(size: 12.5, weight: .medium, relativeTo: .caption))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(RemoteTheme.secondaryText)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(RemoteTheme.cardRaised, in: Capsule())
+                    .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+                    .frame(minHeight: RemoteTheme.minTapTarget)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(trailingBusy)
+                .accessibilityLabel(trailingLabel)
+            }
         }
         .padding(.horizontal, 2)
     }

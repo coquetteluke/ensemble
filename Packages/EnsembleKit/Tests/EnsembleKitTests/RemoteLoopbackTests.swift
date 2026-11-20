@@ -1192,6 +1192,89 @@ import Testing
         #expect(try RemotePairing(code: debugLoopback).relay?.url == "ws://127.0.0.1:8787")
         #endif
     }
+
+    @Test func archiveSessionRoundTripOverLoopback() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+
+        let phone = client(h)
+        phone.start()
+        defer { phone.stop() }
+        try await waitUntil { phone.state.isConnected && !phone.sessions.isEmpty }
+
+        let finishedID = RemoteDemoData.IDs.docsSession
+        #expect(phone.sessions.first(where: { $0.id == finishedID })?.archived == false)
+
+        try await phone.archive(sessionID: finishedID)
+        try await waitUntil {
+            phone.sessions.first(where: { $0.id == finishedID })?.archived == true
+        }
+
+        // Archiving a room session ID must be rejected cleanly.
+        if let roomRow = phone.sessions.first(where: { $0.roomID != nil }) {
+            do {
+                try await phone.archive(sessionID: roomRow.id)
+                Issue.record("Expected archiving a room to throw badRequest")
+            } catch let error as RemoteError {
+                #expect(error.code == .badRequest)
+            }
+        }
+    }
+
+    @Test func rapidOpenSwitchesSessionAndDoesNotLeakStaleSubscription() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let c = client(h)
+        c.start()
+        defer { c.stop() }
+        try await waitUntil { c.state.isConnected && c.sessions.count == 4 }
+
+        let initial = RemoteDemoData.IDs.oldSession
+        let first = RemoteDemoData.IDs.fixSession
+        let second = RemoteDemoData.IDs.docsSession
+        try await c.open(sessionID: initial)
+        #expect(c.openSessionID == initial)
+
+        let firstTask = Task { @MainActor in try? await c.open(sessionID: first) }
+        await Task.yield()
+        try await c.open(sessionID: second)
+        await firstTask.value
+
+        #expect(c.openSessionID == second)
+        #expect(c.openTranscript?.sessionID == second)
+
+        await h.host.emit(.transcriptUpsert(sessionID: first, item: .notice(id: "stale-first", text: "Stale")))
+        await h.host.emit(.transcriptUpsert(sessionID: second, item: .notice(id: "live-second", text: "Live")))
+        try await waitUntil {
+            c.openTranscript?.items.contains { $0.id == "live-second" } == true
+        }
+        #expect(c.openTranscript?.items.contains { $0.id == "stale-first" } == false)
+    }
+
+    @Test func callingStartWhileRunningReplacesConnectionCleanly() async throws {
+        let h = try await startServer()
+        defer { Task { await h.server.stop() } }
+        let c = client(h)
+        c.start()
+        defer { c.stop() }
+
+        try await waitUntil { c.state == .connected(via: .direct(host: "127.0.0.1")) }
+        try await pollUntil { await h.server.status.devices.count == 1 }
+        let initialDeviceID = try #require(await h.server.status.devices.first?.id)
+
+        // Calling start() again without stop() must clean up the prior generation and keep requests working.
+        c.start()
+        try await pollUntil("server to replace the prior connection with a single new device") {
+            let devices = await h.server.status.devices
+            return devices.count == 1 && devices.first?.id != initialDeviceID
+        }
+        try await waitUntil { c.state == .connected(via: .direct(host: "127.0.0.1")) }
+
+        try await c.refreshHub()
+        try await c.send("After restart", to: .session(RemoteDemoData.IDs.fixSession))
+        let actions = await h.host.recordedActions
+        #expect(actions.contains(.sendMessage(text: "After restart", target: .session(RemoteDemoData.IDs.fixSession), agent: nil)))
+    }
 }
 /// Counts how many of some TCP connections the server has closed.
 final class ServerClosures: Sendable {

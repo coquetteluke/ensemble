@@ -58,9 +58,11 @@ import Testing
         await engine.approvePlan()
         try await engine.waitFor("the run to finish", fake: fake) { $0.state.phase == .finished }
 
-        #expect(git.worktrees == ["ensemble/test-room/alpha", "ensemble/test-room/beta", "ensemble/test-room/gamma"])
+        #expect(git.worktrees == [engine.expectedBranch("Alpha"), engine.expectedBranch("Beta"), engine.expectedBranch("Gamma")])
+        // Room and agent id suffixes keep two rooms with the same title (or agents with the same slug) apart.
+        #expect(git.worktrees.allSatisfy { $0.hasPrefix("ensemble/test-room-") })
         let work = try #require(fake.wakes(to: "Beta").first { $0.text.contains("Your assignment") })
-        #expect(work.text.contains("Work only in your own git worktree: /tmp/ensemble-room-test/.ensemble/worktrees/ensemble-test-room-beta (branch ensemble/test-room/beta)"))
+        #expect(work.text.contains("Work only in your own git worktree: /tmp/ensemble-room-test/.ensemble/worktrees/\(engine.expectedWorktreeFolder("Beta")) (branch \(engine.expectedBranch("Beta")))"))
         #expect(work.text.contains("questions usually go to Alpha"))
         #expect(work.text.contains("Plan:\nBuild a tiny calculator"))
 
@@ -82,18 +84,18 @@ import Testing
         let fix = try #require(fake.wakes(to: "Beta").first { $0.text.contains("division by zero") })
         #expect(fix.text.hasPrefix("[Room] Gamma (mock/gamma) to you: CHANGES: add a test for division by zero"))
         let review = try #require(fake.wakes(to: "Alpha").first { $0.text.contains("Please review Gamma") })
-        #expect(review.text.contains("Changed files: ensemble-test-room-gamma.txt"))
+        #expect(review.text.contains("Changed files: \(engine.expectedWorktreeFolder("Gamma")).txt"))
         #expect(review.text.contains("Assignment: write README.md"))
 
         // 5. Merge in assignment order through GitOps.
         #expect(git.merges == [
-            FakeGitOps.Merge(branch: "ensemble/test-room/alpha", base: "main"),
-            FakeGitOps.Merge(branch: "ensemble/test-room/beta", base: "main"),
-            FakeGitOps.Merge(branch: "ensemble/test-room/gamma", base: "main"),
+            FakeGitOps.Merge(branch: engine.expectedBranch("Alpha"), base: "main"),
+            FakeGitOps.Merge(branch: engine.expectedBranch("Beta"), base: "main"),
+            FakeGitOps.Merge(branch: engine.expectedBranch("Gamma"), base: "main"),
         ])
         #expect(git.commits.count == 3)
         #expect(engine.state.assignments.allSatisfy { $0.status == .merged })
-        #expect(engine.notices.contains("Merged ensemble/test-room/beta into main."))
+        #expect(engine.notices.contains("Merged \(engine.expectedBranch("Beta")) into main."))
 
         // 6. Summary from the lead.
         let summaryRequest = try #require(fake.wakes(to: "Alpha").first { $0.text.contains("Post a short summary") })
@@ -169,12 +171,12 @@ import Testing
         fake.on("Alpha", "conflicts in: Shared.swift", reply: "Resolved and committed.\nDONE")
         fake.on("Alpha", "Post a short summary", reply: "Done, with one conflict fixed.")
         let git = FakeGitOps()
-        git.conflictOnce(branch: "ensemble/test-room/alpha", files: ["Shared.swift"])
         let engine = try await RoomFixtures.engine(RoomFixtures.spec(.team, ["Alpha", "Beta"]), fake: fake, git: git)
+        git.conflictOnce(branch: engine.expectedBranch("Alpha"), files: ["Shared.swift"])
         await engine.start(task: "Do it")
         try await engine.waitFor("finish", fake: fake) { $0.state.phase == .finished }
         #expect(engine.notices.contains { $0.contains("conflicts in Shared.swift. Alpha resolves it.") })
-        #expect(git.merges.map(\.branch) == ["ensemble/test-room/alpha", "ensemble/test-room/beta"])
+        #expect(git.merges.map(\.branch) == [engine.expectedBranch("Alpha"), engine.expectedBranch("Beta")])
         #expect(engine.state.assignments.allSatisfy { $0.status == .merged })
     }
 

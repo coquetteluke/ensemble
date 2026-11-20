@@ -210,9 +210,9 @@ import Testing
 
         let root = "/tmp/ensemble-room-test/.ensemble/worktrees/"
         let grants = fake.worktreeGrants
-        #expect(grants.filter { $0.agent == "Alpha" }.map(\.path) == [root + "ensemble-test-room-alpha"])
+        #expect(grants.filter { $0.agent == "Alpha" }.map(\.path) == [root + engine.expectedWorktreeFolder("Alpha")])
         // Beta's first piece and its fix round.
-        #expect(grants.filter { $0.agent == "Beta" }.map(\.path) == [root + "ensemble-test-room-beta", root + "ensemble-test-room-beta"])
+        #expect(grants.filter { $0.agent == "Beta" }.map(\.path) == [root + engine.expectedWorktreeFolder("Beta"), root + engine.expectedWorktreeFolder("Beta")])
         // Each grant comes before the work message it is for.
         for grant in grants {
             let next = fake.sent.dropFirst(grant.sentCount).first { $0.agent == grant.agent && $0.wake }

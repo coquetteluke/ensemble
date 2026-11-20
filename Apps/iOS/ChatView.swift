@@ -8,6 +8,7 @@ struct ChatView: View {
     let title: String
 
     @Environment(RemoteAppModel.self) private var model
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var sending = false
     @State private var loadError: String?
     @State private var actionError: String?
@@ -17,12 +18,19 @@ struct ChatView: View {
     @State private var showDiffSheet = false
     @State private var showJumpToLatest = false
     @State private var copiedTranscript = false
+    @State private var showFind = false
+    @State private var findQuery = ""
+    @State private var findIndex = 0
+    @State private var findScrollToken = 0
+    @State private var roomFilter = RoomBoardFilter()
+    @State private var pendingJumpItemID: String?
     @State private var sendHaptic = 0
     @State private var stopPauseHaptic = 0
     @State private var modelSwitchHaptic = 0
     /// Where the reader was when this view appeared (nil: the end).
     @State private var startAnchor: String??
     @FocusState private var composerFocused: Bool
+    @FocusState private var findFocused: Bool
 
     private var transcript: RemoteTranscript? {
         client.openTranscript?.sessionID == sessionID ? client.openTranscript : nil
@@ -43,6 +51,38 @@ struct ChatView: View {
     private var hasHistory: Bool { !(transcript?.items.isEmpty ?? true) }
     private var agents: [UUID: RemoteAgent] {
         Dictionary((transcript?.agents ?? []).map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+    }
+    private var roomAgentsByID: [UUID: RemoteAgent] {
+        var map = agents
+        if let room {
+            for agent in room.agents where map[agent.id] == nil {
+                map[agent.id] = agent
+            }
+        }
+        return map
+    }
+    private var visibleItems: [TranscriptItem] {
+        guard let transcript else { return [] }
+        if room != nil && roomFilter.isActive {
+            return roomFilter.filter(transcript.items, agents: roomAgentsByID)
+        }
+        return transcript.items
+    }
+    private var findResult: TranscriptFindResult {
+        showFind ? TranscriptFinder.search(findQuery, in: visibleItems) : .empty
+    }
+    private var findHighlight: TranscriptFindHighlight {
+        showFind ? findResult.highlight(at: findIndex) : TranscriptFindHighlight()
+    }
+    private var activeFindItemID: String? {
+        findResult.activeItemID(at: findIndex)
+    }
+    private var roomAgentCounts: [UUID: Int] {
+        RoomBoardFilter.itemCountsByAgent(in: transcript?.items ?? [])
+    }
+    private var latestItemIDForSelectedAgent: String? {
+        guard let agentID = roomFilter.agentID, let items = transcript?.items else { return nil }
+        return RoomBoardFilter.latestItemID(for: agentID, in: items)
     }
     private var agentSpecs: [UUID: AgentSpec] {
         agents.mapValues { agent in
@@ -92,6 +132,9 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
+                    if sizeClass != .regular, let goal = room?.goal {
+                        RoomGoalStrip(goal: goal)
+                    }
                     if let transcript {
                         if transcript.items.isEmpty && decision == nil && activity != .working {
                             EmptySessionView(
@@ -99,10 +142,17 @@ struct ChatView: View {
                                 modelName: room == nil ? (pendingModelName ?? activeModelName) : room?.mode.label,
                                 permissionMode: currentMode
                             )
+                        } else if room != nil && roomFilter.isActive && visibleItems.isEmpty {
+                            RoomEmptyFilterView {
+                                withAnimation(.snappy) { roomFilter.clear() }
+                            }
                         } else {
                             let attribution = modelLabels(in: transcript.items)
                             let retryTarget = retryableError(in: transcript.items)
-                            ForEach(transcript.items) { item in
+                            let highlight = findHighlight
+                            ForEach(visibleItems) { item in
+                                let isActiveMatch = highlight.activeItemID == item.id
+                                let isMatch = highlight.matchedItemIDs.contains(item.id)
                                 TranscriptRow(
                                     item: item,
                                     agents: agents,
@@ -132,6 +182,23 @@ struct ChatView: View {
                                         if let text = retryTarget?.text { retrySend(text) }
                                     } : nil,
                                     onError: { actionError = $0 }
+                                )
+                                .padding(.horizontal, isMatch ? 8 : 0)
+                                .padding(.vertical, isMatch ? 6 : 0)
+                                .background(
+                                    isActiveMatch
+                                        ? RemoteTheme.accent.opacity(0.14)
+                                        : (isMatch ? RemoteTheme.accent.opacity(0.06) : Color.clear),
+                                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .strokeBorder(
+                                            isActiveMatch
+                                                ? RemoteTheme.accent
+                                                : (isMatch ? RemoteTheme.accent.opacity(0.28) : Color.clear),
+                                            lineWidth: isActiveMatch ? 1.5 : 1
+                                        )
                                 )
                                 .id(item.id)
                             }
@@ -225,6 +292,7 @@ struct ChatView: View {
                 }
             }
             .onChange(of: transcript?.items.last) { old, _ in
+                guard !showFind else { return }
                 let anchor = model.scrollAnchors[sessionID]
                 let atEnd = anchor == nil || anchor == Self.bottomID || anchor == Self.workingID
                     || anchor == Self.decisionID || anchor == old?.id
@@ -236,9 +304,50 @@ struct ChatView: View {
                 if loaded { restoreScroll(proxy) }
             }
             .onChange(of: decision?.id) { _, id in
-                if id != nil {
+                if id != nil && !showFind {
                     withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
                 }
+            }
+            .onChange(of: findQuery) { _, _ in
+                findIndex = 0
+                if showFind, let id = findResult.activeItemID(at: 0) {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
+                }
+            }
+            .onChange(of: activeFindItemID) { _, id in
+                guard showFind, let id else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(id, anchor: .center)
+                }
+            }
+            .onChange(of: findScrollToken) { _, _ in
+                guard showFind, let id = activeFindItemID else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(id, anchor: .center)
+                }
+            }
+            .onChange(of: findResult.matchCount) { _, _ in
+                let clamped = findResult.clampedIndex(findIndex)
+                if clamped != findIndex {
+                    findIndex = clamped
+                }
+            }
+            .onChange(of: pendingJumpItemID) { _, targetID in
+                guard let targetID else { return }
+                Task { @MainActor in
+                    await Task.yield()
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        proxy.scrollTo(targetID, anchor: .center)
+                    }
+                    pendingJumpItemID = nil
+                }
+            }
+            .onChange(of: sessionID) { _, _ in
+                closeFind()
+                roomFilter.clear()
+                pendingJumpItemID = nil
             }
             .onAppear {
                 if startAnchor == nil { startAnchor = .some(model.scrollAnchors[sessionID]) }
@@ -246,17 +355,60 @@ struct ChatView: View {
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
-            if let room {
+            if room != nil || showFind {
                 VStack(spacing: 0) {
-                    RoomAgentsBar(room: room, onTapMembers: { showMembers = true })
-                    if let goal = room.goal {
-                        RoomGoalStrip(goal: goal)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
-                            .background(RemoteTheme.sidebar)
-                            .overlay(alignment: .bottom) {
-                                Rectangle().fill(RemoteTheme.separator).frame(height: 1)
-                            }
+                    if let room {
+                        RoomAgentsBar(
+                            room: room,
+                            selectedAgentID: roomFilter.agentID,
+                            agentCounts: roomAgentCounts,
+                            onSelectAgent: { id in
+                                withAnimation(.snappy) {
+                                    roomFilter.agentID = id
+                                }
+                            },
+                            onTapMembers: { showMembers = true }
+                        )
+                        if roomFilter.isActive {
+                            RoomFilterStrip(
+                                visibleCount: visibleItems.count,
+                                totalCount: transcript?.items.count ?? 0,
+                                selectedAgent: roomFilter.agentID.flatMap { roomAgentsByID[$0] },
+                                category: roomFilter.category,
+                                canJumpToLatest: latestItemIDForSelectedAgent != nil,
+                                onJumpToLatest: jumpToSelectedAgentLatest,
+                                onToggleHideNotices: {
+                                    withAnimation(.snappy) {
+                                        roomFilter.category = roomFilter.category == .hideNotices ? .all : .hideNotices
+                                    }
+                                },
+                                onShowAll: {
+                                    withAnimation(.snappy) {
+                                        roomFilter.clear()
+                                    }
+                                }
+                            )
+                        }
+                        if sizeClass == .regular, let goal = room.goal {
+                            RoomGoalStrip(goal: goal)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(RemoteTheme.sidebar)
+                                .overlay(alignment: .bottom) {
+                                    Rectangle().fill(RemoteTheme.separator).frame(height: 1)
+                                }
+                        }
+                    }
+                    if showFind {
+                        RemoteFindBar(
+                            query: $findQuery,
+                            focused: $findFocused,
+                            statusText: findResult.statusText(at: findIndex),
+                            hasMatches: !findResult.isEmpty,
+                            onPrevious: { stepFind(forward: false) },
+                            onNext: { stepFind(forward: true) },
+                            onDone: closeFind
+                        )
                     }
                 }
             }
@@ -383,6 +535,28 @@ struct ChatView: View {
             .accessibilityLabel("Changes")
 
             Menu {
+                if hasHistory {
+                    Button {
+                        withAnimation(.snappy) {
+                            showFind = true
+                        }
+                        findFocused = true
+                    } label: {
+                        Label("Find in chat", systemImage: "magnifyingglass")
+                    }
+                }
+                if room != nil && hasHistory {
+                    Button {
+                        withAnimation(.snappy) {
+                            roomFilter.category = roomFilter.category == .hideNotices ? .all : .hideNotices
+                        }
+                    } label: {
+                        Label(
+                            roomFilter.category == .hideNotices ? "Show notices" : "Hide notices",
+                            systemImage: roomFilter.category == .hideNotices ? "eye" : "eye.slash"
+                        )
+                    }
+                }
                 if let room, !room.members.isEmpty || !room.agents.isEmpty {
                     Button {
                         showMembers = true
@@ -420,6 +594,29 @@ struct ChatView: View {
             }
             .accessibilityLabel("More actions")
         }
+    }
+
+    private func stepFind(forward: Bool) {
+        guard !findResult.isEmpty else { return }
+        findIndex = forward ? findResult.nextIndex(after: findIndex) : findResult.previousIndex(before: findIndex)
+        findScrollToken += 1
+    }
+
+    private func closeFind() {
+        withAnimation(.snappy) {
+            showFind = false
+        }
+        findQuery = ""
+        findIndex = 0
+        findFocused = false
+    }
+
+    private func jumpToSelectedAgentLatest() {
+        guard let targetID = latestItemIDForSelectedAgent else { return }
+        withAnimation(.snappy) {
+            roomFilter.clear()
+        }
+        pendingJumpItemID = targetID
     }
 
     private func exportedMarkdown(for transcript: RemoteTranscript) -> String {
@@ -781,7 +978,11 @@ private struct RemoteComposerCard: View {
         .frame(maxWidth: .infinity)
         .background(
             LinearGradient(
-                colors: [RemoteTheme.background.opacity(0), RemoteTheme.background.opacity(0.92), RemoteTheme.background],
+                stops: [
+                    .init(color: RemoteTheme.background.opacity(0), location: 0),
+                    .init(color: RemoteTheme.background, location: 0.14),
+                    .init(color: RemoteTheme.background, location: 1),
+                ],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -1032,5 +1233,224 @@ private struct RoomMembersSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+    }
+}
+
+// MARK: - Live Find Bar & Room Board Filter Strip
+
+private struct RemoteFindBar: View {
+    @Binding var query: String
+    var focused: FocusState<Bool>.Binding
+    let statusText: String
+    let hasMatches: Bool
+    let onPrevious: () -> Void
+    let onNext: () -> Void
+    let onDone: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
+                        .foregroundStyle(RemoteTheme.tertiaryText)
+                    TextField("Find in transcript", text: $query)
+                        .font(RemoteTheme.font(size: 14.5, relativeTo: .body))
+                        .foregroundStyle(RemoteTheme.primaryText)
+                        .focused(focused)
+                        .submitLabel(.search)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .onSubmit(onNext)
+                    if !statusText.isEmpty {
+                        Text(statusText)
+                            .font(RemoteTheme.font(size: 11.5, weight: .medium, relativeTo: .caption2).monospacedDigit())
+                            .foregroundStyle(hasMatches ? RemoteTheme.secondaryText : RemoteTheme.danger)
+                            .fixedSize()
+                    }
+                    if !query.isEmpty {
+                        Button {
+                            query = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(RemoteTheme.font(size: 14, relativeTo: .footnote))
+                                .foregroundStyle(RemoteTheme.tertiaryText)
+                                .frame(minWidth: 28, minHeight: 36)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Clear find query")
+                    }
+                }
+                .padding(.leading, 10)
+                .padding(.trailing, query.isEmpty ? 10 : 4)
+                .frame(minHeight: 38)
+                .background(RemoteTheme.card, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(
+                            focused.wrappedValue ? RemoteTheme.accent.opacity(0.6) : RemoteTheme.border,
+                            lineWidth: 1
+                        )
+                )
+
+                navButton(systemImage: "chevron.up", label: "Previous match", action: onPrevious)
+                navButton(systemImage: "chevron.down", label: "Next match", action: onNext)
+
+                Button(action: onDone) {
+                    Text("Done")
+                        .font(RemoteTheme.font(size: 14, weight: .semibold, relativeTo: .subheadline))
+                        .foregroundStyle(RemoteTheme.accent)
+                        .padding(.horizontal, 6)
+                        .frame(minHeight: RemoteTheme.minTapTarget)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .accessibilityLabel("Close find")
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .background(RemoteTheme.sidebar)
+
+            Rectangle().fill(RemoteTheme.separator).frame(height: 1)
+        }
+    }
+
+    private func navButton(systemImage: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(RemoteTheme.font(size: 13, weight: .semibold, relativeTo: .footnote))
+                .foregroundStyle(hasMatches ? RemoteTheme.primaryText : RemoteTheme.tertiaryText.opacity(0.5))
+                .frame(width: 36, height: 36)
+                .background(RemoteTheme.cardRaised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .strokeBorder(RemoteTheme.border, lineWidth: 0.75)
+                )
+                .frame(minWidth: 38, minHeight: RemoteTheme.minTapTarget)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!hasMatches)
+        .accessibilityLabel(label)
+    }
+}
+
+private struct RoomFilterStrip: View {
+    let visibleCount: Int
+    let totalCount: Int
+    let selectedAgent: RemoteAgent?
+    let category: RoomBoardCategory
+    let canJumpToLatest: Bool
+    let onJumpToLatest: () -> Void
+    let onToggleHideNotices: () -> Void
+    let onShowAll: () -> Void
+
+    private var hidingNotices: Bool { category == .hideNotices }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    if let selectedAgent {
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(Color(remoteHex: selectedAgent.colorHex))
+                                .frame(width: 7, height: 7)
+                            Text("\(selectedAgent.name) \u{00B7} \(visibleCount) of \(totalCount)")
+                                .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption).monospacedDigit())
+                                .foregroundStyle(RemoteTheme.secondaryText)
+                                .fixedSize()
+                        }
+                    } else {
+                        Text("Showing \(visibleCount) of \(totalCount)")
+                            .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption).monospacedDigit())
+                            .foregroundStyle(RemoteTheme.secondaryText)
+                            .fixedSize()
+                    }
+
+                    if canJumpToLatest {
+                        Button(action: onJumpToLatest) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "arrow.down.to.line")
+                                    .font(RemoteTheme.font(size: 10.5, weight: .semibold, relativeTo: .caption2))
+                                Text("Jump to latest")
+                                    .font(RemoteTheme.font(size: 12, weight: .semibold, relativeTo: .caption))
+                            }
+                            .foregroundStyle(RemoteTheme.accent)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(RemoteTheme.accent.opacity(0.12), in: Capsule())
+                            .overlay(Capsule().strokeBorder(RemoteTheme.accent.opacity(0.32), lineWidth: 0.75))
+                            .frame(minHeight: RemoteTheme.minTapTarget)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    Button(action: onToggleHideNotices) {
+                        HStack(spacing: 4) {
+                            Image(systemName: hidingNotices ? "eye.slash.fill" : "line.3.horizontal.decrease.circle")
+                                .font(RemoteTheme.font(size: 10.5, weight: .semibold, relativeTo: .caption2))
+                            Text(hidingNotices ? RoomBoardCategory.hideNotices.label : RoomBoardCategory.all.label)
+                                .font(RemoteTheme.font(size: 12, weight: .medium, relativeTo: .caption))
+                        }
+                        .foregroundStyle(hidingNotices ? RemoteTheme.accent : RemoteTheme.secondaryText)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(hidingNotices ? RemoteTheme.accent.opacity(0.12) : RemoteTheme.card, in: Capsule())
+                        .overlay(
+                            Capsule().strokeBorder(
+                                hidingNotices ? RemoteTheme.accent.opacity(0.35) : RemoteTheme.border,
+                                lineWidth: 0.75
+                            )
+                        )
+                        .frame(minHeight: RemoteTheme.minTapTarget)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(hidingNotices ? "Hiding notices" : "Showing all categories")
+                    .accessibilityHint("Toggle hiding notices")
+
+                    Button(action: onShowAll) {
+                        Text("Show all")
+                            .font(RemoteTheme.font(size: 12, weight: .semibold, relativeTo: .caption))
+                            .foregroundStyle(RemoteTheme.primaryText)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(RemoteTheme.cardRaised, in: Capsule())
+                            .overlay(Capsule().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+                            .frame(minHeight: RemoteTheme.minTapTarget)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 2)
+            }
+            .background(RemoteTheme.sidebar)
+            Rectangle().fill(RemoteTheme.separator).frame(height: 1)
+        }
+    }
+}
+
+private struct RoomEmptyFilterView: View {
+    let onShowAll: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(RemoteTheme.tertiaryText)
+            Text("No matching messages")
+                .font(RemoteTheme.font(size: 15, weight: .medium, relativeTo: .subheadline))
+                .foregroundStyle(RemoteTheme.secondaryText)
+            Button("Show all", action: onShowAll)
+                .buttonStyle(RemoteSecondaryButtonStyle())
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 56)
+        .padding(.bottom, 24)
     }
 }

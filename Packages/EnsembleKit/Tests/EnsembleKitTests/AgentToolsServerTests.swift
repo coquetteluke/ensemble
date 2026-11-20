@@ -47,6 +47,9 @@ final class AgentToolsRawClient {
 
     init(path: String) throws {
         fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        // A write after the server closes the connection must fail with EPIPE, not kill the test process.
+        var on: Int32 = 1
+        if fd >= 0 { setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size)) }
         guard fd >= 0, AgentToolsBridge.connectUnix(fd, path: path) else {
             throw AgentToolsTestError.connect
         }

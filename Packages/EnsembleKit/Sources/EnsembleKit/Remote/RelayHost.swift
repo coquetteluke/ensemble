@@ -221,7 +221,6 @@ public actor RelayHost {
             guard isCurrent(gen) else { return }
             if wasSignedIn {
                 failures = 0
-                signIn = .auth
             }
             var delay = Self.backoff(failures: failures)
             switch ending {
@@ -233,20 +232,25 @@ public actor RelayHost {
                 if refusedSignIn { continue }
                 failures += 1
             case .taken:
+                signIn = .auth
                 publish(.mailboxTaken)
                 return
             case .replaced:
+                signIn = .auth
                 // Another copy of the app signed in with this identity. Wait long, so the two do not keep taking
                 // the mailbox from each other.
                 publish(.unreachable("Another Ensemble signed in to this relay mailbox."))
                 delay = .seconds(60)
             case .claimLimited:
+                signIn = .auth
                 publish(.limitReached(resetsAt: nil))
                 failures += 1
             case .failed(let reason):
+                signIn = .auth
                 publish(.unreachable(reason))
                 failures += 1
             case .stopped:
+                signIn = .auth
                 return
             }
             try? await Task.sleep(for: delay)
@@ -332,7 +336,8 @@ public actor RelayHost {
                     break
                 }
             case .closed(let code):
-                return (ending(code: code, signIn: signIn, wasSignedIn: wasSignedIn, claimRefusedForNow: claimRefusedForNow), wasSignedIn)
+                return (ending(code: code, signIn: signIn, answered: answered, wasSignedIn: wasSignedIn,
+                               claimRefusedForNow: claimRefusedForNow), wasSignedIn)
             case .failed(let reason):
                 return (.failed(reason), wasSignedIn)
             case .deadline:
@@ -348,16 +353,17 @@ public actor RelayHost {
         return (.stopped, wasSignedIn)
     }
 
-    private func ending(code: UInt16, signIn: SignIn, wasSignedIn: Bool, claimRefusedForNow: Bool) -> Ending {
+    private func ending(code: UInt16, signIn: SignIn, answered: Bool, wasSignedIn: Bool,
+                        claimRefusedForNow: Bool) -> Ending {
         switch code {
         case RelayWire.CloseCode.noMailbox:
             return .forgotten
         case RelayWire.CloseCode.taken:
             if wasSignedIn { return .replaced }
-            return signIn == .claim ? .taken : .failed("The relay refused the sign-in.")
+            return signIn == .claim && answered ? .taken : .failed("The relay refused the sign-in.")
         case RelayWire.CloseCode.unauthorized:
-            // The signature is always right for this Mac's key, so a refused sign-in means another key holds it.
-            return signIn == .auth && !wasSignedIn ? .taken : .failed("The relay refused the sign-in.")
+            // Only treat 4001 as another key holding the mailbox when our signed auth frame was actually sent and rejected.
+            return signIn == .auth && answered && !wasSignedIn ? .taken : .failed("The relay refused the sign-in.")
         case RelayWire.CloseCode.limit where claimRefusedForNow:
             return .claimLimited
         case RelayWire.CloseCode.timeout:

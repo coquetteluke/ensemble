@@ -39,28 +39,51 @@ extension SessionStore {
     public func changeModel(_ model: ModelRef, for sessionID: String) async -> ModelChangeResult {
         guard let session = byID[sessionID] else { return .failed }
         let primaryID = session.id
+        guard !restartingSessionIDs.contains(primaryID) else { return .failed }
         let activeBackingID = backingSessionID(for: primaryID)
         let check = engine as? any EngineModelChangeCheck
         let change = await check?.engineChange(forSession: activeBackingID, to: model)
+        guard !restartingSessionIDs.contains(primaryID) else { return .failed }
 
-        if change != nil, await canStartOver(session) {
-            do {
-                let worktree = worktree(for: primaryID)
-                let replacement = try await newSession(directory: session.directory, model: model, permissionMode: session.permissionMode)
-                if var worktree {
-                    // The copy goes with the session that replaces the empty one.
-                    worktree.sessionID = replacement.id
-                    worktrees.upsert(worktree)
+        if change != nil {
+            restartingSessionIDs.insert(primaryID)
+            defer { restartingSessionIDs.remove(primaryID) }
+            if await canStartOver(session) {
+                let wasSelected = selectedSessionID == primaryID
+                do {
+                    let worktree = worktree(for: primaryID)
+                    let replacement = try await newSession(directory: session.directory, model: model, permissionMode: session.permissionMode)
+                    let stillUnused = byID[primaryID] === session
+                        && session.items.isEmpty
+                        && !session.isWorking
+                        && session.pendingPermissions.isEmpty
+                        && queue(for: primaryID).isEmpty
+                        && !deliveringSessionIDs.contains(primaryID)
+                        && !threadLinks.hasLinks(for: primaryID)
+                    if !stillUnused {
+                        await delete(replacement.id)
+                        if wasSelected, byID[primaryID] != nil {
+                            select(primaryID)
+                        }
+                        guard byID[primaryID] === session else { return .failed }
+                        pendingNextModel[primaryID] = model
+                        return .stagedForNextMessage(model)
+                    }
+                    if var worktree {
+                        // The copy goes with the session that replaces the empty one.
+                        worktree.sessionID = replacement.id
+                        worktrees.upsert(worktree)
+                    }
+                    if let extra = extraFolders[primaryID] { extraFolders[replacement.id] = extra }
+                    pendingNextModel[primaryID] = nil
+                    await delete(primaryID)
+                    return .restarted(from: primaryID, to: replacement.id)
+                } catch {
+                    if !askToTrust(after: error, model: model, retry: .changeModel(sessionID: primaryID, model: model)) {
+                        lastError = "Could not start a session with \(modelName(model)): \(error.localizedDescription)"
+                    }
+                    return .failed
                 }
-                if let extra = extraFolders[primaryID] { extraFolders[replacement.id] = extra }
-                pendingNextModel[primaryID] = nil
-                await delete(primaryID)
-                return .restarted(from: primaryID, to: replacement.id)
-            } catch {
-                if !askToTrust(after: error, model: model, retry: .changeModel(sessionID: primaryID, model: model)) {
-                    lastError = "Could not start a session with \(modelName(model)): \(error.localizedDescription)"
-                }
-                return .failed
             }
         }
 
@@ -108,7 +131,8 @@ extension SessionStore {
     /// and not an agent of a room.
     func canStartOver(_ session: SessionModel) async -> Bool {
         guard !session.isSubagent, !session.isWorking, session.pendingPermissions.isEmpty,
-              queue(for: session.id).isEmpty, (sessionAgentIDs[session.id] ?? []).isEmpty,
+              queue(for: session.id).isEmpty, !deliveringSessionIDs.contains(session.id),
+              (sessionAgentIDs[session.id] ?? []).isEmpty,
               children(of: session.id).isEmpty, !threadLinks.hasLinks(for: session.id) else { return false }
         if !session.transcriptLoaded { await loadSession(session.id) }
         return !session.items.contains { item in

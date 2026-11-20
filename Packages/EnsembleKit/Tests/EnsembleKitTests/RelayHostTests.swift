@@ -2,6 +2,7 @@
 import CryptoKit
 import Foundation
 import Network
+import Synchronization
 import Testing
 @testable import EnsembleKit
 
@@ -349,6 +350,188 @@ import Testing
     @Test func reconnectsBackOffToAMinute() {
         let delays = (0..<9).map { RelayHost.backoff(failures: $0) }
         #expect(delays == [1, 2, 4, 8, 16, 32, 60, 60, 60].map { Duration.seconds($0) })
+    }
+
+    @Test func preChallengeUnauthorizedDoesNotSetMailboxTaken() async throws {
+        let scripted = try await ScriptedRelayHostServer.start(mode: .preChallengeUnauthorizedOnce)
+        defer { scripted.stop() }
+
+        let token = RemoteToken.generate()
+        let server = RemoteServer(host: DemoRemoteHost(), token: token,
+                                  configuration: RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Relay Mac"))
+        try await server.start()
+        defer { Task { await server.stop() } }
+
+        let relay = RelayHost(relayURL: scripted.url, identity: .make(), token: token, server: server)
+        await relay.start()
+        defer { Task { await relay.stop() } }
+
+        try await pollUntil("the host to retry past pre-challenge 4001 and sign in") {
+            await relay.status == .connected
+        }
+        #expect(scripted.recordedFrames == ["auth"])
+    }
+
+    @Test func droppedClaimAfterCommitRetriesWithAuthAndConnects() async throws {
+        let scripted = try await ScriptedRelayHostServer.start(mode: .dropClaimAfterCommit)
+        defer { scripted.stop() }
+
+        let token = RemoteToken.generate()
+        let server = RemoteServer(host: DemoRemoteHost(), token: token,
+                                  configuration: RemoteServer.Configuration(port: 0, bindAddresses: ["127.0.0.1"], macName: "Relay Mac"))
+        try await server.start()
+        defer { Task { await server.stop() } }
+
+        let relay = RelayHost(relayURL: scripted.url, identity: .make(), token: token, server: server)
+        await relay.start()
+        defer { Task { await relay.stop() } }
+
+        try await pollUntil("the host to retry a dropped claim with auth and sign in") {
+            await relay.status == .connected
+        }
+        #expect(scripted.recordedFrames == ["auth", "claim", "auth"])
+    }
+}
+
+/// Minimal scripted WebSocket server for host control-socket edge cases (pre-challenge closes and dropped claims).
+private final class ScriptedRelayHostServer: Sendable {
+    enum Mode: Sendable {
+        case preChallengeUnauthorizedOnce
+        case dropClaimAfterCommit
+    }
+
+    private struct State {
+        var connectionCount = 0
+        var frames: [String] = []
+    }
+
+    private let listener: NWListener
+    private let queue: DispatchQueue
+    private let mode: Mode
+    private let state = Mutex(State())
+
+    var port: UInt16 { listener.port?.rawValue ?? 0 }
+    var url: URL { URL(string: "ws://127.0.0.1:\(port)")! }
+    var recordedFrames: [String] { state.withLock { $0.frames } }
+
+    private init(listener: NWListener, queue: DispatchQueue, mode: Mode) {
+        self.listener = listener
+        self.queue = queue
+        self.mode = mode
+    }
+
+    static func start(mode: Mode) async throws -> ScriptedRelayHostServer {
+        let ws = NWProtocolWebSocket.Options()
+        ws.autoReplyPing = true
+        let params = NWParameters.tcp
+        params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
+        params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+        let listener = try NWListener(using: params)
+        let queue = DispatchQueue(label: "scripted-relay-host-server")
+        let server = ScriptedRelayHostServer(listener: listener, queue: queue, mode: mode)
+        listener.newConnectionHandler = { [weak server] connection in
+            guard let server else {
+                connection.cancel()
+                return
+            }
+            server.accept(connection)
+        }
+        let once = RemoteResumeOnce()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+            listener.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    if once.claim() { continuation.resume() }
+                case .failed(let error), .waiting(let error):
+                    if once.claim() { continuation.resume(throwing: error) }
+                default:
+                    break
+                }
+            }
+            listener.start(queue: queue)
+        }
+        return server
+    }
+
+    func stop() {
+        listener.cancel()
+    }
+
+    private func accept(_ connection: NWConnection) {
+        connection.stateUpdateHandler = { [weak self] state in
+            guard let self, case .ready = state else { return }
+            let attempt = self.state.withLock { s -> Int in
+                s.connectionCount += 1
+                return s.connectionCount
+            }
+            if self.mode == .preChallengeUnauthorizedOnce, attempt == 1 {
+                Self.sendClose(code: RelayWire.CloseCode.unauthorized, on: connection)
+                return
+            }
+            let nonce = RemoteHandshake.encode(RemoteHandshake.makeNonce())
+            Self.sendText(#"{"t":"challenge","nonce":"\#(nonce)"}"#, on: connection)
+            self.receive(on: connection, attempt: attempt)
+        }
+        connection.start(queue: queue)
+    }
+
+    private func receive(on connection: NWConnection, attempt: Int) {
+        connection.receiveMessage { [weak self] content, context, _, error in
+            guard let self, error == nil else { return }
+            guard let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata,
+                  metadata.opcode == .text,
+                  let content else { return }
+            let text = String(decoding: content, as: UTF8.self)
+            if text == "ping" {
+                Self.sendText("pong", on: connection)
+                self.receive(on: connection, attempt: attempt)
+                return
+            }
+            guard let obj = (try? JSONSerialization.jsonObject(with: content)) as? [String: Any],
+                  let type = obj["t"] as? String else {
+                Self.sendClose(code: RelayWire.CloseCode.protocolError, on: connection)
+                return
+            }
+            self.state.withLock { $0.frames.append(type) }
+
+            switch self.mode {
+            case .preChallengeUnauthorizedOnce:
+                if type == "auth" {
+                    Self.sendText(#"{"t":"ready"}"#, on: connection)
+                    self.receive(on: connection, attempt: attempt)
+                } else {
+                    Self.sendClose(code: RelayWire.CloseCode.protocolError, on: connection)
+                }
+            case .dropClaimAfterCommit:
+                if type == "auth", attempt == 1 {
+                    Self.sendClose(code: RelayWire.CloseCode.noMailbox, on: connection)
+                } else if type == "claim", attempt == 2 {
+                    // Simulate a transport drop right after storage commit and before ready reaches the host.
+                    connection.cancel()
+                } else if type == "auth", attempt >= 3 {
+                    Self.sendText(#"{"t":"ready"}"#, on: connection)
+                    self.receive(on: connection, attempt: attempt)
+                } else if type == "claim", attempt >= 3 {
+                    Self.sendClose(code: RelayWire.CloseCode.taken, on: connection)
+                } else {
+                    Self.sendClose(code: RelayWire.CloseCode.protocolError, on: connection)
+                }
+            }
+        }
+    }
+
+    private static func sendText(_ text: String, on connection: NWConnection) {
+        let context = NWConnection.ContentContext(identifier: "text", metadata: [NWProtocolWebSocket.Metadata(opcode: .text)])
+        connection.send(content: Data(text.utf8), contentContext: context, isComplete: true, completion: .idempotent)
+    }
+
+    private static func sendClose(code: UInt16, on connection: NWConnection) {
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+        metadata.closeCode = .privateCode(code)
+        let context = NWConnection.ContentContext(identifier: "close", metadata: [metadata])
+        connection.send(content: nil, contentContext: context, isComplete: true, completion: .contentProcessed { _ in
+            connection.cancel()
+        })
     }
 }
 

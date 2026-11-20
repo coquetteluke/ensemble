@@ -106,11 +106,13 @@ extension RoomEngine {
     // MARK: Work
 
     func startWork() async {
+        let run = state.run
         update {
             $0.pendingDecision = nil
             $0.phase = .working
         }
         await prepareWorktrees()
+        guard state.run == run, !state.isPaused, state.phase == .working else { return }
         update {
             for i in $0.assignments.indices { $0.assignments[i].status = .working }
         }
@@ -121,35 +123,43 @@ extension RoomEngine {
             messages.append((a.agentID, OutgoingMessage(channel: .synthetic, text: workText(for: a), duty: .work)))
         }
         await deliverAll(messages)
+        guard state.run == run, !state.isPaused, state.phase == .working else { return }
         for id in activeAgentIDs where assignmentIndex(id) == nil {
             await inform(id, noPieceText())
         }
     }
 
     func prepareWorktrees() async {
+        let run = state.run
         guard let git else {
             update { $0.git = GitContext(isRepository: false) }
             return
         }
         let dir = state.spec.directory
         guard await git.isRepository(dir) else {
+            guard state.run == run, !state.isPaused, state.phase == .working else { return }
             update { $0.git = GitContext(isRepository: false) }
-            notice("This folder is not a git repository, so the agents share it and each owns the files the plan gives it.")
+            notice("Git is off for this room (the folder is not a git repository, or you have not trusted it), so the agents share the folder and each owns the files the plan gives it.")
             return
         }
+        guard state.run == run, !state.isPaused, state.phase == .working else { return }
         let base: String
         do {
             base = try await git.currentBranch(repo: dir)
         } catch {
+            guard state.run == run, !state.isPaused, state.phase == .working else { return }
             update { $0.git = GitContext(isRepository: false) }
             notice("Could not read the current git branch (\(error.localizedDescription)), so the agents share the folder.")
             return
         }
+        guard state.run == run, !state.isPaused, state.phase == .working else { return }
         update { $0.git = GitContext(isRepository: true, baseBranch: base) }
         for a in state.assignments {
+            guard state.run == run, !state.isPaused, state.phase == .working else { return }
             let branch = branchName(for: a.agentID)
             do {
                 let path = try await git.createWorktree(repo: dir, branch: branch)
+                guard state.run == run, !state.isPaused, state.phase == .working else { return }
                 if let i = assignmentIndex(a.agentID) {
                     update {
                         $0.assignments[i].branch = branch
@@ -157,6 +167,7 @@ extension RoomEngine {
                     }
                 }
             } catch {
+                guard state.run == run, !state.isPaused, state.phase == .working else { return }
                 notice("Could not create a worktree for \(name(a.agentID)) (\(error.localizedDescription)), so it works in the shared folder.")
             }
         }
@@ -175,13 +186,15 @@ extension RoomEngine {
         }
     }
 
-    /// `ensemble/<room>/<agent>`; later runs in the same room add `-<run>` to the room part.
+    /// `ensemble/<room>-<roomID>/<agent>-<agentID>`; later runs in the same room add `-<run>` to the room part.
     func branchName(for agentID: UUID) -> String {
-        var room = Self.slug(state.spec.title)
-        if room.isEmpty { room = String(state.spec.id.uuidString.prefix(8)).lowercased() }
+        let roomSuffix = String(state.id.uuidString.prefix(6)).lowercased()
+        let roomSlug = Self.slug(state.spec.title)
+        var room = roomSlug.isEmpty ? roomSuffix : "\(roomSlug)-\(roomSuffix)"
         if state.run > 1 { room += "-\(state.run)" }
-        var agentPart = Self.slug(name(agentID))
-        if agentPart.isEmpty { agentPart = String(agentID.uuidString.prefix(8)).lowercased() }
+        let agentSuffix = String(agentID.uuidString.prefix(6)).lowercased()
+        let agentSlug = Self.slug(name(agentID))
+        let agentPart = agentSlug.isEmpty ? agentSuffix : "\(agentSlug)-\(agentSuffix)"
         return "ensemble/\(room)/\(agentPart)"
     }
 
@@ -204,9 +217,13 @@ extension RoomEngine {
     // MARK: Review
 
     func pieceDone(_ agentID: UUID) async {
-        guard state.phase == .working, let i = assignmentIndex(agentID),
+        let run = state.run
+        guard state.phase == .working, !state.isPaused, let initialIndex = assignmentIndex(agentID),
+              [.working, .changesRequested].contains(state.assignments[initialIndex].status) else { return }
+        let files = await changedFiles(for: state.assignments[initialIndex])
+        guard state.run == run, state.phase == .working, !state.isPaused,
+              let i = assignmentIndex(agentID),
               [.working, .changesRequested].contains(state.assignments[i].status) else { return }
-        let files = await changedFiles(for: state.assignments[i])
         update {
             $0.assignments[i].status = .inReview
             $0.assignments[i].changedFiles = files
@@ -257,7 +274,9 @@ extension RoomEngine {
                 update {
                     $0.assignments[i].status = .changesRequested
                     $0.assignments[i].lastReview = what
-                    $0.pendingDecision = .reviewStalemate(agentID: author)
+                    if $0.pendingDecision == nil {
+                        $0.pendingDecision = .reviewStalemate(agentID: author)
+                    }
                 }
                 notice("\(name(reviewer)) still asks for changes to \(name(author))'s piece after \(Self.maxFixRounds) fix rounds. Approve it, ask for another round, or drop it.")
                 return
@@ -278,6 +297,17 @@ extension RoomEngine {
         }
     }
 
+    /// Surfaces the next assignment stuck in a review stalemate, if no decision is currently pending.
+    func surfaceNextReviewStalemate() {
+        guard state.phase == .working, state.pendingDecision == nil else { return }
+        guard let next = state.assignments.first(where: {
+            $0.status == .changesRequested && $0.fixRounds >= Self.maxFixRounds
+                && !hasDuty($0.agentID, .work)
+                && !(state.outbox[$0.agentID] ?? []).contains(where: { $0.duty == .work })
+        }) else { return }
+        update { $0.pendingDecision = .reviewStalemate(agentID: next.agentID) }
+    }
+
     /// The user's call on a piece that still has requested changes after the fix rounds.
     public func decideReview(for author: UUID, _ decision: ReviewDecision) async {
         guard case .reviewStalemate(let waiting)? = state.pendingDecision, waiting == author,
@@ -287,10 +317,12 @@ extension RoomEngine {
         case .approve:
             update { $0.assignments[i].status = .approved }
             notice("You approved \(name(author))'s piece.")
+            surfaceNextReviewStalemate()
             await checkTeamComplete()
         case .drop:
             update { $0.assignments[i].status = .dropped }
             notice("You dropped \(name(author))'s piece.")
+            surfaceNextReviewStalemate()
             await checkTeamComplete()
         case .anotherRound:
             let reviewer = state.assignments[i].reviewerID
@@ -299,11 +331,12 @@ extension RoomEngine {
             let text = reviewer.map { fixText(from: $0, changes: changes) }
                 ?? "[Room] CHANGES: \(changes)\n\nFix these, then reply DONE on its own line when your piece is finished."
             await deliver(author, OutgoingMessage(channel: .synthetic, text: text, duty: .work))
+            surfaceNextReviewStalemate()
         }
     }
 
     func checkTeamComplete() async {
-        guard state.phase == .working, !state.assignments.isEmpty,
+        guard state.phase == .working, !state.isPaused, !state.assignments.isEmpty,
               state.assignments.allSatisfy({ [.approved, .merged, .dropped].contains($0.status) }) else { return }
         update { $0.phase = .merging }
         await continueMerge()
@@ -313,6 +346,8 @@ extension RoomEngine {
     func teamStalled() async {
         await checkTeamComplete()
         guard state.phase == .working else { return }
+        surfaceNextReviewStalemate()
+        guard state.pendingDecision == nil else { return }
         for a in state.assignments where isActive(a.agentID) {
             switch a.status {
             case .pending, .working, .changesRequested:
@@ -330,13 +365,20 @@ extension RoomEngine {
     /// Merges approved branches into the base branch in assignment order. Stops at the first conflict
     /// and hands it to the lead (or the user without a lead agent).
     func continueMerge() async {
-        guard state.phase == .merging else { return }
+        let run = state.run
+        guard state.phase == .merging, !state.isPaused else { return }
         if let git, let ctx = state.git, ctx.isRepository, let base = ctx.baseBranch {
-            for a in state.assignments where a.status == .approved {
+            let approvedIDs = state.assignments.filter { $0.status == .approved }.map(\.agentID)
+            for agentID in approvedIDs {
+                guard state.run == run, state.phase == .merging, !state.isPaused else { return }
+                guard let idx = assignmentIndex(agentID), state.assignments[idx].status == .approved else { continue }
+                let a = state.assignments[idx]
                 guard let branch = a.branch, let path = a.worktreePath else { continue }
                 do {
                     _ = try await git.commitAll(worktree: path, message: "\(name(a.agentID)): \(Self.firstLine(a.task))")
+                    guard state.run == run, state.phase == .merging, !state.isPaused else { return }
                     let result = try await git.merge(branch: branch, into: base, repo: state.spec.directory)
+                    guard state.run == run, state.phase == .merging, !state.isPaused else { return }
                     if result.merged {
                         if let i = assignmentIndex(a.agentID) { update { $0.assignments[i].status = .merged } }
                         notice("Merged \(branch) into \(base).")
@@ -345,11 +387,13 @@ extension RoomEngine {
                         return
                     }
                 } catch {
+                    guard state.run == run, state.phase == .merging, !state.isPaused else { return }
                     await mergeBlocked(a.agentID, branch: branch, base: base, files: [], message: error.localizedDescription)
                     return
                 }
             }
         }
+        guard state.run == run, state.phase == .merging, !state.isPaused else { return }
         await startSummary()
     }
 
@@ -374,7 +418,35 @@ extension RoomEngine {
     }
 
     func conflictResolved() async {
-        guard state.phase == .merging, let agentID = blockedMergeAgentID, let i = assignmentIndex(agentID) else { return }
+        let run = state.run
+        guard state.phase == .merging, !state.isPaused, let agentID = blockedMergeAgentID,
+              let initialIndex = assignmentIndex(agentID) else { return }
+        let branch = state.assignments[initialIndex].branch
+        if let git, let ctx = state.git, ctx.isRepository, let base = ctx.baseBranch, let branch {
+            do {
+                let status = try await git.conflictStatus(branch: branch, into: base, repo: state.spec.directory)
+                guard state.run == run, state.phase == .merging, !state.isPaused else { return }
+                if !status.isResolved {
+                    let detail: String
+                    if !status.conflicts.isEmpty {
+                        detail = "Unresolved conflicts remain in \(status.conflicts.joined(separator: ", "))."
+                    } else if status.mergeInProgress {
+                        detail = "A git merge is still in progress and has not been committed."
+                    } else {
+                        detail = "\(branch) is not merged into \(base) yet."
+                    }
+                    update { $0.pendingDecision = .mergeConflict(agentID: agentID, files: status.conflicts) }
+                    notice("\(detail) Resolve it in \(state.spec.directory), commit, then continue.")
+                    return
+                }
+            } catch {
+                guard state.run == run, state.phase == .merging, !state.isPaused else { return }
+                update { $0.pendingDecision = .mergeConflict(agentID: agentID, files: []) }
+                notice("Could not verify that \(branch) was merged (\(error.localizedDescription)). Check \(state.spec.directory), commit, then continue.")
+                return
+            }
+        }
+        guard state.run == run, state.phase == .merging, !state.isPaused, let i = assignmentIndex(agentID) else { return }
         update { $0.assignments[i].status = .merged }
         notice("The merge of \(state.assignments[i].branch ?? "the branch") is resolved.")
         await continueMerge()
@@ -393,6 +465,7 @@ extension RoomEngine {
     // MARK: Finish
 
     func startSummary() async {
+        guard state.phase != .stopped, !state.isPaused else { return }
         update { $0.phase = .summarizing }
         if let lead = activeLeadID {
             await deliver(lead, OutgoingMessage(channel: .synthetic, text: summaryRequestText(), duty: .summary))
@@ -408,6 +481,10 @@ extension RoomEngine {
     }
 
     func teamContinueWithout(_ id: UUID, openDuties: [TurnPurpose]) async {
+        if state.phase == .checkingGoal || openDuties.contains(.goalCheck) {
+            await reassignGoalCheck(without: id)
+            return
+        }
         if openDuties.contains(.plan) || (state.phase == .planning && leadID == id) {
             await pauseRoom(reason: "Paused: the lead, \(name(id)), reached its spending cap before the plan was ready.", interrupt: true)
             return
