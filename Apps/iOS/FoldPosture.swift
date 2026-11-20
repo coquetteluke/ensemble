@@ -34,101 +34,84 @@ enum FoldMetrics {
     static let creaseGutter: CGFloat = 14
 }
 
-/// Decides when the phone counts as folded, from the hinge's status and angle.
+/// Watches the hinge and works out the fold layout, with the crease where it is on the glass.
 ///
-/// Folding is a continuous motion, so the layout switches once, with a dead zone: it folds below 160 degrees and
-/// unfolds above 170 degrees (or when the hinge reports fully open or closed), and in between it keeps what it has.
-/// A change only lands after the hinge has held it for a moment, so a hand that wobbles near the edge does not make
-/// the screen flip back and forth.
-@available(iOS 27.1, *)
-@MainActor
-final class FoldDecider {
-    static let foldBelow: CGFloat = 160 * .pi / 180
-    static let unfoldAbove: CGFloat = 170 * .pi / 180
-    static let settle: Duration = .milliseconds(140)
+/// iOS resizes the app's window itself when the hinge leaves flat (with its own blur and crossfade). The layout is
+/// switched in the same moment and without an animation of its own, so it happens inside that one system transition
+/// instead of a second one after it. The crease is the middle of the physical screen, mapped into the window, since
+/// the window can be narrower than the screen while folded.
+private final class HingeView: UIView {
+    var onChange: ((FoldLayout) -> Void)?
+    private var partlyOpen = false
+    private var last: FoldLayout = .flat
 
-    private(set) var folded = false
-    private var pending: Task<Void, Never>?
-
-    /// The folded state this reading points to, given the current one.
-    static func wantsFolded(status: UIHinge.Status, angle: CGFloat, current: Bool) -> Bool {
-        switch status {
-        case .partiallyOpen:
-            if angle < foldBelow { return true }
-            if angle > unfoldAbove { return false }
-            return current
-        default:
-            return false
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        if #available(iOS 27.1, *) {
+            let interaction = UIHingeInteraction { [weak self] _, update in
+                guard let self else { return }
+                self.partlyOpen = update.hinge?.status == .partiallyOpen
+                self.publish()
+            }
+            addInteraction(interaction)
         }
     }
 
-    func update(status: UIHinge.Status, angle: CGFloat, apply: @escaping @MainActor (Bool) -> Void) {
-        let wanted = Self.wantsFolded(status: status, angle: angle, current: folded)
-        pending?.cancel()
-        guard wanted != folded else { return }
-        pending = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: Self.settle)
-            guard let self, !Task.isCancelled, wanted != self.folded else { return }
-            self.folded = wanted
-            apply(wanted)
-        }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        publish()
+    }
+
+    private func publish() {
+        let layout = computeLayout()
+        guard layout != last else { return }
+        last = layout
+        onChange?(layout)
+    }
+
+    private func computeLayout() -> FoldLayout {
+        guard partlyOpen, let window, let screen = window.windowScene?.screen else { return .flat }
+        let screenBounds = screen.bounds
+        let crease = window.convert(CGPoint(x: screenBounds.midX, y: screenBounds.midY), from: screen.coordinateSpace)
+        let size = window.bounds.size
+        return size.width >= size.height ? .book(creaseX: crease.x) : .laptop(creaseY: crease.y)
     }
 }
 
-/// Whether the phone is folded, from a `UIHingeInteraction` on an invisible view.
 private struct HingeReader: UIViewRepresentable {
-    @Binding var partlyOpen: Bool
+    @Binding var layout: FoldLayout
 
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.isUserInteractionEnabled = false
-        if #available(iOS 27.1, *) {
-            let binding = $partlyOpen
-            let decider = FoldDecider()
-            let interaction = UIHingeInteraction { _, update in
-                guard let hinge = update.hinge else {
-                    decider.update(status: .unknown, angle: .pi) { folded in binding.wrappedValue = folded }
-                    return
-                }
-                decider.update(status: hinge.status, angle: hinge.angle) { folded in
-                    withAnimation(.smooth(duration: 0.38)) { binding.wrappedValue = folded }
-                }
-            }
-            view.addInteraction(interaction)
+    func makeUIView(context: Context) -> HingeView {
+        let view = HingeView()
+        let binding = $layout
+        view.onChange = { layout in
+            // No animation of our own: the change lands inside the system's resize transition.
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { binding.wrappedValue = layout }
         }
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {}
+    func updateUIView(_ uiView: HingeView, context: Context) {}
 }
 
-/// Reads the hinge and the full screen size, and hands the fold layout to everything below.
+/// Reads the hinge and hands the fold layout to everything below.
 struct FoldAware<Content: View>: View {
     @ViewBuilder var content: Content
-    @State private var partlyOpen = false
-    @State private var screen: CGSize = .zero
+    @State private var layout: FoldLayout = .flat
 
     var body: some View {
         content
             .environment(\.foldLayout, layout)
             .background {
-                HingeReader(partlyOpen: $partlyOpen)
-                    .frame(width: 0, height: 0)
+                HingeReader(layout: $layout)
+                    .ignoresSafeArea()
                     .accessibilityHidden(true)
             }
-            .background {
-                // The whole screen, safe areas included, so the crease lands in the middle of the glass.
-                GeometryReader { proxy in
-                    Color.clear
-                        .onAppear { screen = proxy.frame(in: .global).size }
-                        .onChange(of: proxy.frame(in: .global).size) { _, size in screen = size }
-                }
-                .ignoresSafeArea()
-            }
-    }
-
-    private var layout: FoldLayout {
-        guard partlyOpen, screen.width > 0, screen.height > 0 else { return .flat }
-        return screen.width >= screen.height ? .book(creaseX: screen.width / 2) : .laptop(creaseY: screen.height / 2)
     }
 }
