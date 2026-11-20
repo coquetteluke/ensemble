@@ -8,6 +8,8 @@ enum Route: Hashable {
     case scheduled
     /// Usage across sessions, providers and agents (`UsageScreen`).
     case usage
+    /// Starting a session: folder, worktree and first message (`NewSessionPage`).
+    case newSession
     /// The room `RoomsController.selectedRoomID` names.
     case room
 }
@@ -88,10 +90,11 @@ final class WindowState {
     /// Whether the context panel was open before a file or review pane replaced it.
     @ObservationIgnored private var contextWasOpen = true
 
-    private var showNewSessionValue = false
-    var showNewSession: Bool {
-        get { host?.showNewSession ?? showNewSessionValue }
-        set { if let host { host.showNewSession = newValue } else { showNewSessionValue = newValue } }
+    private var newSessionTokenValue = 0
+    /// Bumped each time New session is chosen, so an open new-session page starts over with the new folder.
+    var newSessionToken: Int {
+        get { host?.newSessionToken ?? newSessionTokenValue }
+        set { if let host { host.newSessionToken = newValue } else { newSessionTokenValue = newValue } }
     }
 
     private var newSessionDirectoryValue: String?
@@ -267,7 +270,8 @@ final class WindowState {
 
     func beginNewSession(in directory: String? = nil) {
         newSessionDirectory = directory
-        showNewSession = true
+        newSessionToken &+= 1
+        route = .newSession
     }
 
     /// Shows a session. In split view it opens in the focused pane (or focuses the pane already showing it); from a

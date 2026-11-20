@@ -43,8 +43,9 @@ enum RewindSnapshots {
                 BranchMenuContent(branches: branches, current: "ensemble/session-ab12cd34") { _ in }
                     .padding(10)
             }
-            written += save("worktree-new-session-\(tone)", to: directory, width: 460, zoom: zoom, scheme: scheme) {
-                NewSessionSheet(store: store, window: window, initialDirectory: folder, initialWorktree: true)
+            written += save("worktree-new-session-\(tone)", to: directory, width: 900, zoom: zoom, scheme: scheme) {
+                NewSessionPage(store: store, window: window, initialDirectory: folder, initialWorktree: true)
+                    .frame(height: 620)
             }
             written += save("usage-popover-show-all-\(tone)", to: directory, width: 240, zoom: zoom, scheme: scheme) {
                 UsagePopover(usage: Usage(inputTokens: 182_000, outputTokens: 24_500, cacheReadTokens: 410_000, costUSD: 1.84),

@@ -127,10 +127,6 @@ struct MainView: View {
             .sharedBackgroundVisibility(.hidden)
         }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
-        .sheet(isPresented: $window.showNewSession) {
-            NewSessionSheet(store: store, window: window)
-                .ensembleTheme()
-        }
         .sheet(isPresented: $showPromoteSheet) {
             if let session = store.selected, let activeRooms {
                 PromoteToRoomSheet(
@@ -437,6 +433,8 @@ struct CenterColumn: View {
                 ScheduledView(store: store, window: window)
             case .usage:
                 UsageScreen(store: store)
+            case .newSession:
+                NewSessionPage(store: store, window: window)
             case .room:
                 if let rooms, let engine = rooms.selectedEngine {
                     RoomView(controller: rooms, engine: engine,
@@ -645,6 +643,8 @@ struct CenterHeader: View {
                 Text("Scheduled").font(theme.font(size: 13, weight: .semibold)).foregroundStyle(theme.textPrimary)
             case .usage:
                 Text("Usage").font(theme.font(size: 13, weight: .semibold)).foregroundStyle(theme.textPrimary)
+            case .newSession:
+                Text("New session").font(theme.font(size: 13, weight: .semibold)).foregroundStyle(theme.textPrimary)
             case .room:
                 EmptyView()
             }

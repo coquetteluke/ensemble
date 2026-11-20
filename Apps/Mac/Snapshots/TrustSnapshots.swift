@@ -33,8 +33,9 @@ enum TrustSnapshots {
                     ConversationBottom(store: store, session: session, window: window, prompt: openCodeSkipped)
                 }
             }
-            written += save("trust-new-session-\(tone)\(suffix)", to: directory, width: 460, zoom: zoom, scheme: scheme) {
-                NewSessionSheet(store: store, window: window, initialDirectory: folder.path)
+            written += save("trust-new-session-\(tone)\(suffix)", to: directory, width: 900, zoom: zoom, scheme: scheme) {
+                NewSessionPage(store: store, window: window, initialDirectory: folder.path)
+                    .frame(height: 620)
             }
         }
         print("Rendered \(written.count) trust snapshots:")
