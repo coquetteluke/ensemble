@@ -9,7 +9,7 @@ work="$(mktemp -d /private/tmp/ensemble-layout.XXXXXX)"
 volume="Ensemble layout $$"
 mounted=""
 cleanup() {
-  [ -n "$mounted" ] && hdiutil detach "$mounted" -quiet >/dev/null 2>&1 || true
+  [ -n "$mounted" ] && diskutil eject "$mounted" >/dev/null 2>&1 || true
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -18,9 +18,17 @@ trap cleanup EXIT
 mkdir -p "$work/stage/Ensemble.app/Contents"
 ln -s /Applications "$work/stage/Applications"
 cp "$here/First launch.txt" "$work/stage/"
-hdiutil create -quiet -volname "$volume" -srcfolder "$work/stage" -fs HFS+ -format UDRW "$work/layout.dmg"
-mounted="$(hdiutil attach "$work/layout.dmg" -readwrite -noautoopen | sed -n 's|.*\(/Volumes/.*\)$|\1|p' | tail -1)"
+# A writable scratch image. macOS 27 replaces `hdiutil create` and `hdiutil attach` with `diskutil image`.
+if diskutil image create blank --help >/dev/null 2>&1; then
+  diskutil image create blank --format RAW --size 20m --volumeName "$volume" --fs APFS "$work/layout.dmg" >/dev/null
+  diskutil image attach "$work/layout.dmg" >/dev/null
+else
+  hdiutil create -quiet -size 20m -fs HFS+ -volname "$volume" "$work/layout.dmg"
+  hdiutil attach "$work/layout.dmg" -quiet -readwrite -noautoopen
+fi
+mounted="/Volumes/$volume"
 [ -d "$mounted" ] || { echo "error: could not mount the scratch disk image" >&2; exit 1; }
+ditto "$work/stage" "$mounted"
 
 osascript <<SCRIPT
 tell application "Finder"
@@ -32,15 +40,15 @@ tell application "Finder"
     try
       set pathbar visible of container window to false
     end try
-    set bounds of container window to {240, 160, 840, 600}
+    set bounds of container window to {240, 160, 840, 590}
     set viewOptions to icon view options of container window
     set arrangement of viewOptions to not arranged
-    set icon size of viewOptions to 112
+    set icon size of viewOptions to 96
     set text size of viewOptions to 13
     set shows item info of viewOptions to false
-    set position of item "Ensemble.app" of container window to {150, 140}
-    set position of item "Applications" of container window to {450, 140}
-    set position of item "First launch.txt" of container window to {300, 320}
+    set position of item "Ensemble.app" of container window to {150, 110}
+    set position of item "Applications" of container window to {450, 110}
+    set position of item "First launch.txt" of container window to {300, 280}
     close
     open
     update without registering applications

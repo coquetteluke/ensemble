@@ -1,9 +1,10 @@
 #!/bin/bash
 # Builds the installer for the Mac app: dist/Ensemble-<version>.dmg and dist/SHA256SUMS.
-# Usage: scripts/make-installer.sh [--universal] [--keep]
+# Usage: scripts/make-installer.sh [--keep]
 #
-#   --universal   also build for Intel Macs (arm64 + x86_64). The default is Apple silicon only.
-#   --keep        keep the build folder afterwards (its path is printed).
+#   --keep   keep the build folder afterwards (its path is printed).
+#
+# The app is built for Apple silicon only. An Intel build has not been tried on an Intel Mac, so none is made.
 #
 # What it does:
 #   1. Exports the last commit (not the working folder) to a folder under /private/tmp, so nothing uncommitted,
@@ -17,13 +18,11 @@
 # Needs: Xcode (the full app, not only the command line tools), XcodeGen (`brew install xcodegen`), git.
 set -euo pipefail
 
-universal=0
 keep=0
 for argument in "$@"; do
   case "$argument" in
-    --universal) universal=1 ;;
     --keep) keep=1 ;;
-    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 0 ;;
     *) echo "error: unknown option $argument (see --help)" >&2; exit 2 ;;
   esac
 done
@@ -74,8 +73,8 @@ cd "$work/src"
 xcodegen -q || fail "xcodegen could not generate the project"
 
 # ---- Build ----
-if [ "$universal" = 1 ]; then archs="arm64 x86_64"; else archs="arm64"; fi
-step "Building Release for $archs (a few minutes)"
+archs="arm64"
+step "Building Release for $archs (about five minutes)"
 log="$work/build.log"
 if ! xcodebuild -project Ensemble.xcodeproj -scheme Ensemble -configuration Release \
     -destination 'generic/platform=macOS' -derivedDataPath "$work/dd" \
@@ -173,11 +172,19 @@ mkdir -p "$dist" "$mount"
 dmg="$dist/Ensemble-$version.dmg"
 rm -f "$dmg"
 # macOS 27 replaces `hdiutil create` and `hdiutil attach` with `diskutil image`. Use it where it exists.
+# `diskutil image create from <folder>` leaves .DS_Store (the window layout) out, so the files go onto a blank
+# writable image first, and that image is then compressed.
 if diskutil image create from --help >/dev/null 2>&1; then
-  diskutil image create from --format ULMO --volumeName "Ensemble $version" "$stage" "$dmg" >"$work/image.log" 2>&1 \
-    || { cat "$work/image.log" >&2; fail "diskutil could not make $dmg"; }
-  diskutil image attach --readOnly --nobrowse --mountPoint "$mount" "$dmg" >"$work/image.log" 2>&1 \
-    || { cat "$work/image.log" >&2; fail "the disk image does not mount"; }
+  megabytes=$(( $(du -sm "$stage" | cut -f1) + 40 ))
+  {
+    diskutil image create blank --format RAW --size "${megabytes}m" --volumeName "Ensemble $version" --fs APFS "$work/writable.dmg" \
+      && diskutil image attach --nobrowse --mountPoint "$mount" "$work/writable.dmg" \
+      && ditto "$stage" "$mount" \
+      && diskutil eject "$mount" \
+      && diskutil image create from --format ULMO "$work/writable.dmg" "$dmg" \
+      && diskutil image attach --readOnly --nobrowse --mountPoint "$mount" "$dmg"
+  } >"$work/image.log" 2>&1 || { cat "$work/image.log" >&2; fail "diskutil could not make $dmg"; }
+  rm -f "$work/writable.dmg"
 else
   hdiutil create -quiet -volname "Ensemble $version" -srcfolder "$stage" -fs HFS+ -format ULMO "$dmg" \
     || fail "hdiutil could not make $dmg"
@@ -189,6 +196,7 @@ fi
 [ -d "$mount/Ensemble.app" ] || fail "the disk image has no Ensemble.app"
 [ -L "$mount/Applications" ] || fail "the disk image has no Applications shortcut"
 [ -f "$mount/First launch.txt" ] || fail "the disk image has no First launch.txt"
+[ -f "$mount/.DS_Store" ] || fail "the disk image has no window layout (.DS_Store)"
 codesign --verify --deep --strict "$mount/Ensemble.app" || fail "the app inside the disk image does not verify"
 diskutil eject "$mount" >/dev/null || fail "the disk image did not eject"
 hdiutil verify -quiet "$dmg" || fail "the disk image does not verify"
