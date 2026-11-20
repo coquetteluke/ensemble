@@ -217,7 +217,8 @@ struct NewSessionPage: View {
             } label: {
                 chipLabel(symbol: "folder", title: directory.isEmpty ? "Choose a folder" : Format.folderName(directory))
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
             .help(directory)
@@ -248,7 +249,8 @@ struct NewSessionPage: View {
             } label: {
                 chipLabel(symbol: nil, title: modelTitle)
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
 
@@ -259,7 +261,8 @@ struct NewSessionPage: View {
             } label: {
                 chipLabel(symbol: nil, title: mode.label, tint: mode.isDangerous ? theme.danger : nil)
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
             .help(mode.summary)
