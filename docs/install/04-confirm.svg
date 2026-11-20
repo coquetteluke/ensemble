@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="566" height="700" viewBox="0 0 566 700" role="img" aria-labelledby="title desc">
+  <title id="title">Illustration of the macOS dialog that asks whether to open Ensemble</title>
+  <desc id="desc">A drawing, not a screenshot. The dialog is titled Open "Ensemble.app"? and has three buttons: Open Anyway, Move to Trash and Done. Open Anyway is the one to press.</desc>
+  <style>
+    text { font-family: -apple-system, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; }
+    .note { font-size: 15px; font-weight: 600; fill: #1d1d1f; }
+    .head { font-size: 23px; font-weight: 700; fill: #f2f2f2; }
+    .body { font-size: 22px; fill: #e6e6e6; }
+    .button { font-size: 22px; font-weight: 500; fill: #f2f2f2; }
+    .callout { font-size: 16px; font-weight: 600; fill: #8a5a00; }
+  </style>
+
+  <!-- Label: this is a drawing -->
+  <rect x="0" y="0" width="566" height="44" rx="10" fill="#ffd66b"/>
+  <text x="283" y="28" text-anchor="middle" class="note">Illustration, not a screenshot. Wording from macOS 27.2.</text>
+
+  <!-- Dialog -->
+  <rect x="23" y="62" width="520" height="622" rx="46" fill="#1e1e1e" stroke="#5a5a5a" stroke-width="2"/>
+
+  <!-- Warning sign -->
+  <path d="M116 106 L170 200 Q173 208 164 208 L68 208 Q59 208 62 200 Z" fill="#e9b93f" stroke="#f4f0e4" stroke-width="6" stroke-linejoin="round"/>
+  <rect x="112" y="136" width="8" height="40" rx="4" fill="#f4f0e4"/>
+  <circle cx="116" cy="190" r="5" fill="#f4f0e4"/>
+
+  <text x="60" y="262" class="head">Open “Ensemble.app”?</text>
+  <text class="body">
+    <tspan x="60" y="304">Apple is not able to verify that it is</tspan>
+    <tspan x="60" y="334">free from malware that could harm</tspan>
+    <tspan x="60" y="364">your Mac or compromise your privacy.</tspan>
+    <tspan x="60" y="394">Don’t open this unless you are certain</tspan>
+    <tspan x="60" y="424">it is from a trustworthy source.</tspan>
+  </text>
+
+  <!-- Buttons. The order on your Mac can differ. -->
+  <rect x="55" y="456" width="456" height="56" rx="28" fill="#2f2f2f" stroke="#ffd66b" stroke-width="4"/>
+  <text x="283" y="492" text-anchor="middle" class="button">Open Anyway</text>
+
+  <rect x="55" y="524" width="456" height="56" rx="28" fill="#2f2f2f"/>
+  <text x="283" y="560" text-anchor="middle" class="button">Move to Trash</text>
+
+  <rect x="55" y="592" width="456" height="56" rx="28" fill="#2f2f2f"/>
+  <text x="283" y="628" text-anchor="middle" class="button">Done</text>
+</svg>

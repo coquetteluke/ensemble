@@ -6,6 +6,8 @@ Ensemble is a native Mac app, with an iPhone remote, for coding with Claude, GPT
 
 > Status: early development (started November 2026). Not ready for daily use yet. Progress: [docs/PROGRESS.md](docs/PROGRESS.md).
 
+**Install:** download the disk image and follow [docs/INSTALL.md](docs/INSTALL.md). No Xcode needed. The guide also explains the warning macOS shows on first launch and how to get past it.
+
 ## What it does
 
 - **Your subscriptions or your keys.** Use your Claude, ChatGPT, SuperGrok or Google AI subscription through each company's own official app or sign-in, or API keys for Anthropic, OpenAI, xAI, Google, OpenRouter, any OpenAI-compatible URL, or local models.
@@ -27,6 +29,8 @@ Ensemble is not affiliated with Anthropic, OpenAI, xAI, Google or OpenCode. Its 
 
 ## Requirements
 
+To install the download, see [docs/INSTALL.md](docs/INSTALL.md). To build it yourself:
+
 - macOS 26 or later, Xcode 27 to build
 - [OpenCode](https://opencode.ai) 2.3 or later: `brew install opencode`
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) to generate the Xcode project: `brew install xcodegen`
@@ -45,6 +49,12 @@ xcodegen
 
 ```bash
 open Ensemble.xcodeproj
+```
+
+To make the installer (`dist/Ensemble-<version>.dmg` and `dist/SHA256SUMS`) from the last commit:
+
+```bash
+scripts/make-installer.sh
 ```
 
 ## How it works
