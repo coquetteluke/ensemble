@@ -150,6 +150,9 @@ public enum RemoteClientMessage: Hashable, Sendable {
     case createRoom(RemoteCreateRoom)
     /// Reply: `.sessionDiff`. Fetches the working-tree diff for a session or room.
     case sessionDiff(sessionID: String)
+    /// Reply: `.sessionDetails`. What the Mac's details panel shows for one session. Added after protocol 3 shipped: a
+    /// Mac without it answers `unknownMessage`.
+    case sessionDetails(sessionID: String)
     /// Reply: `.ack`. Requests an inline second opinion on an assistant reply.
     case secondOpinion(RemoteSecondOpinionRequest)
     /// Reply: `.ack`. Archives or unarchives a solo session.
@@ -175,6 +178,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .createSession: "createSession"
         case .createRoom: "createRoom"
         case .sessionDiff: "sessionDiff"
+        case .sessionDetails: "sessionDetails"
         case .secondOpinion: "secondOpinion"
         case .archiveSession: "archiveSession"
         }
@@ -185,7 +189,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         switch self {
         case .hello(let p): try c.encode(p, forKey: .data)
         case .hubSnapshot, .roomsRequest, .usageRequest: break
-        case .openSession(let id), .closeSession(let id), .sessionDiff(let id):
+        case .openSession(let id), .closeSession(let id), .sessionDiff(let id), .sessionDetails(let id):
             try c.encode(RemoteSessionRef(sessionID: id), forKey: .data)
         case .sendMessage(let p): try c.encode(p, forKey: .data)
         case .replyPermission(let p): try c.encode(p, forKey: .data)
@@ -224,6 +228,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case "createSession": return .createSession(try c.decode(RemoteCreateSession.self, forKey: .data))
         case "createRoom": return .createRoom(try c.decode(RemoteCreateRoom.self, forKey: .data))
         case "sessionDiff": return .sessionDiff(sessionID: try c.decode(RemoteSessionRef.self, forKey: .data).sessionID)
+        case "sessionDetails": return .sessionDetails(sessionID: try c.decode(RemoteSessionRef.self, forKey: .data).sessionID)
         case "secondOpinion": return .secondOpinion(try c.decode(RemoteSecondOpinionRequest.self, forKey: .data))
         case "archiveSession": return .archiveSession(try c.decode(RemoteArchiveSession.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)
@@ -285,6 +290,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
     case sessionCreated(SessionSummary)
     case roomCreated(RemoteRoom)
     case sessionDiff(RemoteSessionDiff)
+    case sessionDetails(RemoteSessionDetails)
     /// The request in `re` was carried out.
     case ack
     case error(RemoteError)
@@ -302,6 +308,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
         case .sessionCreated: "sessionCreated"
         case .roomCreated: "roomCreated"
         case .sessionDiff: "sessionDiff"
+        case .sessionDetails: "sessionDetails"
         case .ack: "ack"
         case .error: "error"
         }
@@ -321,6 +328,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
         case .sessionCreated(let p): try c.encode(p, forKey: .data)
         case .roomCreated(let p): try c.encode(p, forKey: .data)
         case .sessionDiff(let p): try c.encode(p, forKey: .data)
+        case .sessionDetails(let p): try c.encode(p, forKey: .data)
         case .ack: break
         case .error(let p): try c.encode(p, forKey: .data)
         }
@@ -340,6 +348,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
         case "sessionCreated": return .sessionCreated(try c.decode(SessionSummary.self, forKey: .data))
         case "roomCreated": return .roomCreated(try c.decode(RemoteRoom.self, forKey: .data))
         case "sessionDiff": return .sessionDiff(try c.decode(RemoteSessionDiff.self, forKey: .data))
+        case "sessionDetails": return .sessionDetails(try c.decode(RemoteSessionDetails.self, forKey: .data))
         case "ack": return .ack
         case "error": return .error(try c.decode(RemoteError.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)

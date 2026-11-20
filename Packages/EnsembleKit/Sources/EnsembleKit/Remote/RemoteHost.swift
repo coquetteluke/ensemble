@@ -37,6 +37,8 @@ public protocol RemoteHost: AnyObject, Sendable {
     func createRoom(_ request: RemoteCreateRoom) async throws -> RemoteRoom
     /// Returns the working-tree git diff for `sessionID`.
     func sessionDiff(sessionID: String) async throws -> RemoteSessionDiff
+    /// Returns what the Mac's details panel shows for `sessionID`. Must refuse unknown or hidden sessions.
+    func sessionDetails(sessionID: String) async throws -> RemoteSessionDetails
     /// Requests a second opinion on a completed assistant reply.
     func requestSecondOpinion(_ request: RemoteSecondOpinionRequest) async throws
     /// Archives or unarchives a solo session.
@@ -72,6 +74,10 @@ public extension RemoteHost {
         throw RemoteError(.unknownMessage, "This Mac cannot show diffs on the iPhone.")
     }
 
+    func sessionDetails(sessionID: String) async throws -> RemoteSessionDetails {
+        throw RemoteError(.unknownMessage, "This Mac cannot show session details on the iPhone.")
+    }
+
     func requestSecondOpinion(_ request: RemoteSecondOpinionRequest) async throws {
         throw RemoteError(.unknownMessage, "This Mac cannot request second opinions from the iPhone.")
     }
@@ -95,6 +101,7 @@ public enum RemoteHostAction: Hashable, Sendable {
     case createSession(RemoteCreateSession)
     case createRoom(RemoteCreateRoom)
     case sessionDiff(sessionID: String)
+    case sessionDetails(sessionID: String)
     case requestSecondOpinion(RemoteSecondOpinionRequest)
     case archiveSession(sessionID: String, archived: Bool)
 }
@@ -110,6 +117,7 @@ public actor DemoRemoteHost: RemoteHost {
     public private(set) var availableModels: [RemoteModelOption]
     public private(set) var recentFolders: [String]
     public private(set) var diffs: [String: RemoteSessionDiff]
+    public private(set) var details: [String: RemoteSessionDetails]
     /// Every action received, oldest first.
     public private(set) var recordedActions: [RemoteHostAction] = []
 
@@ -126,6 +134,7 @@ public actor DemoRemoteHost: RemoteHost {
         availableModels = data.availableModels
         recentFolders = data.recentFolders
         diffs = data.diffs
+        details = data.details
     }
 
     // MARK: RemoteHost
@@ -414,6 +423,15 @@ public actor DemoRemoteHost: RemoteHost {
             throw RemoteError(.notFound, "No session \(sessionID)")
         }
         return RemoteSessionDiff(sessionID: sessionID, directory: session.directory, files: [], truncated: false)
+    }
+
+    public func sessionDetails(sessionID: String) async throws -> RemoteSessionDetails {
+        recordedActions.append(.sessionDetails(sessionID: sessionID))
+        if let existing = details[sessionID] { return existing }
+        guard let session = sessions.first(where: { $0.id == sessionID }) else {
+            throw RemoteError(.notFound, "No session \(sessionID)")
+        }
+        return RemoteSessionDetails(sessionID: sessionID, macName: RemoteDemoData.macName, directory: session.directory)
     }
 
     public func requestSecondOpinion(_ request: RemoteSecondOpinionRequest) async throws {

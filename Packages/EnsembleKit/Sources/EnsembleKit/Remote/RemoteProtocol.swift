@@ -665,6 +665,46 @@ public struct RemoteSessionDiff: Codable, Hashable, Sendable {
     }
 }
 
+/// What the Mac's details panel shows for one session: where it runs, how full the context is,
+/// the files it changed and the connectors (MCP servers).
+public struct RemoteSessionDetails: Codable, Hashable, Sendable {
+    public var sessionID: String
+    public var macName: String
+    public var directory: String
+    public var extraFolders: [String]
+    /// nil when the Mac has no numbers yet.
+    public var context: ContextBreakdown?
+    /// Changed files, without diff text (`diff` is nil) to keep the message small.
+    public var outputs: [FileChange]
+    public var connectors: [ConnectorInfo]
+
+    public init(sessionID: String, macName: String, directory: String, extraFolders: [String] = [],
+                context: ContextBreakdown? = nil, outputs: [FileChange] = [], connectors: [ConnectorInfo] = []) {
+        self.sessionID = sessionID
+        self.macName = macName
+        self.directory = directory
+        self.extraFolders = extraFolders
+        self.context = context
+        self.outputs = outputs
+        self.connectors = connectors
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID, macName, directory, extraFolders, context, outputs, connectors
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try c.decode(String.self, forKey: .sessionID)
+        macName = try c.decodeIfPresent(String.self, forKey: .macName) ?? ""
+        directory = try c.decodeIfPresent(String.self, forKey: .directory) ?? ""
+        extraFolders = try c.decodeIfPresent([String].self, forKey: .extraFolders) ?? []
+        context = try c.decodeIfPresent(ContextBreakdown.self, forKey: .context)
+        outputs = try c.decodeIfPresent([FileChange].self, forKey: .outputs) ?? []
+        connectors = try c.decodeIfPresent([ConnectorInfo].self, forKey: .connectors) ?? []
+    }
+}
+
 /// An inline second-opinion critique attached to an assistant reply.
 public struct RemoteSecondOpinion: Codable, Hashable, Sendable, Identifiable {
     public var id: UUID

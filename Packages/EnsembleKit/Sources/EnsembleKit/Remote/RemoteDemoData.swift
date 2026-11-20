@@ -10,12 +10,14 @@ public struct RemoteDemoData: Sendable {
     public var availableModels: [RemoteModelOption]
     public var recentFolders: [String]
     public var diffs: [String: RemoteSessionDiff]
+    public var details: [String: RemoteSessionDetails]
 
     public init(sessions: [SessionSummary], permissions: [PermissionRequest], transcripts: [String: RemoteTranscript],
                 rooms: [RemoteRoom], usage: RemoteUsageSummary,
                 availableModels: [RemoteModelOption] = [],
                 recentFolders: [String] = [],
-                diffs: [String: RemoteSessionDiff] = [:]) {
+                diffs: [String: RemoteSessionDiff] = [:],
+                details: [String: RemoteSessionDetails] = [:]) {
         self.sessions = sessions
         self.permissions = permissions
         self.transcripts = transcripts
@@ -24,7 +26,11 @@ public struct RemoteDemoData: Sendable {
         self.availableModels = availableModels
         self.recentFolders = recentFolders
         self.diffs = diffs
+        self.details = details
     }
+
+    /// The Mac's name in demo mode.
+    public static let macName = "Demo Mac"
 
     /// Fixed ids so tests can refer to them.
     public enum IDs {
@@ -345,7 +351,78 @@ public struct RemoteDemoData: Sendable {
             rooms: [room], usage: usage,
             availableModels: availableModels,
             recentFolders: recentFolders,
-            diffs: [IDs.fixSession: fixDiff, IDs.roomSession: roomDiff, IDs.docsSession: docsDiff])
+            diffs: [IDs.fixSession: fixDiff, IDs.roomSession: roomDiff, IDs.docsSession: docsDiff],
+            details: sampleDetails())
+    }
+
+    /// What the details panel shows for each demo session: context around half used, a few changed files and three
+    /// connectors in different states.
+    static func sampleDetails() -> [String: RemoteSessionDetails] {
+        func context(limit: Int, system: Int, tools: Int, mcp: Int, memory: Int, skills: Int, messages: Int,
+                     buffer: Int) -> ContextBreakdown {
+            let used = system + tools + mcp + memory + skills + messages
+            return ContextBreakdown(usedTokens: used, limitTokens: limit, categories: [
+                .init(key: "systemPrompt", label: "System prompt", tokens: system),
+                .init(key: "tools", label: "Tools", tokens: tools),
+                .init(key: "mcp", label: "MCP", tokens: mcp),
+                .init(key: "memory", label: "Memory files", tokens: memory),
+                .init(key: "skills", label: "Skills", tokens: skills),
+                .init(key: "messages", label: "Messages", tokens: messages),
+                .init(key: "buffer", label: "Autocompact buffer", tokens: buffer),
+                .init(key: "free", label: "Free space", tokens: max(0, limit - used - buffer)),
+            ])
+        }
+        let connectors = [
+            ConnectorInfo(id: "github", name: "GitHub", state: .connected, toolCount: 41),
+            ConnectorInfo(id: "linear", name: "Linear", state: .needsAuth),
+            ConnectorInfo(id: "sentry", name: "Sentry", state: .failed),
+        ]
+        return [
+            IDs.fixSession: RemoteSessionDetails(
+                sessionID: IDs.fixSession, macName: macName, directory: "/Users/demo/code/webapp",
+                extraFolders: ["/Users/demo/code/shared-auth"],
+                context: context(limit: 1_000_000, system: 6_200, tools: 14_800, mcp: 9_400, memory: 3_100, skills: 2_600,
+                                 messages: 432_800, buffer: 45_000),
+                outputs: [
+                    FileChange(path: "src/middleware/auth.ts", kind: .modified, additions: 4, deletions: 2),
+                    FileChange(path: "src/routes/login.ts", kind: .modified, additions: 5, deletions: 1),
+                    FileChange(path: "tests/auth-redirect.test.ts", kind: .added, additions: 12),
+                    FileChange(path: "src/lib/session.ts", kind: .modified, additions: 3, deletions: 3),
+                ],
+                connectors: connectors),
+            IDs.roomSession: RemoteSessionDetails(
+                sessionID: IDs.roomSession, macName: macName, directory: "/Users/demo/code/notes",
+                context: context(limit: 400_000, system: 5_900, tools: 13_200, mcp: 9_400, memory: 2_400, skills: 1_800,
+                                 messages: 178_300, buffer: 20_000),
+                outputs: [
+                    FileChange(path: "server/routes/sync.ts", kind: .modified, additions: 8, deletions: 2),
+                    FileChange(path: "server/sync/merge.ts", kind: .added, additions: 64),
+                    FileChange(path: "server/sync/merge.test.ts", kind: .added, additions: 38),
+                    FileChange(path: "docs/sync-api.md", kind: .added, additions: 27),
+                    FileChange(path: "server/sync/legacy.ts", kind: .deleted, deletions: 41),
+                ],
+                connectors: connectors),
+            IDs.docsSession: RemoteSessionDetails(
+                sessionID: IDs.docsSession, macName: macName, directory: "/Users/demo/code/notes",
+                context: context(limit: 400_000, system: 5_100, tools: 11_900, mcp: 9_400, memory: 2_400, skills: 1_200,
+                                 messages: 148_400, buffer: 20_000),
+                outputs: [
+                    FileChange(path: "README.md", kind: .modified, additions: 6),
+                    FileChange(path: "docs/install.md", kind: .added, additions: 22),
+                    FileChange(path: "package.json", kind: .modified, additions: 1, deletions: 1),
+                ],
+                connectors: connectors),
+            IDs.oldSession: RemoteSessionDetails(
+                sessionID: IDs.oldSession, macName: macName, directory: "/Users/demo/code/dashboard",
+                context: context(limit: 200_000, system: 4_800, tools: 12_600, mcp: 9_400, memory: 1_900, skills: 1_200,
+                                 messages: 82_100, buffer: 33_000),
+                outputs: [
+                    FileChange(path: "src/charts/LineChart.tsx", kind: .added, additions: 58),
+                    FileChange(path: "src/pages/Overview.tsx", kind: .modified, additions: 9, deletions: 14),
+                    FileChange(path: "package.json", kind: .modified, additions: 1),
+                ],
+                connectors: connectors),
+        ]
     }
 
     /// `sample` plus what rooms on the phone show: the round table waiting on a short and a long command, and a Team

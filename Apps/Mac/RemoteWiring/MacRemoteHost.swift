@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import Synchronization
+import SystemConfiguration
 import EnsembleKit
 
 enum MacRemoteHostError: LocalizedError {
@@ -822,6 +823,54 @@ final class MacRemoteHost: RemoteHost {
             }
         }
         return RemoteSessionDiff(sessionID: sessionID, directory: root, files: files, truncated: truncated)
+    }
+
+    /// What the details panel shows, from the same sources as `ContextPanelView`. A room answers with its lead agent's
+    /// context and folders and the files every agent changed.
+    func sessionDetails(sessionID: String) async throws -> RemoteSessionDetails {
+        let directory: String
+        let lead: SessionModel?
+        var changed: [SessionModel] = []
+        if let mapped = remoteRoom(sessionID: sessionID) {
+            let state = mapped.state
+            directory = state.spec.directory
+            let leadID = state.spec.leadAgentID ?? state.spec.agents.first?.id
+            lead = leadID.flatMap { state.sessions[$0] }.flatMap { session($0) }
+            changed = state.spec.agents.compactMap { state.sessions[$0.id] }.compactMap { session($0) }
+        } else if let s = session(sessionID), !isHiddenSession(s.id) {
+            if !s.transcriptLoaded { await store.loadSession(s.id) }
+            directory = s.directory
+            lead = s
+            changed = [s]
+        } else {
+            throw MacRemoteHostError.sessionNotFound
+        }
+        var seen = Set<String>()
+        var outputs: [FileChange] = []
+        for s in changed {
+            for file in s.changedFiles where seen.insert(file.path).inserted {
+                var slim = file
+                slim.diff = nil
+                outputs.append(slim)
+            }
+        }
+        let context = lead.map { store.contextBreakdown(for: $0) }.flatMap { breakdown in
+            breakdown.usedTokens > 0 || !breakdown.categories.isEmpty ? breakdown : nil
+        }
+        return RemoteSessionDetails(
+            sessionID: sessionID,
+            macName: Self.macName,
+            directory: directory,
+            extraFolders: lead.map { store.extraFolders[$0.id] ?? [] } ?? [],
+            context: context,
+            outputs: outputs,
+            connectors: store.connectors
+        )
+    }
+
+    /// The computer name the phone saw when it paired.
+    private static var macName: String {
+        (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? ContextPanelView.hostName
     }
 
     func requestSecondOpinion(_ request: RemoteSecondOpinionRequest) async throws {

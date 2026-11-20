@@ -839,7 +839,7 @@ public final class RemoteClient {
             if let i = sessions.firstIndex(where: { $0.id == s.id }) { sessions[i] = s } else { sessions.insert(s, at: 0) }
         case .roomCreated(let r):
             if let i = rooms.firstIndex(where: { $0.id == r.id }) { rooms[i] = r } else { rooms.insert(r, at: 0) }
-        case .sessionDiff:
+        case .sessionDiff, .sessionDetails:
             break
         case .challenge, .welcome, .ack, .error:
             break
@@ -979,6 +979,15 @@ public final class RemoteClient {
             throw RemoteError(.failed, "Unexpected response from Mac when loading changes")
         }
         return diff
+    }
+
+    /// Asks the Mac for one session's details. Throws `RemoteError` (for example `.unknownMessage` from an older Mac).
+    public func details(sessionID: String) async throws -> RemoteSessionDetails {
+        let reply = try await request(.sessionDetails(sessionID: sessionID))
+        guard case .sessionDetails(let details) = reply else {
+            throw RemoteError(.failed, "Unexpected response from Mac when loading session details")
+        }
+        return details
     }
 
     /// Asks another model for an inline second opinion on a completed assistant reply.

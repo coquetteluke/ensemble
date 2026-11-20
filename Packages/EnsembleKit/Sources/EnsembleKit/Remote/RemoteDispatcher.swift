@@ -57,6 +57,8 @@ public enum RemoteDispatcher {
                 return .roomCreated(try await host.createRoom(r))
             case .sessionDiff(let sessionID):
                 return .sessionDiff(try await host.sessionDiff(sessionID: sessionID))
+            case .sessionDetails(let sessionID):
+                return .sessionDetails(try await host.sessionDetails(sessionID: sessionID))
             case .secondOpinion(let req):
                 try await host.requestSecondOpinion(req)
                 return .ack
