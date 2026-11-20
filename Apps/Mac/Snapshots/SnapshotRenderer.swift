@@ -110,6 +110,20 @@ enum SnapshotRenderer {
             }
         }
 
+        // First launch without the engine: Homebrew missing, Homebrew installed part way through, Homebrew already there.
+        let setups: [(String, EngineSetup, Bool)] = [
+            ("engine-setup-no-homebrew", EngineSetup(homebrewInstalled: false, openCodeInstalled: false), true),
+            ("engine-setup-homebrew-done", EngineSetup(homebrewInstalled: true, openCodeInstalled: false), true),
+            ("engine-setup", EngineSetup(homebrewInstalled: true, openCodeInstalled: false), false),
+        ]
+        for (name, setup, startedWithoutHomebrew) in setups {
+            for scheme in [ColorScheme.dark, .light] {
+                save("\(name)-\(scheme == .dark ? "dark" : "light")", width: 980, height: 620, scheme: scheme) {
+                    EngineSetupView(retry: {}, fixedSetup: setup, includeHomebrew: startedWithoutHomebrew)
+                }
+            }
+        }
+
         // Single cards.
         let permission = main.pendingPermissions.first
             ?? PermissionRequest(id: "p", sessionID: main.id, kind: "bash", title: "swift test --parallel")

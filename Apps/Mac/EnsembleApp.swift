@@ -233,16 +233,20 @@ struct EngineStatusView: View {
     let retry: () -> Void
 
     var body: some View {
+        if status == .notInstalled {
+            // The guided setup: the install commands, Open Terminal and Check again.
+            EngineSetupView(retry: retry)
+        } else {
+            message
+        }
+    }
+
+    private var message: some View {
         VStack(spacing: 14) {
             switch status {
-            case .starting, .running:
+            case .starting, .running, .notInstalled:
                 ProgressView().controlSize(.large)
                 Text("Starting the engine").font(.title3)
-            case .notInstalled:
-                Text("Ensemble needs OpenCode").font(.title3.weight(.semibold))
-                Text("Install it with Homebrew, then press Try again.").foregroundStyle(.secondary)
-                Text("brew install opencode").font(.body.monospaced()).textSelection(.enabled)
-                Button("Try again", action: retry).keyboardShortcut(.defaultAction)
             case .tooOld(let found, let required):
                 Text("OpenCode \(found) is too old").font(.title3.weight(.semibold))
                 Text("Ensemble needs \(required) or newer. Update it, then press Try again.").foregroundStyle(.secondary)

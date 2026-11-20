@@ -30,6 +30,10 @@ public final class EngineManager {
     @ObservationIgnored private var continuations: [UUID: AsyncStream<EngineStatus>.Continuation] = [:]
     @ObservationIgnored private var unhealthyChecks = 0
     @ObservationIgnored private var clientKey: String?
+    /// The check that is running now. A second caller waits for it instead of starting the service a second time.
+    @ObservationIgnored private var checkInFlight: Task<Bool, Never>?
+    /// How many times, half a second apart, a freshly started service is asked whether it is up.
+    @ObservationIgnored var startupAttempts = 40
 
     /// How often a healthy service is checked.
     @ObservationIgnored public var healthInterval: Duration = .seconds(15)
@@ -95,10 +99,16 @@ public final class EngineManager {
     }
 
     /// One check: find, version-check, connect or start. Returns true when the engine is running and answering.
+    /// Calls that overlap (the background loop and a Check again button) share one check.
     @discardableResult
     public func checkNow() async -> Bool {
         #if os(macOS)
-        return await checkMac()
+        if let checkInFlight { return await checkInFlight.value }
+        let check = Task { await self.checkMac() }
+        checkInFlight = check
+        let healthy = await check.value
+        checkInFlight = nil
+        return healthy
         #else
         publish(.failed("The OpenCode engine runs on the Mac."))
         return false
@@ -156,7 +166,7 @@ public final class EngineManager {
         _ = await Self.run(executable, arguments, timeout: 60)
         unhealthyChecks = 0
 
-        for _ in 0..<40 {
+        for _ in 0..<startupAttempts {
             if let running = await connectToRunningService() {
                 publish(running)
                 return true
