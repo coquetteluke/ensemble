@@ -9,10 +9,12 @@ struct MainTabView: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
-        if sizeClass == .regular {
-            SplitRootView(client: client)
-        } else {
-            CompactRootView(client: client)
+        FoldAware {
+            if sizeClass == .regular {
+                SplitRootView(client: client)
+            } else {
+                CompactRootView(client: client)
+            }
         }
     }
 }
@@ -87,7 +89,44 @@ struct SplitRootView: View {
     private let sideBySideWidth: CGFloat = 780
     private var isSideBySide: Bool { width >= sideBySideWidth }
 
+    @Environment(\.foldLayout) private var fold
+    /// Where this view sits on screen, to put the book layout's page break on the crease.
+    @State private var globalMinX: CGFloat = 0
+
     var body: some View {
+        Group {
+            if case .book(let creaseX) = fold {
+                bookLayout(leftWidth: max(240, creaseX - globalMinX))
+                    .transition(.opacity)
+            } else {
+                splitLayout
+                    .transition(.opacity)
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minX } action: { globalMinX = $0 }
+    }
+
+    /// Partly folded like a book: the list on the left page, the chat on the right, the page break on the crease.
+    private func bookLayout(leftWidth: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            SplitSidebarView(client: client, onOpenRoute: open, onSelectUtilityTab: selectUtilityTab)
+                .padding(.trailing, FoldMetrics.creaseGutter)
+                .frame(width: leftWidth)
+                .background(RemoteTheme.sidebar.ignoresSafeArea())
+            NavigationStack {
+                SplitDetailView(
+                    client: client,
+                    isSideBySide: true,
+                    showStatusInToolbar: false,
+                    onShowSidebar: {}
+                )
+            }
+            .padding(.leading, FoldMetrics.creaseGutter)
+            .background(RemoteTheme.background.ignoresSafeArea())
+        }
+    }
+
+    private var splitLayout: some View {
         NavigationSplitView(columnVisibility: $columns) {
             SplitSidebarView(
                 client: client,

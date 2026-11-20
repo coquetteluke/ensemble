@@ -9,6 +9,9 @@ struct ChatView: View {
 
     @Environment(RemoteAppModel.self) private var model
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @Environment(\.foldLayout) private var fold
+    /// The chat's bottom edge on screen, to size the laptop layout's lower half.
+    @State private var globalMaxY: CGFloat = 0
     @State private var sending = false
     @State private var loadError: String?
     @State private var actionError: String?
@@ -126,6 +129,71 @@ struct ChatView: View {
     private var displayTitle: String {
         let candidate = transcript?.title ?? (title.isEmpty ? (summary?.title ?? "") : title)
         return candidate.isEmpty ? "Chat" : candidate
+    }
+
+    /// Height of the lower half when the phone is partly folded like a laptop (nil otherwise).
+    private var laptopDeckHeight: CGFloat? {
+        guard case .laptop(let creaseY) = fold, globalMaxY > creaseY else { return nil }
+        return globalMaxY - creaseY
+    }
+
+    /// The message box. Partly folded like a laptop, it takes the whole lower half, below the crease.
+    @ViewBuilder private var composerDeck: some View {
+        if let deck = laptopDeckHeight {
+            VStack(spacing: 0) {
+                composerCard(minLines: 5)
+                    .padding(.top, FoldMetrics.creaseGutter)
+                Spacer(minLength: 0)
+            }
+            .frame(height: deck, alignment: .top)
+            .frame(maxWidth: .infinity)
+            .background(RemoteTheme.sidebar.ignoresSafeArea(edges: .bottom))
+            .overlay(alignment: .top) { Rectangle().fill(RemoteTheme.separator).frame(height: 1) }
+        } else {
+            composerCard(minLines: 1)
+        }
+    }
+
+    private func composerCard(minLines: Int) -> some View {
+        RemoteComposerCard(
+            draft: draft,
+            addressee: addressee,
+            focused: $composerFocused,
+            room: room,
+            mode: currentMode,
+            modelName: activeModelName,
+            pendingModelName: pendingModelName,
+            canSwitchModel: room == nil && !client.availableModels.isEmpty,
+            activity: activity,
+            sending: sending,
+            connected: client.state.isConnected,
+            onSelectMode: { mode in
+                act { try await client.setPermissionMode(mode, for: target) }
+            },
+            onTapModel: {
+                showModelPicker = true
+            },
+            onClearPendingModel: (activeProviderID != nil && activeModelID != nil) ? {
+                guard let providerID = activeProviderID, let modelID = activeModelID else { return }
+                modelSwitchHaptic += 1
+                act {
+                    try await client.changeModel(
+                        sessionID: sessionID,
+                        providerID: providerID,
+                        modelID: modelID
+                    )
+                }
+            } : nil,
+            onControlRoom: { action in
+                if action == .stop { confirmStop = true } else { control(action) }
+            },
+            onInterrupt: {
+                stopPauseHaptic += 1
+                act { try await client.interrupt(target) }
+            },
+            onSend: send,
+            minLines: minLines
+        )
     }
 
     var body: some View {
@@ -414,45 +482,9 @@ struct ChatView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            RemoteComposerCard(
-                draft: draft,
-                addressee: addressee,
-                focused: $composerFocused,
-                room: room,
-                mode: currentMode,
-                modelName: activeModelName,
-                pendingModelName: pendingModelName,
-                canSwitchModel: room == nil && !client.availableModels.isEmpty,
-                activity: activity,
-                sending: sending,
-                connected: client.state.isConnected,
-                onSelectMode: { mode in
-                    act { try await client.setPermissionMode(mode, for: target) }
-                },
-                onTapModel: {
-                    showModelPicker = true
-                },
-                onClearPendingModel: (activeProviderID != nil && activeModelID != nil) ? {
-                    guard let providerID = activeProviderID, let modelID = activeModelID else { return }
-                    modelSwitchHaptic += 1
-                    act {
-                        try await client.changeModel(
-                            sessionID: sessionID,
-                            providerID: providerID,
-                            modelID: modelID
-                        )
-                    }
-                } : nil,
-                onControlRoom: { action in
-                    if action == .stop { confirmStop = true } else { control(action) }
-                },
-                onInterrupt: {
-                    stopPauseHaptic += 1
-                    act { try await client.interrupt(target) }
-                },
-                onSend: send
-            )
+            composerDeck
         }
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { globalMaxY = $0 }
         .sheet(isPresented: $showMembers) {
             if let room {
                 RoomMembersSheet(room: room)
@@ -860,6 +892,8 @@ private struct RemoteComposerCard: View {
     let onControlRoom: (RemoteRoomAction) -> Void
     let onInterrupt: () -> Void
     let onSend: () -> Void
+    /// Lines the message field shows before it has text (the laptop fold layout gives it more room).
+    var minLines = 1
 
     @Environment(\.colorScheme) private var scheme
 
@@ -911,7 +945,7 @@ private struct RemoteComposerCard: View {
 
                 TextField(placeholder, text: $draft, axis: .vertical)
                     .font(RemoteTheme.font(size: 15, relativeTo: .body))
-                    .lineLimit(1...6)
+                    .lineLimit(minLines...max(6, minLines + 4))
                     .focused(focused)
                     .foregroundStyle(RemoteTheme.primaryText)
                     .padding(.horizontal, 4)
