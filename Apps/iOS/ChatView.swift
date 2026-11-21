@@ -254,7 +254,7 @@ struct ChatView: View {
                             }
                         } else {
                             let attribution = modelLabels(in: transcript.items)
-                            let retryTarget = retryableError(in: transcript.items)
+                            let retryTarget = retryableError(in: transcript)
                             let highlight = findHighlight
                             ForEach(visibleItems) { item in
                                 let isActiveMatch = highlight.activeItemID == item.id
@@ -317,6 +317,10 @@ struct ChatView: View {
                                 onError: { actionError = $0 }
                             )
                             .id(Self.decisionID)
+                        }
+                        if let todos = TodoParser.latest(in: transcript.items), !todos.isEmpty,
+                           activity == .working || todos.contains(where: { $0.status == .pending || $0.status == .inProgress }) {
+                            TaskListCard(items: todos)
                         }
                         if activity == .working {
                             HStack(spacing: 8) {
@@ -763,8 +767,9 @@ struct ChatView: View {
         return result
     }
 
-    private func retryableError(in items: [TranscriptItem]) -> (errorID: String, text: String)? {
+    private func retryableError(in transcript: RemoteTranscript) -> (errorID: String, text: String)? {
         guard client.state.isConnected, !sending, activity != .working else { return nil }
+        let items = transcript.items
         var latestErrorIndex: Int?
         for i in items.indices.reversed() {
             switch items[i] {
@@ -779,11 +784,10 @@ struct ChatView: View {
         }
         guard let errorIndex = latestErrorIndex else { return nil }
         for item in items[..<errorIndex].reversed() {
-            if case .user(_, let text, _) = item {
+            if case .user(let id, let text, _) = item {
+                guard transcript.showsText(of: id, text: text) else { return nil }
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty {
-                    return (items[errorIndex].id, trimmed)
-                }
+                return trimmed.isEmpty ? nil : (items[errorIndex].id, trimmed)
             }
         }
         return nil
