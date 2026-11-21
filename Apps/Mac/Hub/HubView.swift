@@ -283,7 +283,10 @@ struct HubView: View {
     private func card(_ item: HubCardItem, now: Date, selected: Bool) -> some View {
         let select = {
             selection = item.id
-            if !isSnapshot { boardFocused = true }
+            // Every click in a card lands here, including a click in its message box. That click is to type,
+            // so the keyboard stays with the box instead of going back to the list.
+            let typingHere = window.hubReplySessionID != nil && window.hubReplySessionID == item.id
+            if !isSnapshot, !typingHere { boardFocused = true }
         }
         if item.isRoom {
             if let rooms, let roomID = item.roomID, let room = rooms.state(roomID) {
