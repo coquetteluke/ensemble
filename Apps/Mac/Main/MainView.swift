@@ -630,10 +630,7 @@ struct CenterHeader: View {
                             .font(theme.font(size: 10))
                             .foregroundStyle(theme.accent)
                     }
-                    Text(session.title)
-                        .font(theme.font(size: 13, weight: .semibold))
-                        .foregroundStyle(theme.textPrimary)
-                        .lineLimit(1)
+                    SessionTitleControl(store: store, session: session, window: window)
                     Text(Format.abbreviatedPath(session.directory))
                         .font(theme.font(size: 12))
                         .foregroundStyle(theme.textTertiary)

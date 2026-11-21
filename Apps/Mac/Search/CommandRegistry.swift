@@ -87,7 +87,7 @@ struct AppShortcut: Hashable {
 /// Every command the app has. The order is the palette's order when nothing is typed.
 enum AppCommandID: String, CaseIterable, Identifiable {
     case newSession, newRoom, searchTranscripts, findInTranscript, keyboardShortcuts, commandPalette, settings, customizations, pairIPhone
-    case sendMessage, stopAgent, openHub, openScheduled, promoteToRoom, archiveSession, forkSession, compactConversation, revealFolder
+    case sendMessage, stopAgent, openHub, openScheduled, promoteToRoom, renameSession, archiveSession, forkSession, compactConversation, revealFolder
     case switchModel, switchMode, modeAsk, modeAcceptEdits, modeAuto, modePlan, modeBypass, changeEffort, toggleFastMode, sideQuestion, focusComposer
     case allowOnce, alwaysAllow, reject
     case nextTranscriptView, viewNormal, viewThinking, viewVerbose, copyTranscriptMarkdown
@@ -115,6 +115,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .openHub: "Open Session Hub"
         case .openScheduled: "Open Scheduled"
         case .promoteToRoom: "Add agents to a room"
+        case .renameSession: "Rename session"
         case .archiveSession: "Archive session"
         case .forkSession: "Fork session"
         case .compactConversation: "Compact conversation"
@@ -163,7 +164,8 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         switch self {
         case .newSession, .newRoom, .settings, .customizations, .pairIPhone: .general
         case .searchTranscripts, .findInTranscript, .keyboardShortcuts, .commandPalette: .search
-        case .sendMessage, .stopAgent, .openHub, .openScheduled, .promoteToRoom, .archiveSession, .forkSession, .compactConversation, .revealFolder: .sessions
+        case .sendMessage, .stopAgent, .openHub, .openScheduled, .promoteToRoom, .renameSession, .archiveSession, .forkSession, .compactConversation,
+             .revealFolder: .sessions
         case .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass, .changeEffort, .toggleFastMode, .sideQuestion,
              .focusComposer: .composer
         case .allowOnce, .alwaysAllow, .reject: .permissions
@@ -191,6 +193,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .openHub: "square.grid.2x2"
         case .openScheduled: "clock"
         case .promoteToRoom: "person.badge.plus"
+        case .renameSession: "pencil"
         case .archiveSession: "archivebox"
         case .forkSession: "arrow.triangle.branch"
         case .compactConversation: "arrow.down.right.and.arrow.up.left"
@@ -285,6 +288,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .openHub: ["needs you", "inbox"]
         case .openScheduled: ["schedules", "cron"]
         case .promoteToRoom: ["room", "agents", "multi-agent", "promote", "team", "debate"]
+        case .renameSession: ["title", "name"]
         case .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass: ["permissions", "mode"]
         case .switchModel: ["model", "provider"]
         case .changeEffort: ["thinking", "reasoning"]
@@ -412,7 +416,7 @@ enum CommandRegistry {
             return store != nil && (context.window.route == .session || context.window.route == .room || context.window.route == .hub)
         case .newRoom: return context.search.rooms != nil
         case .sendMessage, .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass, .focusComposer,
-             .archiveSession, .revealFolder, .compactConversation, .sideQuestion:
+             .renameSession, .archiveSession, .revealFolder, .compactConversation, .sideQuestion:
             return session != nil
         case .stopAgent: return session?.isWorking ?? false
         case .forkSession: return session != nil && (store?.supportsHistory ?? false)
@@ -473,6 +477,7 @@ enum CommandRegistry {
         case .openScheduled: window.route = .scheduled
         case .promoteToRoom:
             NotificationCenter.default.post(name: .ensemblePromoteToRoom, object: nil)
+        case .renameSession: window.renameRequestToken &+= 1
         case .archiveSession: if let store, let session { Task { await store.archive(session.id) } }
         case .forkSession:
             if let store, let session {

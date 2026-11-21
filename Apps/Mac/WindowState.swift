@@ -143,6 +143,13 @@ final class WindowState {
         set { if let pane = activePane { pane.findRequestToken = newValue } else { findRequestTokenValue = newValue } }
     }
 
+    private var renameRequestTokenValue = 0
+    /// Bumped to start renaming the session on screen in the title row (the palette's Rename session).
+    var renameRequestToken: Int {
+        get { host?.renameRequestToken ?? renameRequestTokenValue }
+        set { if let host { host.renameRequestToken = newValue } else { renameRequestTokenValue = newValue } }
+    }
+
     private var requestedMenuValue: ComposerMenu?
     /// A composer menu a slash command asked to open (the composer opens it and clears this).
     var requestedMenu: ComposerMenu? {

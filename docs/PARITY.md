@@ -68,8 +68,8 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 
 | Feature in the reference app | Ensemble | Rank | Note |
 |---|---|---|---|
-| Click the title to rename it | Missing | 1 | Rename is only in the sidebar menu |
-| A menu beside the title: open in, rename, fork, copy link, transcript view, archive, delete | Missing | 1 | The title bar has Add agent and the view menu only |
+| Click the title to rename it | Has | | Built in this pass |
+| A menu beside the title: open in, rename, fork, copy link, transcript view, archive, delete | Has | | Built in this pass, with pin and marks as well; the view menu stays its own control |
 | Transcript views: normal, thinking, verbose | Has | | |
 | Your messages as bubbles on the right; agent text without a bubble, in a serif face | Has | | |
 | Under your message on hover: time, fork from here, rewind to here, edit, copy | Has | | |
@@ -296,4 +296,6 @@ Counting only gaps nobody else is building.
 
 ## Built in this pass
 
-Filled in as packages land. See `docs/PROGRESS.md`.
+Details in `docs/PROGRESS.md`.
+
+- Title-bar session menu, and click the title to rename (gap 2).
