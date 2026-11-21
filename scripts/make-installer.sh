@@ -13,8 +13,8 @@
 #   3. Strips debug information and signs the app with the project's own release certificate
 #      (scripts/installer/make-signing-identity.sh makes it, once), or ad hoc when there is none. There is no
 #      Developer ID certificate, so the app is not notarized and macOS warns on first launch either way;
-#      docs/INSTALL.md explains that. The release certificate gives every build the same identity, so an update
-#      does not make macOS ask for the keychain password again.
+#      docs/INSTALL.md explains that. The release certificate keeps the designated requirement the same between
+#      builds. It does not stop the keychain prompt after an update (see make-signing-identity.sh for why).
 #   4. Checks that the app holds no home path, user name, team id, email address or key.
 #   5. Puts the app inside "Install Ensemble", the graphical installer, and signs that the same way.
 #   6. Makes the disk image (the installer and first launch help) and its SHA-256.
@@ -127,7 +127,6 @@ if [ -f "$signing_folder/identity.p12" ] && [ -f "$signing_folder/passphrase" ];
   signed_by="$(security find-identity "$signing_keychain" | sed -n 's/^ *1) [0-9A-F]\{40\} "\(.*\)".*/\1/p' | head -1)"
 else
   echo "note: no release certificate in $signing_folder, so this build is signed ad hoc."
-  echo "      People who install it will be asked for their keychain password again after every update."
   echo "      Make the certificate once with scripts/installer/make-signing-identity.sh"
 fi
 

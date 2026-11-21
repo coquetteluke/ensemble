@@ -169,7 +169,9 @@ There is no automatic update. To update:
 2. Open it and run **Install Ensemble**. macOS shows the warning again for every new download, so repeat [Open it anyway](#open-it-anyway).
 3. Press **Install and replace**. If Ensemble is open, the installer quits it first.
 
-Your sessions, settings and sign-ins stay. An update does not ask for your keychain password: every release is signed with the same project certificate, so macOS sees the new copy as the same app. (The one exception is moving on from 0.1.0, which was signed differently. macOS asks once, and you can choose Always Allow.)
+Your sessions, settings and sign-ins stay.
+
+One thing does come back after every update: if Ensemble keeps something in your login keychain, macOS asks for your login password once for each item the first time the new version opens. Choose **Always Allow** (the blue Allow button only lasts until you quit). The items are the iPhone pairing code and the relay key if you use the iPhone remote, and an API key or alert token if you saved one in Settings. If you use none of those, you are never asked. This cannot be avoided without a certificate issued by Apple: for every other app, macOS ties that approval to the exact build.
 
 To update the engine: `~/.opencode/bin/opencode upgrade`, or `brew upgrade opencode` if you installed it with Homebrew.
 

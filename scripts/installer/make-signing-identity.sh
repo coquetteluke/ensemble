@@ -3,15 +3,21 @@
 # Usage: scripts/installer/make-signing-identity.sh
 #
 # Why: with no paid Apple Developer account, the app can be signed ad hoc or with a certificate made here.
-# Ad hoc gives every build a new identity, so after every update macOS asks for the keychain password again
-# (once per item Ensemble keeps there) and forgets permissions such as the microphone. A certificate made once
-# and reused gives every build the same identity, so macOS asks nothing after an update.
-# It does not remove the "Not Opened" warning: Apple still has not checked the app.
+# Ad hoc gives every build a different designated requirement. A certificate made once and reused keeps it the
+# same from build to build ("this identifier, signed by this certificate").
+#
+# What it does NOT do, measured on macOS 27.2 in the real login keychain:
+#   - It does not stop the keychain password prompt after an update. The login keychain gives each item a
+#     "partition list", and for code without an Apple team id the entry is the hash of that exact build. A later
+#     build signed with this same certificate is refused and macOS asks again. Only a certificate issued by Apple
+#     (a team id) carries over. A keychain file made with `security create-keychain` has no partition lists, so a
+#     test there passes and proves nothing.
+#   - It does not remove the "Not Opened" warning: Apple still has not checked the app.
 #
 # Where: ~/.ensemble-signing (or $ENSEMBLE_SIGNING_DIR), outside the repository: identity.p12, its passphrase and
 # the public certificate. Keep the folder private and back it up.
-#   Lose it: the next release gets a new identity, and everyone is asked for their password once more.
-#   Leak it: someone else could sign an app that the keychain treats as Ensemble.
+#   Lose it: the next release gets a new designated requirement.
+#   Leak it: someone else could sign an app with Ensemble's designated requirement.
 # The certificate holds the name "Ensemble Release" and nothing about the person who made it.
 set -euo pipefail
 folder="${ENSEMBLE_SIGNING_DIR:-$HOME/.ensemble-signing}"
