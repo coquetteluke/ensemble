@@ -11,10 +11,10 @@ Ensemble is a native Mac app, with an iPhone remote, for coding with Claude, GPT
 **[Download Ensemble for Mac](https://github.com/coquetteluke/ensemble/releases)** (Apple silicon, macOS 26 or later). No Xcode needed.
 
 1. On the Releases page, download `Ensemble-<version>.dmg` and `SHA256SUMS`.
-2. Open the disk image and drag Ensemble onto Applications.
-3. Follow the [install guide](docs/INSTALL.md) for the first launch and the engine.
+2. Open the disk image and double-click **Install Ensemble**. The installer copies Ensemble to Applications, helps you set up the engine, and opens the app.
+3. The [install guide](docs/INSTALL.md) has every step with pictures.
 
-macOS warns the first time you open Ensemble, because the app is not notarized (that needs a paid Apple Developer account). The warning means Apple has not checked the app, not that it is harmful. The guide [explains it and shows how to open the app](docs/INSTALL.md#first-launch-the-macos-warning).
+macOS warns the first time you open the installer, because it is not notarized (that needs a paid Apple Developer account). The warning means Apple has not checked it, not that it is harmful. The guide [explains it and shows how to open the installer](docs/INSTALL.md#first-launch-the-macos-warning).
 
 ## What it does
 
@@ -59,7 +59,7 @@ xcodegen
 open Ensemble.xcodeproj
 ```
 
-To make the installer (`dist/Ensemble-<version>.dmg` and `dist/SHA256SUMS`) from the last commit:
+To make the installer (`dist/Ensemble-<version>.dmg`, which holds the Install Ensemble app, and `dist/SHA256SUMS`) from the last commit:
 
 ```bash
 scripts/make-installer.sh

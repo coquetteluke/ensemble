@@ -4,16 +4,16 @@ This guide takes you from the download to a working app. It takes about ten minu
 
 Short version:
 
-1. Download `Ensemble-<version>.dmg`, open it, drag Ensemble onto Applications.
-2. Open Ensemble. macOS blocks it the first time. Go to System Settings, Privacy & Security, and press **Open Anyway**. [Why, and the exact steps](#first-launch-the-macos-warning).
-3. Run `brew install opencode` in Terminal. Ensemble shows this command and carries on by itself.
+1. Download `Ensemble-<version>.dmg`, open it, and double-click **Install Ensemble**.
+2. macOS blocks the installer the first time. Go to System Settings, Privacy & Security, and press **Open Anyway**. [Why, and the exact steps](#first-launch-the-macos-warning).
+3. In the installer, press **Install**. It copies Ensemble to Applications, shows the command for the engine (`brew install opencode`), and opens Ensemble.
 4. In Ensemble, open Settings, Accounts, and sign in or add an API key.
 
 ## What you need
 
 - A Mac with Apple silicon (M1 or newer). There is no Intel build.
 - macOS 26 or later.
-- [Homebrew](https://brew.sh), to install the engine. If you do not have it, Ensemble shows you the command.
+- [Homebrew](https://brew.sh), to install the engine. If you do not have it, the installer shows you the command.
 - An account or API key for at least one model provider.
 
 ## 1. Download and check
@@ -30,19 +30,19 @@ cd ~/Downloads && shasum -a 256 -c SHA256SUMS
 
 It must print `Ensemble-<version>.dmg: OK`. If it prints `FAILED`, delete the download and do not open it.
 
-## 2. Install
+## 2. Open the installer
 
-Open the `.dmg` file. A window opens. Drag **Ensemble** onto **Applications**.
+Open the `.dmg` file. A window opens with **Install Ensemble** in it. Double-click it.
 
-![The disk image window: the Ensemble icon on the left, the Applications folder on the right, and a text file named First launch below](install/01-disk-image.png)
+![The disk image window: the Install Ensemble icon and a text file named First launch](install/01-disk-image.png)
 
-Then eject the disk image (drag it to the Trash, or press the eject button next to "Ensemble" in the Finder sidebar). `First launch.txt` holds a short copy of the next section, in case you are offline.
+`First launch.txt` holds a short copy of the next section, in case you are offline.
 
 ## First launch: the macOS warning
 
-Open Ensemble from your Applications folder. The first time, macOS stops it:
+The first time, macOS stops the installer:
 
-![A macOS dialog titled "Ensemble.app" Not Opened. It says Apple could not verify "Ensemble.app" is free of malware that may harm your Mac or compromise your privacy. Two buttons: Move to Trash and Done](install/02-not-opened.png)
+![A macOS dialog titled "Install Ensemble.app" Not Opened. It says Apple could not verify "Install Ensemble.app" is free of malware that may harm your Mac or compromise your privacy. Two buttons: Move to Trash and Done](install/02-not-opened.png)
 
 This is expected, and every copy of Ensemble does it. **Press Done.** Do not press Move to Trash, which is the highlighted button.
 
@@ -50,7 +50,7 @@ This is expected, and every copy of Ensemble does it. **Press Done.** Do not pre
 
 macOS has a guard called Gatekeeper. It checks every app that was downloaded from the internet before it runs for the first time. It looks for two things: a signature from a developer registered with Apple (a "Developer ID"), and proof that Apple scanned that exact copy for known malware (called "notarization").
 
-Ensemble has neither. Both need a membership in the Apple Developer Program, which costs 99 US dollars a year. Ensemble is a free, open-source project and does not have one.
+Ensemble and its installer have neither. Both need a membership in the Apple Developer Program, which costs 99 US dollars a year. Ensemble is a free, open-source project and does not have one.
 
 So the warning means **"Apple has not checked this app"**. It does not mean "Apple checked this app and found something". macOS shows the same message for every app that is not notarized.
 
@@ -61,44 +61,54 @@ That also means Apple's warning is doing its job: nobody has vouched for this fi
 
 If you would rather not trust a download at all, you can read the source and [build it yourself](../README.md#build). A copy you build on your own Mac has no warning.
 
-This project cannot remove the warning without the paid membership. Nothing in this guide turns Gatekeeper off, and you should not turn it off for an app. The steps below make one exception, for Ensemble only.
+This project cannot remove the warning without the paid membership. Nothing in this guide turns Gatekeeper off, and you should not turn it off for an app. The steps below make one exception, for this installer only.
 
 ### Open it anyway
 
 These steps were checked on macOS 27.2. macOS 26 uses the same steps. Small differences in wording are possible. They are also in Apple's own guide: [Open a Mac app from an unknown developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac).
 
-1. Try to open Ensemble once and press **Done** on the warning. (You have just done this. macOS only offers the next step after a blocked attempt.)
+1. Open Install Ensemble once and press **Done** on the warning. (You have just done this. macOS only offers the next step after a blocked attempt.)
 2. Open **System Settings** and choose **Privacy & Security** in the sidebar.
-3. Scroll down to **Security**. You see a line saying Ensemble was blocked. Press **Open Anyway**.
+3. Scroll down to **Security**. You see a line saying Install Ensemble was blocked. Press **Open Anyway**.
 
-   ![The Security section of Privacy & Security settings. Below "Allow applications from" is the line "Ensemble.app" was blocked to protect your Mac, with an Open Anyway button](install/03-open-anyway.png)
+   ![The Security section of Privacy & Security settings. Below "Allow applications from" is the line "Install Ensemble.app" was blocked to protect your Mac, with an Open Anyway button](install/03-open-anyway.png)
 
-   The button stays for about an hour after the blocked attempt. If it is not there, open Ensemble again, press Done, and come back.
+   The button stays for about an hour after the blocked attempt. If it is not there, open Install Ensemble again, press Done, and come back.
 4. macOS asks once more. Press **Open Anyway**.
 
-   ![A drawing of the macOS dialog titled Open "Ensemble.app"? with the buttons Open Anyway, Move to Trash and Done. Open Anyway is outlined](install/04-confirm.svg)
+   ![A drawing of the macOS dialog titled Open "Install Ensemble.app"? with the buttons Open Anyway, Move to Trash and Done. Open Anyway is outlined](install/04-confirm.svg)
 
 5. Confirm with Touch ID or your Mac password.
 
-Ensemble opens. macOS remembers the exception, so from now on it opens like any other app.
+The installer opens.
 
-(On your Mac the dialogs may say "Ensemble" instead of "Ensemble.app". That depends on a Finder setting.)
+(On your Mac the dialogs may say "Install Ensemble" without ".app". That depends on a Finder setting.)
 
 ### The same thing in Terminal
 
-If you prefer one command to the five steps above:
+If you prefer one command to the five steps above, eject the Ensemble disk if it is open, then run this before you open the download:
 
 ```bash
-xattr -dr com.apple.quarantine /Applications/Ensemble.app
+xattr -d com.apple.quarantine ~/Downloads/Ensemble-*.dmg
 ```
 
-When a browser downloads a file, macOS attaches a mark to it called `com.apple.quarantine`. That mark is what makes Gatekeeper check the app. This command removes the mark from Ensemble and from nothing else. It changes no setting on your Mac. Then open Ensemble as usual.
+When a browser downloads a file, macOS attaches a mark to it called `com.apple.quarantine`. That mark is what makes Gatekeeper check what is inside. This command removes the mark from the Ensemble download and from nothing else. It changes no setting on your Mac. Then open the download and double-click Install Ensemble.
 
-## 3. Set up the engine
+## 3. Install
 
-Ensemble is the window. The agents are run by [OpenCode](https://opencode.ai), a free, open-source program that Ensemble starts and talks to in the background. OpenCode is not inside the download, so a new Mac shows this:
+![The installer window. On the left: the Ensemble icon, version, and three steps: Install the app, Set up the engine, Open Ensemble. On the right: Install Ensemble, what it installs and where, and an Install button](install/05-installer-welcome.png)
 
-![The Ensemble window on first launch. Title: Install the engine. Step 1, Install Homebrew, and step 2, Install OpenCode, each show a command with a Copy button. Below are the buttons Open Terminal and Check again](install/05-install-the-engine.png)
+Press **Install**. The installer:
+
+1. Copies Ensemble into your Applications folder. If you may not change that folder, it uses the Applications folder in your home folder instead. An older Ensemble is replaced, and quit first if it is open.
+2. Checks the copy's signature. If the check fails, nothing is installed.
+3. Takes the "downloaded from the internet" mark off the copy it installed. That is why macOS does not ask a second time when Ensemble opens: you approved the installer, and it applies that to the one app it carries. It touches nothing else and changes no setting.
+
+### The engine
+
+Ensemble is the window. The agents are run by [OpenCode](https://opencode.ai), a free, open-source program that Ensemble starts and talks to in the background. OpenCode is not inside the download. If it is not on your Mac, the installer shows this next:
+
+![The installer on its second step, Set up the engine. Step 1, Install Homebrew, and step 2, Install OpenCode, each show a command with a Copy button. Below are the buttons Open Terminal, Set up later and Check again](install/06-installer-engine.png)
 
 1. Press **Open Terminal**.
 2. If the window lists **Install Homebrew**, press **Copy** next to it, paste the command into Terminal and press Return. It asks for your Mac password and takes a few minutes. If you already have Homebrew, this step is not shown.
@@ -108,11 +118,17 @@ Ensemble is the window. The agents are run by [OpenCode](https://opencode.ai), a
    brew install opencode
    ```
 
-Ensemble looks for OpenCode every few seconds and continues by itself when the install finishes. **Check again** looks at once.
+The installer looks for OpenCode every few seconds and moves on by itself when the install finishes. **Check again** looks at once. **Set up later** skips this: Ensemble shows the same commands when you open it.
 
-Ensemble never downloads or runs an installer on its own. You run both commands yourself.
+The installer never downloads or runs anything on its own. You run both commands yourself.
 
 Ensemble needs OpenCode 2.3.0 or newer. If yours is older, Ensemble says so and shows `brew upgrade opencode`.
+
+### Done
+
+![The installer on its last step: a green tick, Ensemble is installed, and the buttons Show in Finder and Open Ensemble](install/07-installer-done.png)
+
+Press **Open Ensemble**. You can now eject the Ensemble disk and delete the download.
 
 ## 4. Sign in to your models
 
@@ -126,7 +142,7 @@ Open **Settings** (bottom of the sidebar, or Command-comma) and choose **Account
 
 You need one of these to start. Then press **New session**, pick a folder and a model, and send a message.
 
-![The Ensemble main window with sample data: sessions in the sidebar, a chat in the middle, and the context panel on the right](install/06-ensemble.png)
+![The Ensemble main window with sample data: sessions in the sidebar, a chat in the middle, and the context panel on the right](install/08-ensemble.png)
 
 macOS may ask for a few permissions as you use the app: notifications (when an agent needs you), the microphone (only if you dictate a message), and your keychain (only if you pair an iPhone).
 
@@ -134,9 +150,9 @@ macOS may ask for a few permissions as you use the app: notifications (when an a
 
 There is no automatic update. To update:
 
-1. Quit Ensemble.
-2. Download the new `.dmg`, check it against its `SHA256SUMS`, and drag Ensemble onto Applications. Choose **Replace**.
-3. Open it. macOS shows the warning again for every new download, so repeat [Open it anyway](#open-it-anyway).
+1. Download the new `.dmg` and check it against its `SHA256SUMS`.
+2. Open it and run **Install Ensemble**. macOS shows the warning again for every new download, so repeat [Open it anyway](#open-it-anyway).
+3. Press **Install and replace**. If Ensemble is open, the installer quits it first.
 
 Your sessions, settings and sign-ins stay. If you paired an iPhone, macOS asks for your password again before the new copy can read the pairing code from your keychain. That is because each build has a different signature.
 
@@ -166,7 +182,12 @@ The iPhone app is not part of this download. Without a paid Apple Developer acco
 
 ## Problems
 
-- **No Open Anyway button.** It appears only after a blocked attempt and stays for about an hour. Open Ensemble again, press Done, then look again.
-- **"Ensemble is damaged and can't be opened."** The download is incomplete or was changed. Delete it, download again, and run the SHA-256 check.
-- **The window stays on "Install the engine".** In Terminal, run `which opencode`. If it prints nothing, the install did not finish: run `brew install opencode` again and read its output.
+- **No Open Anyway button.** It appears only after a blocked attempt and stays for about an hour. Open Install Ensemble again, press Done, then look again.
+- **"Install Ensemble is damaged and can't be opened."** The download is incomplete or was changed. Delete it, download again, and run the SHA-256 check.
+- **"The copy did not pass its check."** The installer found that its copy of Ensemble was changed or cut short, and installed nothing. Download it again.
+- **"You do not have permission to change that folder."** Ask someone with an administrator account on this Mac to run the installer.
+- **Ensemble shows "Install the engine".** OpenCode is not installed yet. The screen has the same commands as the installer and carries on by itself:
+
+  ![The Ensemble window on first launch without the engine. Title: Install the engine, with the install commands, Open Terminal and Check again](install/09-engine-in-app.png)
+
 - **"The engine did not start."** Run `opencode service status` in Terminal and read what it says, then press Try again in Ensemble.

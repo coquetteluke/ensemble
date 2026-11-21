@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="566" height="700" viewBox="0 0 566 700" role="img" aria-labelledby="title desc">
-  <title id="title">Illustration of the macOS dialog that asks whether to open Ensemble</title>
-  <desc id="desc">A drawing, not a screenshot. The dialog is titled Open "Ensemble.app"? and has three buttons: Open Anyway, Move to Trash and Done. Open Anyway is the one to press.</desc>
+  <title id="title">Illustration of the macOS dialog that asks whether to open the Ensemble installer</title>
+  <desc id="desc">A drawing, not a screenshot. The dialog is titled Open "Install Ensemble.app"? and has three buttons: Open Anyway, Move to Trash and Done. Open Anyway is the one to press.</desc>
   <style>
     text { font-family: -apple-system, "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; }
     .note { font-size: 15px; font-weight: 600; fill: #1d1d1f; }
@@ -22,7 +22,7 @@
   <rect x="112" y="136" width="8" height="40" rx="4" fill="#f4f0e4"/>
   <circle cx="116" cy="190" r="5" fill="#f4f0e4"/>
 
-  <text x="60" y="262" class="head">Open “Ensemble.app”?</text>
+  <text x="60" y="262" class="head">Open “Install Ensemble.app”?</text>
   <text class="body">
     <tspan x="60" y="304">Apple is not able to verify that it is</tspan>
     <tspan x="60" y="334">free from malware that could harm</tspan>
