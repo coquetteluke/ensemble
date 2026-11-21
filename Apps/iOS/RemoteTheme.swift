@@ -81,8 +81,9 @@ enum RemoteTheme {
         }
     }
 
-    static func serifFont(size: CGFloat = 15, weight: Font.Weight = .regular) -> Font {
-        MessageType.font(size: size, weight: weight)
+    /// The chat font chosen on this iPhone (`ChatFontStore`), for agent text drawn outside `MarkdownView`.
+    @MainActor static func serifFont(size: CGFloat = 15, weight: Font.Weight = .regular) -> Font {
+        ChatFontStore.shared.current.font(size: size, weight: weight)
     }
 }
 
@@ -122,8 +123,10 @@ private struct RemoteThemeProvider: ViewModifier {
     @Environment(\.colorScheme) private var scheme
 
     func body(content: Content) -> some View {
-        let theme = scheme == .dark ? Theme.dark : Theme.light
-        content
+        var theme = scheme == .dark ? Theme.dark : Theme.light
+        // Read here, so every screen redraws agent text when the chat font changes.
+        theme.chatFont = ChatFontStore.shared.current
+        return content
             .environment(\.theme, theme)
             .tint(RemoteTheme.accent)
     }

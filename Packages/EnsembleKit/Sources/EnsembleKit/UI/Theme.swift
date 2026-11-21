@@ -7,6 +7,8 @@ public struct Theme: Sendable {
     /// Window zoom (1 = 100%). Every font size and metric goes through `font(size:)` and `z(_:)`,
     /// so zooming re-lays out crisp text and controls instead of scaling a bitmap.
     public var scale: CGFloat = 1
+    /// The font agents write in, chosen in Settings (`ChatFontStore`). `.ensembleTheme()` fills it in.
+    public var chatFont: ChatFont = .standard
 
     // Surfaces
     public var sidebar: Color
@@ -162,16 +164,16 @@ public struct Theme: Sendable {
         }
     }
 
-    /// Font for what an agent writes: Ensemble Serif, at the zoom. See `MessageType`.
+    /// Font for what an agent writes: the chosen chat font, at the zoom. See `ChatFont`.
     public func messageFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        MessageType.font(size: size * scale, weight: weight)
+        chatFont.font(size: size * scale, weight: weight)
     }
 
     /// Letter spacing for agent text at `size` (the interface size passed to `messageFont`).
-    public func messageTracking(_ size: CGFloat) -> CGFloat { MessageType.tracking(size) * scale }
+    public func messageTracking(_ size: CGFloat) -> CGFloat { chatFont.tracking(size) * scale }
 
     /// Extra space between lines of agent text at `size`.
-    public func messageLineSpacing(_ size: CGFloat) -> CGFloat { MessageType.lineSpacing(size) * scale }
+    public func messageLineSpacing(_ size: CGFloat) -> CGFloat { chatFont.lineSpacing(size) * scale }
 
     /// A length (padding, row height, corner radius, icon size) times the zoom.
     public func z(_ value: CGFloat) -> CGFloat { value * scale }
@@ -199,26 +201,23 @@ public struct Theme: Sendable {
     }
 }
 
-/// How agent text is set. Agents write in Ensemble Serif (see `EnsembleFonts` and
-/// tools/fonts/README.md); everything else uses Inter. It is drawn at the interface size with
-/// normal letter spacing (built from Roboto Serif at optical size 14 with a calmer bold and a
-/// true italic) and lines about 1.6 times the type size apart. Shared by
-/// the Mac app and the iPhone remote so both read the same.
+/// How agent text is set when no chat font has been chosen: `ChatFont.standard` (Ensemble Serif 4, see
+/// `EnsembleFonts` and tools/fonts/README.md), at the interface size with normal letter spacing and lines
+/// about 1.6 times the type size apart. Views take the chosen font from `Theme.messageFont` instead.
 public enum MessageType {
-    public static let scale: CGFloat = 1.0
-    public static let trackingRatio: CGFloat = 0
-    public static let lineSpacingRatio: CGFloat = 0.36
+    public static let scale: CGFloat = ChatFont.standard.scale
+    public static let trackingRatio: CGFloat = ChatFont.standard.trackingRatio
+    public static let lineSpacingRatio: CGFloat = ChatFont.standard.lineSpacingRatio
 
-    /// Ensemble Serif at `size` points (already zoomed or scaled for Dynamic Type), not scaled again.
+    /// The default chat font at `size` points (already zoomed or scaled for Dynamic Type), not scaled again.
     public static func font(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        EnsembleFonts.register()
-        return .custom(EnsembleFonts.message, fixedSize: self.size(size)).weight(weight)
+        ChatFont.standard.font(size: size, weight: weight)
     }
 
     /// The serif size that matches interface text of `size` points.
     public static func size(_ size: CGFloat) -> CGFloat { size * scale }
-    public static func tracking(_ size: CGFloat) -> CGFloat { size * scale * trackingRatio }
-    public static func lineSpacing(_ size: CGFloat) -> CGFloat { size * scale * lineSpacingRatio }
+    public static func tracking(_ size: CGFloat) -> CGFloat { ChatFont.standard.tracking(size) }
+    public static func lineSpacing(_ size: CGFloat) -> CGFloat { ChatFont.standard.lineSpacing(size) }
 }
 
 
@@ -281,6 +280,8 @@ private struct ThemeProvider: ViewModifier {
     func body(content: Content) -> some View {
         var theme = scheme == .dark ? Theme.dark : Theme.light
         theme.scale = zoom
+        // Read here, so every window that uses the theme redraws when the chat font changes.
+        theme.chatFont = ChatFontStore.shared.current
         return content
             .environment(\.theme, theme)
             // Text that sets no font of its own (form labels, alerts inside the window) uses Inter too.
@@ -290,6 +291,6 @@ private struct ThemeProvider: ViewModifier {
 }
 
 public extension View {
-    /// Sets `\.theme` from the current colour scheme and `\.zoom`.
+    /// Sets `\.theme` from the current colour scheme, `\.zoom` and the chosen chat font.
     func ensembleTheme() -> some View { modifier(ThemeProvider()) }
 }

@@ -29,6 +29,8 @@ enum SnapshotRenderer {
     static func run(outputDirectory: URL) {
         let zoom = requestedZoom
         _ = NSApplication.shared
+        // Snapshots draw the default chat font, whatever is chosen on this Mac, and never read added fonts.
+        ChatFontStore.shared = .temporary()
         do {
             try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         } catch {
@@ -287,6 +289,7 @@ enum SnapshotRenderer {
         written += ConstellationSnapshots.render(to: outputDirectory, zoom: zoom)
         written += PlanUsageSnapshots.render(to: outputDirectory, zoom: zoom)
         written += RelaySnapshots.render(to: outputDirectory, zoom: zoom)
+        written += ChatFontSnapshots.render(to: outputDirectory, zoom: zoom)
 
         print("Rendered \(written.count) snapshots:")
         for path in written { print(path) }
