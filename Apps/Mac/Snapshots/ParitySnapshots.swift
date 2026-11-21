@@ -24,6 +24,11 @@ enum ParitySnapshots {
         let window = WindowState()
         window.showSidebar = true
         window.showContextPanel = true
+        // The engine's slash commands (the Context card's Compact button needs to know there is one) load asynchronously.
+        if let main = store.selected {
+            Task { @MainActor in await store.loadCommands(directory: main.directory) }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        }
         // Marks in memory, never the user's saved ones.
         let marks = SessionAttentionMarks(fileURL: nil)
         let center = AttentionCenter(marks: marks, canStart: false)
@@ -60,6 +65,19 @@ enum ParitySnapshots {
             save("next-step-\(tone)\(suffix)", width: 760, height: nil, scheme: scheme) {
                 NextStepSnapshot()
             }
+            // Background work with a Finished group under what runs.
+            save("background-finished-\(tone)\(suffix)", width: 420, height: nil, scheme: scheme) {
+                SnapshotPopoverCard {
+                    BackgroundListView(store: store, now: Self.now, history: Self.finishedHistory) { _ in }
+                }
+                .padding(20)
+            }
+            if let main = store.selected {
+                // The Context card's foot: room left before compacting, and Compact.
+                save("context-compact-\(tone)\(suffix)", width: MainView.panelWidth, height: 620, scheme: scheme) {
+                    ContextPanelView(store: store, session: main, remoteControl: .constant(true), topInset: 15)
+                }
+            }
             if let main = store.selected {
                 // The title row: the title you click to rename, the menu beside it drawn open, and the rename field.
                 save("title-menu-\(tone)\(suffix)", width: 760, height: nil, scheme: scheme) {
@@ -71,6 +89,26 @@ enum ParitySnapshots {
         print("Rendered \(written.count) parity snapshots:")
         for path in written { print(path) }
         return written
+    }
+}
+
+extension ParitySnapshots {
+    static let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    /// Three rows that ran and ended: a subagent, a command and a task.
+    static var finishedHistory: BackgroundHistory {
+        var history = BackgroundHistory()
+        let rows = [
+            BackgroundWorkItem(id: "subagent:done", kind: .subagent, title: "Check the relay handshake", detail: "general-purpose",
+                               rootSessionID: "ses_main", started: now.addingTimeInterval(-611)),
+            BackgroundWorkItem(id: "task:tests", kind: .shell, title: "swift test --parallel", rootSessionID: "ses_main",
+                               started: now.addingTimeInterval(-185)),
+            BackgroundWorkItem(id: "task:watch", kind: .task, title: "Watch the build log", rootSessionID: "ses_main",
+                               started: now.addingTimeInterval(-42)),
+        ]
+        history.update(running: rows, at: now.addingTimeInterval(-700))
+        history.update(running: [], at: now)
+        return history
     }
 }
 

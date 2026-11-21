@@ -121,7 +121,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | Drag the edge between chat and panel | Missing | 3 | Width follows the window |
 | Session details beside the chat: where it runs, changes, context | Has | | |
 | Context: percent, used and limit, coloured bar, a row per kind, groups that open | Has | | |
-| Context: how many tokens are left before it compacts by itself, and a Compact button | Partly | 2 | The buffer row is there; the count and the button are not |
+| Context: how many tokens are left before it compacts by itself, and a Compact button | Has | | Built in this pass |
 | Changes: every change of the branch, uncommitted only, or one commit; compare against another branch | Partly | 3 | Whole session, last turn, per agent |
 | Changes: comment on a line, send all comments at once, refresh | Has | | |
 | Files: a tree with a search field beside the viewer | Missing | 2 | The viewer opens from a link only |
@@ -131,7 +131,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | Browser with dev servers, pick an element, phone and tablet widths | Has | | |
 | Browser: keep cookies, clear browsing data | Missing | 4 | Always private |
 | Plan beside the chat | Missing | 3 | Plans are cards in the transcript |
-| Background tasks as a pane: running and finished groups, how long each took, clear finished, stop, open the output | Partly | 2 | A popover of running work only |
+| Background tasks as a pane: running and finished groups, how long each took, clear finished, stop, open the output | Partly | 3 | A popover, not a pane. The Finished group, durations and Clear were built in this pass; finished rows are forgotten on quit |
 | A pane for one helper agent's output | Partly | 3 | Opens the helper's session in the main area |
 | A pane for pages a session published | Not planned | 4 | Ensemble does not publish pages |
 | A simulated iPhone that the agent can run and tap | Missing | 4 | |
@@ -300,3 +300,4 @@ Details in `docs/PROGRESS.md`.
 
 - Title-bar session menu, and click the title to rename (gap 2).
 - Next-step card under a finished turn (gap 1).
+- Context card: room left before compacting and a Compact button. Background list: a Finished group (gap 8).
