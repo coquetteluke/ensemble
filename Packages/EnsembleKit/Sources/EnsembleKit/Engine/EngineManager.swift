@@ -46,11 +46,7 @@ public final class EngineManager {
 
     /// Directories searched for `opencode`: `PATH`, then Homebrew and the usual install places.
     public nonisolated static func defaultSearchPaths() -> [String] {
-        var paths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
-        let home = NSHomeDirectory()
-        paths += ["/opt/homebrew/bin", "/usr/local/bin", "\(home)/.opencode/bin", "\(home)/.local/bin", "\(home)/.bun/bin"]
-        var seen = Set<String>()
-        return paths.filter { !$0.isEmpty && seen.insert($0).inserted }
+        EngineSetup.engineSearchPaths()
     }
 
     /// Status now and every change after it.

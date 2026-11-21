@@ -44,8 +44,18 @@ public struct EngineSetup: Equatable, Sendable {
         return steps
     }
 
+    /// Directories searched for `opencode`: `PATH`, then Homebrew and the usual install places.
+    /// (Kept here, free of other EnsembleKit types, because the installer app compiles this file on its own.)
+    public static func engineSearchPaths() -> [String] {
+        var paths = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").map(String.init)
+        let home = NSHomeDirectory()
+        paths += ["/opt/homebrew/bin", "/usr/local/bin", "\(home)/.opencode/bin", "\(home)/.local/bin", "\(home)/.bun/bin"]
+        var seen = Set<String>()
+        return paths.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
     /// Looks on disk. Cheap enough to call every few seconds while the setup screen is open.
-    public static func detect(engineSearchPaths: [String] = EngineManager.defaultSearchPaths(),
+    public static func detect(engineSearchPaths: [String] = EngineSetup.engineSearchPaths(),
                               homebrewDirectories: [String] = EngineSetup.homebrewDirectories) -> EngineSetup {
         EngineSetup(homebrewInstalled: hasExecutable("brew", in: homebrewDirectories),
                     openCodeInstalled: hasExecutable("opencode", in: engineSearchPaths))

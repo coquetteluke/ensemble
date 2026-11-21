@@ -15,8 +15,7 @@ cleanup() {
 trap cleanup EXIT
 
 # Stand-ins with the real names: Finder saves each icon's place under its file name.
-mkdir -p "$work/stage/Ensemble.app/Contents"
-ln -s /Applications "$work/stage/Applications"
+mkdir -p "$work/stage/Install Ensemble.app/Contents"
 cp "$here/First launch.txt" "$work/stage/"
 # A writable scratch image. macOS 27 replaces `hdiutil create` and `hdiutil attach` with `diskutil image`.
 if diskutil image create blank --help >/dev/null 2>&1; then
@@ -40,15 +39,14 @@ tell application "Finder"
     try
       set pathbar visible of container window to false
     end try
-    set bounds of container window to {240, 160, 840, 590}
+    set bounds of container window to {240, 160, 780, 560}
     set viewOptions to icon view options of container window
     set arrangement of viewOptions to not arranged
-    set icon size of viewOptions to 96
+    set icon size of viewOptions to 128
     set text size of viewOptions to 13
     set shows item info of viewOptions to false
-    set position of item "Ensemble.app" of container window to {150, 110}
-    set position of item "Applications" of container window to {450, 110}
-    set position of item "First launch.txt" of container window to {300, 280}
+    set position of item "Install Ensemble.app" of container window to {170, 170}
+    set position of item "First launch.txt" of container window to {380, 170}
     close
     open
     update without registering applications

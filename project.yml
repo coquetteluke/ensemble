@@ -65,6 +65,29 @@ targets:
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_IDENTITY: "-"
         SKIP_INSTALL: YES
+  # "Install Ensemble": the graphical installer on the disk image. scripts/make-installer.sh puts the built
+  # Ensemble.app into its Resources. It compiles two EnsembleKit files directly and links nothing else.
+  EnsembleInstaller:
+    type: application
+    platform: macOS
+    sources:
+      - path: Apps/Installer
+      - path: Apps/Mac/Assets.xcassets
+      - path: Packages/EnsembleKit/Sources/EnsembleKit/Engine/EngineSetup.swift
+      - path: Packages/EnsembleKit/Sources/EnsembleKit/Install/AppInstaller.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.coquetteluke.ensemble.installer
+        PRODUCT_NAME: Install Ensemble
+        INFOPLIST_KEY_CFBundleDisplayName: Install Ensemble
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_NSHumanReadableCopyright: "MIT License"
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
   EnsembleRemote:
     type: application
     platform: iOS
@@ -91,6 +114,12 @@ schemes:
     build:
       targets:
         Ensemble: all
+    run:
+      config: Debug
+  EnsembleInstaller:
+    build:
+      targets:
+        EnsembleInstaller: all
     run:
       config: Debug
   EnsembleRemote:

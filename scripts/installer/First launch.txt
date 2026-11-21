@@ -1,30 +1,28 @@
 ENSEMBLE: FIRST LAUNCH
 
-1. Drag Ensemble onto Applications in this window. Open it from Applications.
+1. Double-click Install Ensemble in this window.
 
-2. macOS shows: "Ensemble" Not Opened. Press Done, not Move to Trash.
+2. macOS shows: "Install Ensemble" Not Opened. Press Done, not Move to Trash.
 
    This is expected. The message means Apple has not checked this app. It does
    not mean the app is harmful. Checking (notarization) needs a paid Apple
    Developer account, and this project does not have one.
 
 3. Open System Settings, then Privacy & Security. Scroll down to Security.
-   Next to "Ensemble" was blocked to protect your Mac, press Open Anyway.
+   Next to "Install Ensemble" was blocked to protect your Mac, press Open Anyway.
    Press Open Anyway again in the dialog, then use Touch ID or your Mac password.
-   macOS asks this once. After that Ensemble opens like any other app.
 
-   The same thing in Terminal:
+4. The installer opens. Press Install. It copies Ensemble to your Applications
+   folder, shows the command that installs the engine (brew install opencode),
+   and opens Ensemble. macOS does not ask again for Ensemble itself.
 
-       xattr -dr com.apple.quarantine /Applications/Ensemble.app
+To skip steps 2 and 3, eject this disk, run this in Terminal, and open the
+download again:
 
-   This removes the "downloaded from the internet" mark from Ensemble only.
-   It does not change any setting on your Mac.
+       xattr -d com.apple.quarantine ~/Downloads/Ensemble-*.dmg
 
-4. Ensemble then shows the command that installs its engine, OpenCode:
-
-       brew install opencode
-
-   It carries on by itself once OpenCode is installed.
+This removes the "downloaded from the internet" mark from the download only.
+It does not change any setting on your Mac.
 
 Download Ensemble only from the project's own page, and compare the SHA-256
 of the disk image with the one published there before you open it:

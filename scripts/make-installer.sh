@@ -13,7 +13,8 @@
 #   3. Strips debug information and signs the app ad hoc. There is no Developer ID certificate, so the app is not
 #      notarized and macOS warns on first launch. docs/INSTALL.md explains that to the people who install it.
 #   4. Checks that the app holds no home path, user name, team id, email address or key.
-#   5. Makes the disk image (app, Applications shortcut, first launch help) and its SHA-256.
+#   5. Puts the app inside "Install Ensemble", the graphical installer, and signs that the same way.
+#   6. Makes the disk image (the installer and first launch help) and its SHA-256.
 #
 # Needs: Xcode (the full app, not only the command line tools), XcodeGen (`brew install xcodegen`), git.
 set -euo pipefail
@@ -55,7 +56,7 @@ fi
 work="$(mktemp -d /private/tmp/ensemble-installer.XXXXXX)"
 mount="$work/volume"
 cleanup() {
-  [ -d "$mount/Ensemble.app" ] && diskutil eject "$mount" >/dev/null 2>&1 || true
+  [ -d "$mount/Install Ensemble.app" ] && diskutil eject "$mount" >/dev/null 2>&1 || true
   if [ "$keep" = 1 ]; then echo "Build folder kept: $work"; else rm -rf "$work"; fi
 }
 trap cleanup EXIT
@@ -76,34 +77,32 @@ xcodegen -q || fail "xcodegen could not generate the project"
 archs="arm64"
 step "Building Release for $archs (about five minutes)"
 log="$work/build.log"
-if ! xcodebuild -project Ensemble.xcodeproj -scheme Ensemble -configuration Release \
-    -destination 'generic/platform=macOS' -derivedDataPath "$work/dd" \
-    ARCHS="$archs" ONLY_ACTIVE_ARCH=NO \
-    CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
-    build >"$log" 2>&1; then
-  mkdir -p "$dist"
-  cp "$log" "$dist/make-installer.log"
-  grep -E "error:|BUILD FAILED" "$log" | head -40 >&2 || true
-  fail "the build failed. Full log: dist/make-installer.log"
-fi
+for scheme in Ensemble EnsembleInstaller; do
+  if ! xcodebuild -project Ensemble.xcodeproj -scheme "$scheme" -configuration Release \
+      -destination 'generic/platform=macOS' -derivedDataPath "$work/dd" \
+      ARCHS="$archs" ONLY_ACTIVE_ARCH=NO \
+      CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
+      build >>"$log" 2>&1; then
+    mkdir -p "$dist"
+    cp "$log" "$dist/make-installer.log"
+    grep -E "error:|BUILD FAILED" "$log" | head -40 >&2 || true
+    fail "the build of $scheme failed. Full log: dist/make-installer.log"
+  fi
+done
 built="$work/dd/Build/Products/Release/Ensemble.app"
+built_installer="$work/dd/Build/Products/Release/Install Ensemble.app"
 [ -d "$built" ] || fail "the build finished without $built"
+[ -d "$built_installer" ] || fail "the build finished without $built_installer"
 
 stage="$work/stage"
-mkdir -p "$stage"
-app="$stage/Ensemble.app"
+mkdir -p "$stage" "$work/payload"
+app="$work/payload/Ensemble.app"
 ditto "$built" "$app"
 version="$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")"
 [ -n "$version" ] || fail "the app has no version (CFBundleShortVersionString)"
 
 # ---- Strip and sign ----
 step "Stripping debug information and signing ad hoc"
-# Every program in the bundle, the helpers before the app itself.
-programs=()
-while IFS= read -r file; do
-  if file -b "$file" | grep -q "Mach-O"; then programs+=("$file"); fi
-done < <(find "$app/Contents" -type f -perm +111 ! -path "$app/Contents/MacOS/Ensemble")
-programs+=("$app/Contents/MacOS/Ensemble")
 
 sign() {
   # Keeps what Xcode gave the program (its identifier, its entitlements, the hardened runtime), except the
@@ -119,17 +118,29 @@ sign() {
   fi
   codesign "${options[@]}" "$target" 2>/dev/null || fail "codesign failed for $target"
 }
-for program in "${programs[@]}"; do
-  xcrun strip -S -x "$program" 2>/dev/null || fail "strip failed for $program"
-  [ "$program" = "$app/Contents/MacOS/Ensemble" ] || sign "$program"
-done
-sign "$app"
-codesign --verify --deep --strict "$app" || fail "the signed app does not verify"
-signature="$(codesign -dvv "$app" 2>&1)"
-echo "$signature" | grep -q "^Signature=adhoc" || fail "the app is not signed ad hoc"
-echo "$signature" | grep -q "^TeamIdentifier=not set" || fail "the signature names a team"
+# Strips and signs one app: every program in it (helpers before the main program), then the app itself.
+# Programs inside a nested app (the installer's copy of Ensemble) are left alone: that app is already done.
+finish_app() {
+  local bundle="$1" main program
+  main="$bundle/Contents/MacOS/$(plutil -extract CFBundleExecutable raw "$bundle/Contents/Info.plist")"
+  [ -f "$main" ] || fail "$bundle has no main program"
+  while IFS= read -r program; do
+    if file -b "$program" | grep -q "Mach-O"; then
+      xcrun strip -S -x "$program" 2>/dev/null || fail "strip failed for $program"
+      [ "$program" = "$main" ] || sign "$program"
+    fi
+  done < <(find "$bundle/Contents" -type f -perm +111 ! -path "$bundle/Contents/Resources/*.app/*")
+  sign "$bundle"
+  codesign --verify --deep --strict "$bundle" || fail "$(basename "$bundle") does not verify after signing"
+  local signature kept
+  signature="$(codesign -dvv "$bundle" 2>&1)"
+  echo "$signature" | grep -q "^Signature=adhoc" || fail "$(basename "$bundle") is not signed ad hoc"
+  echo "$signature" | grep -q "^TeamIdentifier=not set" || fail "the signature of $(basename "$bundle") names a team"
+  kept="$(codesign -d --entitlements - --xml "$bundle" 2>/dev/null || true)"
+  case "$kept" in *get-task-allow*) fail "$(basename "$bundle") carries the debugging entitlement (get-task-allow)" ;; esac
+}
+finish_app "$app"
 kept="$(codesign -d --entitlements - --xml "$app" 2>/dev/null || true)"
-case "$kept" in *get-task-allow*) fail "the app carries the debugging entitlement (get-task-allow)" ;; esac
 # The app asks for the microphone (dictation). Under the hardened runtime that needs the entitlement too.
 if plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist" >/dev/null 2>&1; then
   case "$kept" in
@@ -139,8 +150,15 @@ if plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist" >
 fi
 built_archs="$(lipo -archs "$app/Contents/MacOS/Ensemble")"
 
+# The installer carries the finished app in its Resources, so the app is signed first and the installer after it.
+installer="$stage/Install Ensemble.app"
+ditto "$built_installer" "$installer"
+ditto "$app" "$installer/Contents/Resources/Ensemble.app"
+finish_app "$installer"
+codesign --verify --deep --strict "$installer/Contents/Resources/Ensemble.app" || fail "the app inside the installer does not verify"
+
 # ---- Nothing personal in the bundle ----
-step "Checking the app for personal details and keys"
+step "Checking the installer and the app for personal details and keys"
 needles=("$HOME")
 login="$(id -un)"
 [ "${#login}" -ge 6 ] && needles+=("$login")
@@ -149,24 +167,23 @@ case "$email" in ""|*noreply*) ;; *) needles+=("$email") ;; esac
 team="$(sed -n 's/^[[:space:]]*DEVELOPMENT_TEAM[[:space:]]*=[[:space:]]*//p' "$repo/Config/Local.xcconfig" 2>/dev/null | tr -d '[:space:]' || true)"
 [ -n "$team" ] && needles+=("$team")
 for needle in "${needles[@]}"; do
-  if found="$(grep -rlF -- "$needle" "$app" | head -5)" && [ -n "$found" ]; then
+  if found="$(grep -rlF -- "$needle" "$installer" | head -5)" && [ -n "$found" ]; then
     echo "$found" >&2
-    fail "the app contains \"$needle\" (files above)"
+    fail "the installer contains \"$needle\" (files above)"
   fi
 done
 # Shapes of real keys: Anthropic, OpenAI, GitHub, AWS, Slack, Google, private key blocks.
 keys='sk-ant-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{20,}|AIza[0-9A-Za-z_-]{35}|BEGIN [A-Z ]*PRIVATE KEY'
-if found="$(grep -rlaE -- "$keys" "$app" | head -5)" && [ -n "$found" ]; then
+if found="$(grep -rlaE -- "$keys" "$installer" | head -5)" && [ -n "$found" ]; then
   echo "$found" >&2
-  fail "the app contains something shaped like a key (files above)"
+  fail "the installer contains something shaped like a key (files above)"
 fi
-[ ! -e "$app/Contents/embedded.provisionprofile" ] || fail "the app holds a provisioning profile"
+[ -z "$(find "$installer" -name embedded.provisionprofile)" ] || fail "the installer holds a provisioning profile"
 echo "Clean: no home path, user name, team id, email address or key."
 
 # ---- Disk image ----
 step "Making the disk image"
 cp "$layout/First launch.txt" "$stage/"
-ln -s /Applications "$stage/Applications"
 cp "$layout/DS_Store" "$stage/.DS_Store"
 mkdir -p "$dist" "$mount"
 dmg="$dist/Ensemble-$version.dmg"
@@ -193,11 +210,13 @@ else
 fi
 
 # The image must hold what was staged, and the app inside must still verify.
-[ -d "$mount/Ensemble.app" ] || fail "the disk image has no Ensemble.app"
-[ -L "$mount/Applications" ] || fail "the disk image has no Applications shortcut"
+[ -d "$mount/Install Ensemble.app" ] || fail "the disk image has no Install Ensemble.app"
+[ -d "$mount/Install Ensemble.app/Contents/Resources/Ensemble.app" ] || fail "the installer on the disk image has no Ensemble.app inside"
 [ -f "$mount/First launch.txt" ] || fail "the disk image has no First launch.txt"
 [ -f "$mount/.DS_Store" ] || fail "the disk image has no window layout (.DS_Store)"
-codesign --verify --deep --strict "$mount/Ensemble.app" || fail "the app inside the disk image does not verify"
+codesign --verify --deep --strict "$mount/Install Ensemble.app" || fail "the installer on the disk image does not verify"
+codesign --verify --deep --strict "$mount/Install Ensemble.app/Contents/Resources/Ensemble.app" \
+  || fail "the app inside the installer on the disk image does not verify"
 diskutil eject "$mount" >/dev/null || fail "the disk image did not eject"
 hdiutil verify -quiet "$dmg" || fail "the disk image does not verify"
 
