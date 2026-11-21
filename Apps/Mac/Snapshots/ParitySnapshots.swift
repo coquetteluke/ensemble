@@ -31,6 +31,7 @@ enum ParitySnapshots {
         }
         // Marks in memory, never the user's saved ones.
         let marks = SessionAttentionMarks(fileURL: nil)
+        marks.replace(pinned: [:], unread: ["ses_readme"], completed: [:])
         let center = AttentionCenter(marks: marks, canStart: false)
         var written: [String] = []
 
@@ -58,12 +59,23 @@ enum ParitySnapshots {
             if CGImageDestinationFinalize(destination) { written.append(url.path) }
         }
 
+        // The search overlay's start screen, with the second row selected.
+        let startSearch = SearchCenter()
+        startSearch.updateStart(store.sidebarEntries(marks: marks))
+        startSearch.overlay = .search
+        startSearch.selection = 1
+
         let suffix = zoom == 1 ? "" : "-\(Int((zoom * 100).rounded()))"
         for scheme in [ColorScheme.dark, .light] {
             let tone = scheme == .dark ? "dark" : "light"
             // The card under a finished turn, in its three shapes.
             save("next-step-\(tone)\(suffix)", width: 760, height: nil, scheme: scheme) {
                 NextStepSnapshot()
+            }
+            // Search before anything is typed: what needs you, what is working, recent sessions, actions.
+            save("search-start-\(tone)\(suffix)", width: SearchPanel.width + 48, height: nil, scheme: scheme) {
+                SearchPanel(search: startSearch, store: store, window: window)
+                    .padding(24)
             }
             // Background work with a Finished group under what runs.
             save("background-finished-\(tone)\(suffix)", width: 420, height: nil, scheme: scheme) {

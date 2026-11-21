@@ -59,7 +59,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | Auto-archive after N quiet days, and when a pull request merges or closes | Partly | 3 | Per session, on merge only |
 | A session in its own window | Missing | 3 | One main window |
 | Split view by option-click, menu or drag; a key to leave it | Partly | 3 | No drag; up to four panes |
-| Keys for next and previous session, and Control-Tab | Partly | 2 | Command-1 to 9 only |
+| Keys for next and previous session, and Control-Tab | Has | | Built in this pass |
 | Delete asks first and names the sessions | Has | | |
 | Labels a session as blocked, ready for review or done by itself | Partly | 3 | The Session Hub buckets do this without a model call |
 | A warning before resuming a long, costly session; a one-line recap on return | Missing | 4 | |
@@ -170,7 +170,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | Feature in the reference app | Ensemble | Rank | Note |
 |---|---|---|---|
 | A search dialog on Command-K over titles and message text | Has | | |
-| Before you type: what needs attention, what is working, recent sessions, and actions such as New session | Partly | 2 | Recent searches and sessions only |
+| Before you type: what needs attention, what is working, recent sessions, and actions such as New session | Has | | Built in this pass |
 | Scopes for sessions, scheduled tasks and other kinds | Partly | 3 | All, this folder, archived |
 | Key hints along the bottom | Has | | |
 | A list of every shortcut on Command-slash | Has | | |
@@ -301,3 +301,4 @@ Details in `docs/PROGRESS.md`.
 - Title-bar session menu, and click the title to rename (gap 2).
 - Next-step card under a finished turn (gap 1).
 - Context card: room left before compacting and a Compact button. Background list: a Finished group (gap 8).
+- Search start screen (gap 7) and keys for next and previous session (half of gap 10).

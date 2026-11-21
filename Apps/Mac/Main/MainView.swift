@@ -188,6 +188,11 @@ struct MainView: View {
                 if window.route == .session, store.selected != nil { window.composerFocusToken &+= 1 }
             }
             .appShortcut(.focusComposer)
+            // Control-Tab steps through sessions like tabs in a browser; the menu items carry the bracket keys.
+            Button("Next session") { window.openNeighbourSession(1, store: store) }
+                .keyboardShortcut(.tab, modifiers: .control)
+            Button("Previous session") { window.openNeighbourSession(-1, store: store) }
+                .keyboardShortcut(.tab, modifiers: [.control, .shift])
         }
         .opacity(0)
         .frame(width: 0, height: 0)

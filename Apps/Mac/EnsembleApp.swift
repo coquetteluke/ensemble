@@ -293,6 +293,13 @@ struct EnsembleCommands: Commands {
                 .keyboardShortcut(.escape, modifiers: [])
                 .disabled(window.route != .session || !(app.store?.selected?.isWorking ?? false))
             Divider()
+            Button("Next Session") { if let store = app.store { window.openNeighbourSession(1, store: store) } }
+                .appShortcut(.nextSession)
+                .disabled((app.store?.sessions.count ?? 0) < 2)
+            Button("Previous Session") { if let store = app.store { window.openNeighbourSession(-1, store: store) } }
+                .appShortcut(.previousSession)
+                .disabled((app.store?.sessions.count ?? 0) < 2)
+            Divider()
 
             let order = app.store.map { AttentionCenter.shared.sidebarOrder(store: $0) } ?? []
             ForEach(1...9, id: \.self) { number in

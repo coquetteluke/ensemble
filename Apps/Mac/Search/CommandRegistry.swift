@@ -87,7 +87,8 @@ struct AppShortcut: Hashable {
 /// Every command the app has. The order is the palette's order when nothing is typed.
 enum AppCommandID: String, CaseIterable, Identifiable {
     case newSession, newRoom, searchTranscripts, findInTranscript, keyboardShortcuts, commandPalette, settings, customizations, pairIPhone
-    case sendMessage, stopAgent, openHub, openScheduled, promoteToRoom, renameSession, archiveSession, forkSession, compactConversation, revealFolder
+    case sendMessage, stopAgent, nextSession, previousSession, openHub, openScheduled, promoteToRoom, renameSession, archiveSession, forkSession
+    case compactConversation, revealFolder
     case switchModel, switchMode, modeAsk, modeAcceptEdits, modeAuto, modePlan, modeBypass, changeEffort, toggleFastMode, sideQuestion, focusComposer
     case allowOnce, alwaysAllow, reject
     case nextTranscriptView, viewNormal, viewThinking, viewVerbose, copyTranscriptMarkdown
@@ -112,6 +113,8 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .pairIPhone: "Pair iPhone"
         case .sendMessage: "Send message"
         case .stopAgent: "Stop the agent"
+        case .nextSession: "Next session"
+        case .previousSession: "Previous session"
         case .openHub: "Open Session Hub"
         case .openScheduled: "Open Scheduled"
         case .promoteToRoom: "Add agents to a room"
@@ -164,8 +167,8 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         switch self {
         case .newSession, .newRoom, .settings, .customizations, .pairIPhone: .general
         case .searchTranscripts, .findInTranscript, .keyboardShortcuts, .commandPalette: .search
-        case .sendMessage, .stopAgent, .openHub, .openScheduled, .promoteToRoom, .renameSession, .archiveSession, .forkSession, .compactConversation,
-             .revealFolder: .sessions
+        case .sendMessage, .stopAgent, .nextSession, .previousSession, .openHub, .openScheduled, .promoteToRoom, .renameSession, .archiveSession,
+             .forkSession, .compactConversation, .revealFolder: .sessions
         case .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass, .changeEffort, .toggleFastMode, .sideQuestion,
              .focusComposer: .composer
         case .allowOnce, .alwaysAllow, .reject: .permissions
@@ -190,6 +193,8 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .pairIPhone: "iphone"
         case .sendMessage: "arrow.up"
         case .stopAgent: "stop.circle"
+        case .nextSession: "chevron.down"
+        case .previousSession: "chevron.up"
         case .openHub: "square.grid.2x2"
         case .openScheduled: "clock"
         case .promoteToRoom: "person.badge.plus"
@@ -251,6 +256,8 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .pairIPhone: AppShortcut("p", [.command, .shift, .option])
         case .sendMessage: AppShortcut(.return, .command)
         case .stopAgent: AppShortcut(.escape)
+        case .nextSession: AppShortcut("]", [.command, .shift])
+        case .previousSession: AppShortcut("[", [.command, .shift])
         case .openHub: AppShortcut("h", [.command, .shift])
         case .switchModel: AppShortcut("m", [.command, .shift])
         case .sideQuestion: AppShortcut(";")
@@ -285,6 +292,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .customizations: ["rules", "memory", "skills", "mcp", "hooks", "plugins", "agents", "claude.md"]
         case .pairIPhone: ["phone", "remote", "qr"]
         case .stopAgent: ["interrupt", "cancel"]
+        case .nextSession, .previousSession: ["switch", "cycle", "tab"]
         case .openHub: ["needs you", "inbox"]
         case .openScheduled: ["schedules", "cron"]
         case .promoteToRoom: ["room", "agents", "multi-agent", "promote", "team", "debate"]
@@ -361,6 +369,7 @@ enum CommandRegistry {
     /// Shortcuts that live outside the menus, listed in the overlay with the menu ones.
     static let notes: [ShortcutNote] = [
         ShortcutNote(title: "Switch to session 1 to 9", area: .sessions, caps: ["\u{2318}", "1\u{2026}9"]),
+        ShortcutNote(title: "Next session (Shift for previous)", area: .sessions, caps: ["\u{2303}", "\u{21E5}"]),
         ShortcutNote(title: "Open beside (split view)", area: .split, caps: ["\u{2325}", "Click"]),
         ShortcutNote(title: "Move between Hub cards", area: .sessions, caps: ["\u{2191}", "\u{2193}"]),
         ShortcutNote(title: "Send a Session Hub reply", area: .sessions, caps: ["\u{2318}", "\u{21A9}"]),
@@ -412,6 +421,7 @@ enum CommandRegistry {
         let session = context.window.route == .session ? store?.selected : nil
         switch id {
         case .newSession, .searchTranscripts: return store != nil
+        case .nextSession, .previousSession: return (store?.sessions.count ?? 0) > 1
         case .findInTranscript:
             return store != nil && (context.window.route == .session || context.window.route == .room || context.window.route == .hub)
         case .newRoom: return context.search.rooms != nil
@@ -473,6 +483,8 @@ enum CommandRegistry {
         case .pairIPhone: context.openWindow?(id: "pair-iphone")
         case .sendMessage: if let store { window.sendDraft(store: store) }
         case .stopAgent: if let store { Task { await store.stop() } }
+        case .nextSession: if let store { window.openNeighbourSession(1, store: store) }
+        case .previousSession: if let store { window.openNeighbourSession(-1, store: store) }
         case .openHub: window.route = .hub
         case .openScheduled: window.route = .scheduled
         case .promoteToRoom:

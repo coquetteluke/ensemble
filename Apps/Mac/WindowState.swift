@@ -307,6 +307,15 @@ final class WindowState {
         open(order[number - 1].id, store: store)
     }
 
+    /// Opens the session after (step 1) or before (step -1) the selected one in sidebar order, wrapping at the ends
+    /// (Shift-Command-] and Shift-Command-[, Control-Tab and Control-Shift-Tab). In split view it shows in the
+    /// focused pane, like Command-1 to 9.
+    func openNeighbourSession(_ step: Int, store: SessionStore) {
+        let order = AttentionCenter.shared.sidebarOrder(store: store).map(\.id)
+        guard let next = SessionCycling.neighbour(of: store.selectedSessionID, in: order, step: step) else { return }
+        open(next, store: store)
+    }
+
     func draft(for sessionID: String) -> String { drafts[sessionID] ?? "" }
 
     /// Sends the draft and attachments of the session this composer belongs to: the pane's own session for a split
