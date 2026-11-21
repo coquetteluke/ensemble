@@ -10,8 +10,11 @@
 #   1. Exports the last commit (not the working folder) to a folder under /private/tmp, so nothing uncommitted,
 #      no Config/Local.xcconfig and no path with your user name can end up in the app.
 #   2. Builds the Release configuration with no signing team.
-#   3. Strips debug information and signs the app ad hoc. There is no Developer ID certificate, so the app is not
-#      notarized and macOS warns on first launch. docs/INSTALL.md explains that to the people who install it.
+#   3. Strips debug information and signs the app with the project's own release certificate
+#      (scripts/installer/make-signing-identity.sh makes it, once), or ad hoc when there is none. There is no
+#      Developer ID certificate, so the app is not notarized and macOS warns on first launch either way;
+#      docs/INSTALL.md explains that. The release certificate gives every build the same identity, so an update
+#      does not make macOS ask for the keychain password again.
 #   4. Checks that the app holds no home path, user name, team id, email address or key.
 #   5. Puts the app inside "Install Ensemble", the graphical installer, and signs that the same way.
 #   6. Makes the disk image (the installer and first launch help) and its SHA-256.
@@ -55,7 +58,9 @@ fi
 # ---- A clean copy of the last commit, outside the home folder ----
 work="$(mktemp -d /private/tmp/ensemble-installer.XXXXXX)"
 mount="$work/volume"
+signing_keychain=""
 cleanup() {
+  [ -n "$signing_keychain" ] && security delete-keychain "$signing_keychain" >/dev/null 2>&1 || true
   [ -d "$mount/Install Ensemble.app" ] && diskutil eject "$mount" >/dev/null 2>&1 || true
   if [ "$keep" = 1 ]; then echo "Build folder kept: $work"; else rm -rf "$work"; fi
 }
@@ -102,7 +107,31 @@ version="$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.pl
 [ -n "$version" ] || fail "the app has no version (CFBundleShortVersionString)"
 
 # ---- Strip and sign ----
-step "Stripping debug information and signing ad hoc"
+# ---- Who signs ----
+# The release certificate lives outside the repository. It is loaded into a keychain made for this build only,
+# so the login keychain is never touched and nothing asks for a password.
+signing_folder="${ENSEMBLE_SIGNING_DIR:-$HOME/.ensemble-signing}"
+identity="-"
+signed_by="ad hoc"
+if [ -f "$signing_folder/identity.p12" ] && [ -f "$signing_folder/passphrase" ]; then
+  signing_keychain="$work/signing.keychain-db"
+  keychain_password="$(openssl rand -hex 24)"
+  security create-keychain -p "$keychain_password" "$signing_keychain" || fail "could not make the build keychain"
+  security unlock-keychain -p "$keychain_password" "$signing_keychain"
+  security import "$signing_folder/identity.p12" -k "$signing_keychain" -P "$(cat "$signing_folder/passphrase")" \
+    -T /usr/bin/codesign >/dev/null 2>&1 || fail "could not load $signing_folder/identity.p12"
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$signing_keychain" >/dev/null 2>&1 \
+    || fail "could not prepare the release certificate for signing"
+  identity="$(security find-identity "$signing_keychain" | sed -n 's/^ *1) \([0-9A-F]\{40\}\) .*/\1/p' | head -1)"
+  [ -n "$identity" ] || fail "no signing certificate found in $signing_folder/identity.p12"
+  signed_by="$(security find-identity "$signing_keychain" | sed -n 's/^ *1) [0-9A-F]\{40\} "\(.*\)".*/\1/p' | head -1)"
+else
+  echo "note: no release certificate in $signing_folder, so this build is signed ad hoc."
+  echo "      People who install it will be asked for their keychain password again after every update."
+  echo "      Make the certificate once with scripts/installer/make-signing-identity.sh"
+fi
+
+step "Stripping debug information and signing ($signed_by)"
 
 sign() {
   # Keeps what Xcode gave the program (its identifier, its entitlements, the hardened runtime), except the
@@ -110,7 +139,8 @@ sign() {
   # (Building with CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO would drop that one too, and the microphone
   # entitlement with it, which breaks dictation.)
   local target="$1" entitlements="$work/entitlements.plist"
-  local options=(--force --sign - --options runtime --timestamp=none --preserve-metadata=identifier)
+  local options=(--force --sign "$identity" --options runtime --timestamp=none --preserve-metadata=identifier)
+  [ -n "$signing_keychain" ] && options+=(--keychain "$signing_keychain")
   rm -f "$entitlements"
   if codesign -d --entitlements - --xml "$target" >"$entitlements" 2>/dev/null && [ -s "$entitlements" ]; then
     /usr/libexec/PlistBuddy -c "Delete :com.apple.security.get-task-allow" "$entitlements" >/dev/null 2>&1 || true
@@ -134,7 +164,13 @@ finish_app() {
   codesign --verify --deep --strict "$bundle" || fail "$(basename "$bundle") does not verify after signing"
   local signature kept
   signature="$(codesign -dvv "$bundle" 2>&1)"
-  echo "$signature" | grep -q "^Signature=adhoc" || fail "$(basename "$bundle") is not signed ad hoc"
+  if [ "$identity" = "-" ]; then
+    echo "$signature" | grep -q "^Signature=adhoc" || fail "$(basename "$bundle") is not signed ad hoc"
+  else
+    echo "$signature" | grep -q "^Authority=$signed_by\$" || fail "$(basename "$bundle") is not signed by $signed_by"
+    codesign -d -r- "$bundle" 2>&1 | grep -q "certificate leaf = H" \
+      || fail "$(basename "$bundle") has no stable identity (its requirement does not name the certificate)"
+  fi
   echo "$signature" | grep -q "^TeamIdentifier=not set" || fail "the signature of $(basename "$bundle") names a team"
   kept="$(codesign -d --entitlements - --xml "$bundle" 2>/dev/null || true)"
   case "$kept" in *get-task-allow*) fail "$(basename "$bundle") carries the debugging entitlement (get-task-allow)" ;; esac
@@ -227,4 +263,5 @@ step "Done"
 echo "Disk image: $dmg"
 echo "Size:       $(du -h "$dmg" | cut -f1 | tr -d ' ')"
 echo "Built from: commit $commit, version $version, $built_archs"
+echo "Signed:     $signed_by"
 echo "SHA-256:    $(cut -d' ' -f1 "$dist/SHA256SUMS")"
