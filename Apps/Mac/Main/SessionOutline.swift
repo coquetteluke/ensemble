@@ -58,6 +58,8 @@ struct SessionOutlineButton: View {
         .accessibilityLabel("Jump to a message")
         .onChange(of: window.outlineRequestToken) { if !isSnapshot { showList = true } }
         .onChange(of: session.id) { showList = false }
+        // Escape closes the list and goes no further (it is also Session > Stop while the agent works).
+        .background(EscapeKeyMonitor(isActive: showList) { showList = false })
         .popover(isPresented: $showList, arrowEdge: .bottom) {
             SessionOutlineList(entries: TranscriptOutline.entries(session.items, pinned: pins.pinned(in: session.id)),
                                onJump: { entry in

@@ -39,10 +39,20 @@ struct SessionTitleControl: View {
         }
         .onChange(of: window.renameRequestToken) { beginRename() }
         .onChange(of: fieldFocused) { _, focused in
-            // Clicking anywhere else saves, like a Finder rename.
-            if !focused && renaming { commitRename() }
+            // Clicking anywhere else saves, like a Finder rename. The keyboard stays where the click put it.
+            if !focused && renaming { commitRename(returnKeyboard: false) }
         }
-        .background(EscapeKeyMonitor(isActive: renaming, onEscape: cancelRename))
+        // Escape cancels the rename or closes the menu. Without this it would reach Session > Stop while the agent
+        // works, because menu shortcuts are tried before a field or a popover sees the key. The menu's letter keys
+        // are read here too, so its list never takes the keyboard away from the message box.
+        .background(EscapeKeyMonitor(isActive: renaming || showMenu, onEscape: {
+            if showMenu { showMenu = false } else { cancelRename() }
+        }, onKey: { key in
+            guard showMenu, let item = SessionMenu.item(forKey: key, in: menuState) else { return false }
+            showMenu = false
+            run(item.action)
+            return true
+        }))
         .confirmationDialog("Delete this session?", isPresented: deleteShown) {
             Button("Delete", role: .destructive) { Task { await store.delete(session.id) } }
             Button("Cancel", role: .cancel) {}
@@ -85,7 +95,7 @@ struct SessionTitleControl: View {
                 TextField("", text: $draft, prompt: Text("Title").foregroundStyle(theme.textTertiary))
                     .textFieldStyle(.plain)
                     .focused($fieldFocused)
-                    .onSubmit(commitRename)
+                    .onSubmit { commitRename(returnKeyboard: true) }
             }
         }
         .font(theme.font(size: 13, weight: .semibold))
@@ -111,18 +121,22 @@ struct SessionTitleControl: View {
         fieldFocused = true
     }
 
-    private func commitRename() {
+    /// `returnKeyboard`: Return ends the rename, so typing goes on in the message box. Without it the keyboard
+    /// would fall to the window's first field, the sidebar search.
+    private func commitRename(returnKeyboard: Bool) {
         guard renaming else { return }
         renaming = false
         if let title = SessionMenu.cleanedTitle(draft, current: session.title) {
             let id = session.id
             Task { await store.rename(id, to: title) }
         }
+        if returnKeyboard { window.composerFocusToken &+= 1 }
     }
 
     private func cancelRename() {
         renaming = false
         fieldFocused = false
+        window.composerFocusToken &+= 1
     }
 
     // MARK: Menu
@@ -216,13 +230,11 @@ struct SessionTitleControl: View {
 }
 
 /// The session menu's rows, as the popover shows them: a symbol, the title and the key that picks the row while the
-/// menu is open. Lines separate the groups.
+/// menu is open (`SessionTitleControl` reads those keys). Lines separate the groups.
 struct SessionMenuList: View {
     let sections: [[SessionMenuItem]]
     let onPick: (SessionMenuItem) -> Void
     @Environment(\.theme) private var theme
-    @Environment(\.isSnapshot) private var isSnapshot
-    @FocusState private var focused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: theme.z(2)) {
@@ -240,17 +252,6 @@ struct SessionMenuList: View {
         .padding(theme.z(6))
         .frame(width: theme.z(236))
         .background(theme.popover)
-        .focusable()
-        .focusEffectDisabled()
-        .focused($focused)
-        .onAppear { if !isSnapshot { focused = true } }
-        .onKeyPress(phases: .down) { press in
-            guard press.modifiers.isEmpty, let key = press.characters.first,
-                  let item = sections.joined().first(where: { $0.enabled && $0.key == Character(key.lowercased()) })
-            else { return .ignored }
-            onPick(item)
-            return .handled
-        }
     }
 
     private func row(_ item: SessionMenuItem) -> some View {
@@ -283,10 +284,13 @@ struct SessionMenuList: View {
     }
 }
 
-/// Takes a bare Escape while `isActive`, so cancelling a rename never reaches Session > Stop (which is also Escape).
+/// Takes a bare Escape while `isActive`, so cancelling a rename or closing a popover never reaches Session > Stop
+/// (which is also Escape). `onKey` gets any other key pressed without a modifier and says whether it used it; a
+/// popover that reads its keys this way does not have to take the keyboard from the field that had it.
 struct EscapeKeyMonitor: View {
     let isActive: Bool
     let onEscape: () -> Void
+    var onKey: ((Character) -> Bool)? = nil
     @Environment(\.isSnapshot) private var isSnapshot
     @State private var monitor: Any?
 
@@ -305,9 +309,13 @@ struct EscapeKeyMonitor: View {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
-            guard event.keyCode == 53, modifiers.isEmpty else { return event }
-            MainActor.assumeIsolated { onEscape() }
-            return nil
+            guard modifiers.isEmpty else { return event }
+            if event.keyCode == 53 {
+                MainActor.assumeIsolated { onEscape() }
+                return nil
+            }
+            guard let onKey, let key = event.charactersIgnoringModifiers?.lowercased().first else { return event }
+            return MainActor.assumeIsolated { onKey(key) } ? nil : event
         }
     }
 
