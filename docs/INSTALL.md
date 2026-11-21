@@ -18,7 +18,7 @@ Short version:
 
 ## 1. Download and check
 
-Download two files from this project's Releases page: `Ensemble-<version>.dmg` and `SHA256SUMS`.
+Download two files from this project's [Releases page](https://github.com/coquetteluke/ensemble/releases): `Ensemble-<version>.dmg` and `SHA256SUMS`. They are under "Assets" in the newest release.
 
 Only download Ensemble from the project's own page. A copy from anywhere else could have been changed.
 
