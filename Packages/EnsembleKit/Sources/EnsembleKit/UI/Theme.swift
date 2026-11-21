@@ -254,7 +254,8 @@ public extension EnvironmentValues {
 
 /// Zoom steps for View > Zoom In / Zoom Out / Actual Size.
 public enum Zoom {
-    public static let steps: [Double] = [0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2]
+    /// 70% to 200% in steps of 5%, so one press of Command-plus or Command-minus is a small change.
+    public static let steps: [Double] = stride(from: 70, through: 200, by: 5).map { Double($0) / 100 }
     public static let storageKey = "zoom"
 
     public static func zoomIn(from current: Double) -> Double {
