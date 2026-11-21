@@ -345,6 +345,52 @@ struct MessageAttachmentTests {
         #expect(userRows(TranscriptMapper.items(from: messages)).first?.text.contains("Attached: hello.txt") == true)
     }
 
+    /// What an ACP agent replays from its history: the same block shapes Ensemble sends pictures and files in.
+    @Test func picturesAndFilesInAReplayedACPMessageBecomeAttachments() throws {
+        func chunk(_ kind: String, _ content: JSONValue) -> ACPSessionUpdate? {
+            ACPSessionUpdate(["sessionUpdate": .string(kind), "content": content])
+        }
+        let picture: JSONValue = ["type": "image", "data": .string(Sample.pngBase64), "mimeType": "image/png"]
+        let onDisk: JSONValue = ["type": "image", "data": .string(Sample.pngBase64), "mimeType": "image/jpeg", "uri": "file:///tmp/proj/My%20Shot.jpg"]
+        let link: JSONValue = ["type": "resource_link", "uri": "file:///tmp/proj/notes.pdf", "name": "notes.pdf"]
+
+        #expect(chunk("user_message_chunk", picture) == .userAttachment(try #require(ACPUserAttachment(picture)), messageID: nil))
+        #expect(ACPUserAttachment(picture)?.base64 == Sample.pngBase64)
+        #expect(ACPUserAttachment(onDisk)?.path == "/tmp/proj/My Shot.jpg")
+        #expect(ACPUserAttachment(onDisk)?.base64 == nil, "a picture with a file is read from the file")
+        #expect(ACPUserAttachment(link)?.isImage == false)
+        #expect(ACPUserAttachment(["type": "text", "text": "hi"]) == nil)
+        // The agent's own pictures and plain text are unchanged.
+        #expect(chunk("agent_message_chunk", picture) == .agentMessage(text: "[image]", messageID: nil))
+        #expect(chunk("user_message_chunk", ["type": "text", "text": "hi"]) == .userMessage(text: "hi", messageID: nil))
+
+        var state = ACPTranscriptState(sessionID: "s", directory: "/tmp/proj")
+        // First message: text, then a picture as bytes, then a file. Second: only a picture that has a file.
+        for update in [chunk("user_message_chunk", ["type": "text", "text": "look at this"]), chunk("user_message_chunk", picture),
+                       chunk("user_message_chunk", link), chunk("agent_message_chunk", ["type": "text", "text": "Looking."]),
+                       chunk("user_message_chunk", onDisk), chunk("user_message_chunk", ["type": "text", "text": "and this"])] {
+            _ = state.apply(try #require(update))
+        }
+        let rows = userRows(state.items)
+        #expect(rows.map(\.text) == ["look at this", "and this"], "no [image] and no [notes.pdf] in the text")
+        let first = try #require(state.attachments[rows[0].id])
+        #expect(first.map(\.kind) == [.image, .file])
+        #expect(first.map(\.name) == [nil, "notes.pdf"])
+        #expect(first.map(\.path) == [nil, "/tmp/proj/notes.pdf"])
+        #expect(state.attachments[rows[1].id]?.map(\.path) == ["/tmp/proj/My Shot.jpg"])
+        #expect(state.unsavedPictures.count == 1)
+
+        // The engine saves the bytes once; the row then points at the file and the bytes are dropped.
+        let folder = try Sample.temporaryFolder().appendingPathComponent("pictures")
+        defer { try? FileManager.default.removeItem(at: folder.deletingLastPathComponent()) }
+        let cache = MessagePictureCache(directory: folder)
+        state.savePictures { cache.store(base64: $0.base64, mediaType: $0.mediaType)?.path }
+        let saved = try #require(state.attachments[rows[0].id]?.first?.path)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: saved)) == Data(base64Encoded: Sample.pngBase64))
+        #expect(state.unsavedPictures.isEmpty)
+        #expect(state.attachments[rows[0].id]?.last?.path == "/tmp/proj/notes.pdf")
+    }
+
     @Test func filesSentThroughAnACPAgentStayOnTheirRow() {
         var state = ACPTranscriptState(sessionID: "s", directory: "/tmp/proj")
         let files = MessageAttachments.forFiles([URL(fileURLWithPath: "/tmp/proj/shot.png")])

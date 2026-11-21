@@ -92,14 +92,21 @@ public final class ACPEngine: OpenCodeAPI, EngineModelOptionsControl, EngineComm
         public var clientVersion: String
         /// Ensemble's own MCP server (`AgentToolsServer`), sent in `mcpServers` when a session opens.
         public var agentTools: (any AgentToolsAttaching)? = AgentToolsServer.shared
+        /// Where replayed pictures are kept as files (`MessagePictureCache`). The app's caches folder with the default
+        /// session list; next to the session list otherwise, so a test engine stays in its own folder.
+        public var pictureCacheDirectory: URL
 
         public init(agent: ACPAgentDefinition, executablePath: String? = nil, storeURL: URL? = nil, workDirectory: URL? = nil,
                     maxConcurrentTurns: Int? = nil, extraArguments: [String] = [],
                     baseEnvironment: [String: String] = ProcessInfo.processInfo.environment, trust: WorkspaceTrust = .shared,
-                    requestTimeout: Duration = .seconds(60), interruptGrace: Duration = .seconds(15), clientVersion: String = "1.0") {
+                    requestTimeout: Duration = .seconds(60), interruptGrace: Duration = .seconds(15), clientVersion: String = "1.0",
+                    pictureCacheDirectory: URL? = nil) {
             self.agent = agent
             self.executablePath = executablePath
             self.storeURL = storeURL ?? ACPSessionStore.defaultURL
+            self.pictureCacheDirectory = pictureCacheDirectory
+                ?? storeURL.map { $0.deletingLastPathComponent().appendingPathComponent("pictures", isDirectory: true) }
+                ?? MessagePictureCache.appDirectory
             self.workDirectory = workDirectory ?? ACPEngine.defaultWorkDirectory(agentID: agent.id)
             self.maxConcurrentTurns = maxConcurrentTurns
             self.extraArguments = extraArguments

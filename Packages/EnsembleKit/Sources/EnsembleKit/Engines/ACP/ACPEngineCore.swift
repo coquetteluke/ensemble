@@ -804,11 +804,17 @@ actor ACPEngineCore {
 
     // MARK: Transcripts and panels
 
-    /// The transcript with the files sent from Ensemble beside their messages. Messages the agent replays from its own
-    /// history carry no files (a replayed picture is still the text "[image]").
+    /// The transcript with the pictures and files of the user's messages beside them: those sent from Ensemble, and
+    /// those in messages the agent replays from its own history. A replayed picture that arrives as bytes is saved
+    /// once into the picture cache, so it can be shown and opened.
     func attachedTranscript(_ id: String) async throws -> AttachedTranscript {
         let items = try await transcript(id)
-        return AttachedTranscript(items: items, attachments: liveSession(id).transcript.attachments)
+        if var live = lives[id], !live.transcript.unsavedPictures.isEmpty {
+            let cache = MessagePictureCache(directory: configuration.pictureCacheDirectory)
+            live.transcript.savePictures { cache.store(base64: $0.base64, mediaType: $0.mediaType)?.path }
+            lives[id] = live
+        }
+        return AttachedTranscript(items: items, attachments: lives[id]?.transcript.attachments ?? [:])
     }
 
     func transcript(_ id: String) async throws -> [TranscriptItem] {

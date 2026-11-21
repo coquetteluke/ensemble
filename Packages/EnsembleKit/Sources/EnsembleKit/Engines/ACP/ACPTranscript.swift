@@ -561,8 +561,16 @@ struct ACPTranscriptState: Sendable {
     /// Texts Ensemble injected (board messages); replayed user messages with exactly this text become notices.
     var syntheticTexts: Set<String>
     private(set) var items: [TranscriptItem] = []
-    /// Files sent with a message from Ensemble, by the id of its row.
+    /// Pictures and files on user messages, by the id of the message's row: those sent from Ensemble, and those in
+    /// messages the agent replays from its history.
     private(set) var attachments: [String: [MessageAttachment]] = [:]
+    /// Replayed pictures that arrived as bytes and are not files yet, by attachment id (`savePictures`).
+    private(set) var unsavedPictures: [String: UnsavedPicture] = [:]
+
+    struct UnsavedPicture: Sendable, Equatable {
+        var base64: String
+        var mediaType: String?
+    }
     private(set) var tools: [String: ACPToolState] = [:]
     private(set) var turn = 0
     /// Distinguishes rows of this state from rows built by an earlier one (after a restart or a reload), so live
@@ -616,6 +624,21 @@ struct ACPTranscriptState: Sendable {
 
     // MARK: Input
 
+    /// Turns replayed pictures that are still bytes into files: `save` returns the file's path, or nil when it cannot be
+    /// written (the picture then shows as a chip). The bytes are dropped either way.
+    mutating func savePictures(_ save: (UnsavedPicture) -> String?) {
+        guard !unsavedPictures.isEmpty else { return }
+        for (rowID, list) in attachments {
+            attachments[rowID] = list.map { attachment in
+                guard let picture = unsavedPictures[attachment.id] else { return attachment }
+                var saved = attachment
+                saved.path = save(picture)
+                return saved
+            }
+        }
+        unsavedPictures = [:]
+    }
+
     /// A message the user (or, when `synthetic`, Ensemble's room relay) sent. Not echoed by agents during live turns.
     mutating func addUser(_ text: String, synthetic: Bool, attachments attached: [MessageAttachment] = [],
                           date: Date = Date()) -> [EngineEvent] {
@@ -653,6 +676,29 @@ struct ACPTranscriptState: Sendable {
                 openUser = id
                 turn += 1
                 planID = nil
+            }
+            return events
+
+        case .userAttachment(let attachment, _):
+            let events = closeText()
+            closeReasoning()
+            let rowID: String
+            if let open = openUser, index(of: open) != nil {
+                rowID = open
+            } else {
+                // A message that starts with (or is only) a picture still gets its row.
+                rowID = nextID("u")
+                items.append(.user(id: rowID, text: "", date: date))
+                openUser = rowID
+                turn += 1
+                planID = nil
+            }
+            let id = "\(rowID):\(attachments[rowID]?.count ?? 0)"
+            attachments[rowID, default: []].append(MessageAttachment(id: id, kind: attachment.isImage ? .image : .file,
+                                                                     name: attachment.name, mediaType: attachment.mediaType,
+                                                                     path: attachment.path))
+            if attachment.isImage, attachment.path == nil, let base64 = attachment.base64 {
+                unsavedPictures[id] = UnsavedPicture(base64: base64, mediaType: attachment.mediaType)
             }
             return events
 
