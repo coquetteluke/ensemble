@@ -29,7 +29,8 @@ struct InstallerView: View {
                 .padding(.bottom, 28)
                 .background(InstallerColors.background)
         }
-        .frame(width: Self.size.width, height: Self.size.height)
+        // The window is a little taller than the content (its hidden title bar), so the two columns stretch to fill it.
+        .frame(minWidth: Self.size.width, maxWidth: .infinity, minHeight: Self.size.height, maxHeight: .infinity)
         .foregroundStyle(InstallerColors.text)
         .task(id: model.phase == .engine) { await model.watchForTheEngine() }
     }
