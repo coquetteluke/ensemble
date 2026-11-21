@@ -75,7 +75,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | Under your message on hover: time, fork from here, rewind to here, edit, copy | Has | | |
 | Under the agent's reply: copy, fork from here, pin as chapter, read aloud, time | Partly | 2 | Copy and Second opinion; no fork, chapter, read aloud or time |
 | Folded runs of tool calls, a live working row | Has | | |
-| **Next-step box** when a turn ends: a short recap of what changed, one question, one or two buttons (reply, commit, open a pull request, verify) | Missing | 1 | Seen at the end of nearly every turn |
+| **Next-step box** when a turn ends: a short recap of what changed, one question, one or two buttons (reply, commit, open a pull request, verify) | Partly | 3 | Built in this pass from the transcript: recap, the closing question, Yes, No and Review changes. The agent does not write the recap, and there are no commit or pull request buttons on the card |
 | **Chapters**: named dividers in a long transcript and a floating list to jump between them | Missing | 2 | |
 | Task list pinned under the newest message, one step in progress | In progress | 1 | A first version is on this branch |
 | Pictures inside messages | In progress | 2 | |
@@ -299,3 +299,4 @@ Counting only gaps nobody else is building.
 Details in `docs/PROGRESS.md`.
 
 - Title-bar session menu, and click the title to rename (gap 2).
+- Next-step card under a finished turn (gap 1).

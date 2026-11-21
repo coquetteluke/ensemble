@@ -151,6 +151,9 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: .ensembleFindInCurrentView)) { _ in
             window.findRequestToken &+= 1
         }
+        .onReceive(NotificationCenter.default.publisher(for: .ensembleShowReview)) { _ in
+            if !window.reviewOpen { window.openSidePane(.review) }
+        }
         .claudeImport(store: store)
         .alert("Something went wrong", isPresented: errorShown, presenting: store.lastError) { _ in
             Button("OK") { store.lastError = nil }

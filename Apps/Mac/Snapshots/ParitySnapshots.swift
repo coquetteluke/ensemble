@@ -56,6 +56,10 @@ enum ParitySnapshots {
         let suffix = zoom == 1 ? "" : "-\(Int((zoom * 100).rounded()))"
         for scheme in [ColorScheme.dark, .light] {
             let tone = scheme == .dark ? "dark" : "light"
+            // The card under a finished turn, in its three shapes.
+            save("next-step-\(tone)\(suffix)", width: 760, height: nil, scheme: scheme) {
+                NextStepSnapshot()
+            }
             if let main = store.selected {
                 // The title row: the title you click to rename, the menu beside it drawn open, and the rename field.
                 save("title-menu-\(tone)\(suffix)", width: 760, height: nil, scheme: scheme) {
@@ -123,5 +127,47 @@ private struct TitleMenuSnapshot: View {
             .padding(.leading, theme.z(20))
             .frame(height: theme.z(52))
         }
+    }
+}
+
+/// The next-step card: a turn that changed files, one that also ends with a yes-or-no question, and a question alone.
+private struct NextStepSnapshot: View {
+    @Environment(\.theme) private var theme
+
+    private static let date = Date(timeIntervalSince1970: 1_800_000_000)
+    private static let diff = "--- a/ContextBar.swift\n+++ b/ContextBar.swift\n" + String(repeating: "+let width = 1\n", count: 48)
+        + String(repeating: "-let width = 0\n", count: 12)
+
+    private static func step(_ items: [TranscriptItem]) -> NextStep? {
+        NextStepBuilder.build(items: [.user(id: "u", text: "Go", date: date)] + items, isWorking: false, hasOpenPrompt: false)
+    }
+
+    private static let steps: [NextStep] = [
+        step([
+            .tool(ToolCallInfo(id: "t1", name: "edit", title: "Sources/ContextBar.swift", status: .succeeded, diff: diff)),
+            .tool(ToolCallInfo(id: "t2", name: "edit", title: "Sources/ContextPanelView.swift", status: .succeeded)),
+            .tool(ToolCallInfo(id: "t3", name: "write", title: "Tests/ContextBarTests.swift", status: .succeeded)),
+            .tool(ToolCallInfo(id: "t4", name: "bash", title: "swift test", status: .succeeded)),
+            .agentText(id: "a", text: "The bar is sized by the limit now and the tests pass.", agentID: nil, streaming: false),
+        ]),
+        step([
+            .tool(ToolCallInfo(id: "t1", name: "write", title: "README.md", status: .succeeded)),
+            .tool(ToolCallInfo(id: "t2", name: "bash", title: "markdownlint README.md", status: .succeeded)),
+            .agentText(id: "a", text: "The README covers install, the engine and the iPhone app.\n\nShould I commit it on this branch?",
+                       agentID: nil, streaming: false),
+        ]),
+        step([
+            .agentText(id: "a", text: "Nothing is changed yet. Want me to run the full test suite before I touch the relay?",
+                       agentID: nil, streaming: false),
+        ]),
+    ].compactMap { $0 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: theme.z(18)) {
+            ForEach(Array(Self.steps.enumerated()), id: \.offset) { _, step in
+                NextStepCard(step: step, onAction: { _ in }, onDismiss: {})
+            }
+        }
+        .padding(theme.z(24))
     }
 }
