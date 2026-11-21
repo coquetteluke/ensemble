@@ -204,7 +204,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | Feature in the reference app | Ensemble | Rank | Note |
 |---|---|---|---|
 | Plan limit bars with reset times, per plan | Has | | Two plans side by side |
-| A warning when the current pace runs out before the reset, with a lighter model suggested | Missing | 3 | |
+| A warning when the current pace runs out before the reset, with a lighter model suggested | Partly | 4 | The warning was built in this pass, for both plans; no model suggestion |
 | A week of use by hour | Missing | 4 | |
 | Use by product and by device | Partly | 4 | By provider, agent and session |
 | Limit reached card, continue when it resets | Has | | |
@@ -286,7 +286,7 @@ Counting only gaps nobody else is building.
 | 11 | Files pane with a tree and search | 2 | Yes |
 | 12 | Agent reply actions: fork from here, read aloud, time | 2 | After the pictures session lands |
 | 13 | Settings: notifications by kind, storage, branch prefix, quiet-session archiving, reply style | 3 | After the font session lands |
-| 14 | Usage pace warning | 3 | Yes |
+| 14 | Usage pace warning | 3 | Built |
 | 15 | A session or pane in its own window | 3 | Yes |
 | 16 | Entry box from any app | 3 | Yes |
 | 17 | Review scopes: uncommitted, one commit, another branch | 3 | Yes |
@@ -305,5 +305,6 @@ Details in `docs/PROGRESS.md`.
 - Jump list of your messages with pinned chapters (gap 4).
 - Side panel tabs with a "+" and fill the window (gap 3).
 - Scheduled: templates, search and sort (most of gap 9).
+- Plan pace warning under a limit's bar (gap 14).
 
 Not clicked through in a running window: the owner's own Ensemble was open during the work, so each piece stands on its tests, both builds and its rendered snapshot.
