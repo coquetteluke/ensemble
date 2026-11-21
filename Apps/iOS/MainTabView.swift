@@ -265,6 +265,10 @@ struct SplitRootView: View {
     /// move, and the panes are the real views, so they stay right when iOS resizes the window mid-fold.
     private func slide(from old: PanePlan, to new: PanePlan) {
         let now = Date()
+        // Folding (into the book or laptop shape) already gets iOS's own fade over the whole window; a slide of
+        // ours on top of it shows up as a second movement after the fade, with the chat cut off at its edge.
+        // Unfolding gets no fade from iOS, so only that direction slides.
+        guard new.shape == .row else { return }
         guard old.kind != new.kind, frame.width > 0, now > buttonGlideUntil,
               now.timeIntervalSince(lastSlide) > 0.6, !UIAccessibility.isReduceMotionEnabled else { return }
         let before = paneRects(old), after = paneRects(new)
