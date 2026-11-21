@@ -63,7 +63,13 @@ private final class HingeView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        guard window != nil else { return }
+        guard let window else { return }
+        // The window and the hosting view are black or system-coloured by default. While iOS resizes the window
+        // during a fold, the panes are laid out a moment after it, and that default colour showed as a black bar
+        // along the edge. The app's own background colour there makes the catch-up invisible.
+        let fill = UIColor(RemoteTheme.background)
+        window.backgroundColor = fill
+        window.rootViewController?.view.backgroundColor = fill
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in PaneGlide.warmUp(self?.window) }
     }
 
