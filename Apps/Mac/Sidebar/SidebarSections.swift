@@ -48,11 +48,21 @@ struct SidebarSectionHeader<Accessory: View>: View {
 }
 
 /// Title above a group of sessions: a project folder, a state or a date range. Collapses on click; a
-/// project header also offers "new session here" on hover.
+/// project header also offers "new session here" on hover, and can be dragged up or down (or moved with its
+/// context menu) when sessions are grouped by project.
 struct SidebarGroupHeader: View {
     enum Icon {
         case symbol(String)
         case dot(Color)
+    }
+
+    /// Moving a folder: Move Up and Move Down (disabled at the ends) and dragging the header.
+    struct Move {
+        var canMoveUp: Bool
+        var canMoveDown: Bool
+        /// -1 moves up one place, 1 down.
+        var onMove: (Int) -> Void
+        var onDragStart: () -> Void
     }
 
     let icon: Icon
@@ -61,28 +71,32 @@ struct SidebarGroupHeader: View {
     let collapsed: Bool
     let onToggle: () -> Void
     var onNew: (() -> Void)?
+    var move: Move?
     @Environment(\.theme) private var theme
     @State private var hovering = false
     @State private var newHovering = false
 
     var body: some View {
         HStack(spacing: theme.z(6)) {
-            Button(action: onToggle) {
-                HStack(spacing: theme.z(6)) {
-                    leading
-                        .frame(width: theme.z(14))
-                    Text(title)
-                        .font(theme.font(size: 12, weight: .semibold))
-                        .foregroundStyle(theme.textSecondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
+            // Not a Button: a button keeps the mouse-down a drag needs. A tap toggles, like a button would.
+            HStack(spacing: theme.z(6)) {
+                leading
+                    .frame(width: theme.z(14))
+                Text(title)
+                    .font(theme.font(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onToggle)
             .help(help ?? title)
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isButton)
             .accessibilityLabel(collapsed ? "Show \(title)" : "Hide \(title)")
+            .accessibilityAction { onToggle() }
+            .modifier(FolderMoveModifier(dragText: help ?? title, move: move))
 
             if hovering, let onNew {
                 Button(action: onNew) {
@@ -125,11 +139,40 @@ struct SidebarGroupHeader: View {
     }
 }
 
+/// Dragging, Move Up and Move Down for a folder header; nothing when the folder cannot move.
+private struct FolderMoveModifier: ViewModifier {
+    /// What a drop into another app gets: the folder's path.
+    let dragText: String
+    let move: SidebarGroupHeader.Move?
+
+    func body(content: Content) -> some View {
+        if let move {
+            content
+                .onDrag {
+                    move.onDragStart()
+                    return NSItemProvider(object: dragText as NSString)
+                }
+                .contextMenu {
+                    Button("Move Up") { move.onMove(-1) }
+                        .disabled(!move.canMoveUp)
+                    Button("Move Down") { move.onMove(1) }
+                        .disabled(!move.canMoveDown)
+                }
+                .accessibilityAction(named: Text("Move Up")) { if move.canMoveUp { move.onMove(-1) } }
+                .accessibilityAction(named: Text("Move Down")) { if move.canMoveDown { move.onMove(1) } }
+        } else {
+            content
+        }
+    }
+}
+
 /// The "Group and sort" button on the Sessions header: group by project, state or date; sort by recent
-/// activity, name or created.
+/// activity, name or created; when grouping by project with folders dragged into an order, go back to the automatic one.
 struct GroupAndSortMenu: View {
     @Binding var grouping: String
     @Binding var sort: String
+    var hasManualFolderOrder = false
+    var onClearFolderOrder: () -> Void = {}
     @Environment(\.theme) private var theme
     @State private var hovering = false
 
@@ -152,6 +195,10 @@ struct GroupAndSortMenu: View {
                 }
                 .pickerStyle(.inline)
                 .labelsHidden()
+            }
+            if hasManualFolderOrder, grouping == SidebarGrouping.project.rawValue {
+                Divider()
+                Button("Clear Manual Folder Order", action: onClearFolderOrder)
             }
         } label: {
             Image(systemName: "line.3.horizontal.decrease")

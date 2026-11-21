@@ -23,6 +23,7 @@ extension SessionStore {
             let info = try await history.fork(primaryID, atMessageID: engineID)
             let session = upsertSession(info)
             session.permissionMode = source.permissionMode
+            recordStartedFrom(child: session.id, parent: primaryID)
             select(session.id)
             return session
         } catch {
