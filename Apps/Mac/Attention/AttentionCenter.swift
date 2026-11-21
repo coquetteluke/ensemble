@@ -121,7 +121,8 @@ final class AttentionCenter {
         let grouping = grouping ?? SidebarGrouping(rawValue: defaults.string(forKey: AttentionSettings.Key.sidebarGrouping) ?? "") ?? .project
         let sort = sort ?? SidebarSort(rawValue: defaults.string(forKey: AttentionSettings.Key.sidebarSort) ?? "") ?? .recent
         let entries = store.sidebarEntries(marks: marks).filter { $0.matches(search) }
-        return SidebarArrangement.arrange(entries, grouping: grouping, sort: sort)
+        return SidebarArrangement.arrange(entries, grouping: grouping, sort: sort, parents: store.sessionParents,
+                                          folderOrder: AttentionSettings.sidebarFolderOrder)
     }
 
     /// Sessions in the order the sidebar shows them (for Command-1 to 9).

@@ -61,6 +61,8 @@ public final class SessionStore {
     @ObservationIgnored var modeBeforePlan: [String: PermissionMode] = [:]
     /// Background shells, plan limit stops and auto-continue (`SessionStore+Background.swift`, `AutoContinue+Store.swift`).
     public let background = SessionBackgroundState()
+    /// Which session started which, for nesting in the sidebar (`SessionLinks.swift`).
+    public let sessionLinks = SessionLinks()
 
     @ObservationIgnored var byID: [String: SessionModel] = [:]
     @ObservationIgnored private(set) var eventTask: Task<Void, Never>?
@@ -115,6 +117,7 @@ public final class SessionStore {
         self.sideQuestionRecordURL = Self.defaultSideQuestionRecordURL(isPreview: engine is PreviewEngine)
         worktrees.configure(fileURL: SessionWorktrees.defaultURL(isPreview: engine is PreviewEngine))
         threadLinks.configure(fileURL: SessionThreadLinks.defaultURL(isPreview: engine is PreviewEngine))
+        sessionLinks.configure(fileURL: SessionLinks.defaultURL(isPreview: engine is PreviewEngine))
         syncRouterThreadLinks()
     }
 
@@ -202,6 +205,7 @@ public final class SessionStore {
         } catch {
             lastError = "Could not load sessions: \(error.localizedDescription)"
         }
+        await refreshImportedSessionLinks()
     }
 
     /// Fills the store synchronously (previews and snapshot rendering).
@@ -1263,6 +1267,7 @@ public final class SessionStore {
         byID[sessionID] = nil
         sessions.removeAll { $0.id == sessionID }
         sessionAgentIDs[sessionID] = nil
+        if remember { sessionLinks.remove(sessionID) }
     }
 
     private func selectNeighbour(of sessionID: String) {

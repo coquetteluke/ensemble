@@ -13,6 +13,8 @@ enum AttentionSettings {
         static let dockBadge = "attention.dockBadge"
         static let sidebarGrouping = "sidebar.grouping"
         static let sidebarSort = "sidebar.sort"
+        /// The user's own folder order when grouping by project: an array of folder paths (`SidebarFolderOrder`).
+        static let sidebarFolderOrder = "sidebar.folderOrder"
     }
 
     enum Default {
@@ -32,6 +34,18 @@ enum AttentionSettings {
     static var finishedSound: Bool { bool(Key.finishedSound, Default.finishedSound) }
     static var menuBarIcon: Bool { bool(Key.menuBarIcon, Default.menuBarIcon) }
     static var dockBadge: Bool { bool(Key.dockBadge, Default.dockBadge) }
+
+    /// The saved folder order (empty when the order is automatic).
+    static var sidebarFolderOrder: [String] {
+        get { UserDefaults.standard.stringArray(forKey: Key.sidebarFolderOrder) ?? [] }
+        set {
+            if newValue.isEmpty {
+                UserDefaults.standard.removeObject(forKey: Key.sidebarFolderOrder)
+            } else {
+                UserDefaults.standard.set(newValue, forKey: Key.sidebarFolderOrder)
+            }
+        }
+    }
 
     private static func bool(_ key: String, _ fallback: Bool) -> Bool {
         UserDefaults.standard.object(forKey: key) as? Bool ?? fallback
