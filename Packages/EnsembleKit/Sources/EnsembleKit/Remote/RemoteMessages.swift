@@ -52,11 +52,14 @@ public struct RemoteSendMessage: Codable, Hashable, Sendable {
     public var text: String
     /// Agent name to address in a room (`@agent`). `nil` talks to the whole room or the session's agent.
     public var agent: String?
+    /// Upload ids previously transferred with `attachmentUpload`. Optional for compatibility with older peers.
+    public var attachmentIDs: [String]?
 
-    public init(target: RemoteTarget, text: String, agent: String? = nil) {
+    public init(target: RemoteTarget, text: String, agent: String? = nil, attachmentIDs: [String]? = nil) {
         self.target = target
         self.text = text
         self.agent = agent
+        self.attachmentIDs = attachmentIDs
     }
 }
 
@@ -165,6 +168,8 @@ public enum RemoteClientMessage: Hashable, Sendable {
     case fontFile(RemoteFontFileRequest)
     /// Reply: `.ack`. One piece of an added font file from the iPhone, in order from offset 0.
     case fontUpload(RemoteFontChunk)
+    /// One piece of a photo or file attached to a message. Reply: `.ack`.
+    case attachmentUpload(RemoteAttachmentChunk)
 
     public var typeName: String {
         switch self {
@@ -192,6 +197,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .fontSync: "fontSync"
         case .fontFile: "fontFile"
         case .fontUpload: "fontUpload"
+        case .attachmentUpload: "attachmentUpload"
         }
     }
 
@@ -218,6 +224,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .fontSync(let p): try c.encode(p, forKey: .data)
         case .fontFile(let p): try c.encode(p, forKey: .data)
         case .fontUpload(let p): try c.encode(p, forKey: .data)
+        case .attachmentUpload(let p): try c.encode(p, forKey: .data)
         }
     }
 
@@ -248,6 +255,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case "fontSync": return .fontSync(try c.decode(RemoteFontSettings.self, forKey: .data))
         case "fontFile": return .fontFile(try c.decode(RemoteFontFileRequest.self, forKey: .data))
         case "fontUpload": return .fontUpload(try c.decode(RemoteFontChunk.self, forKey: .data))
+        case "attachmentUpload": return .attachmentUpload(try c.decode(RemoteAttachmentChunk.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)
         }
     }

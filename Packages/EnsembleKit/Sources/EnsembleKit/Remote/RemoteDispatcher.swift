@@ -18,9 +18,10 @@ public enum RemoteDispatcher {
                 return .ack
             case .sendMessage(let m):
                 let text = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !text.isEmpty else { throw RemoteError(.badRequest, "The message is empty") }
+                let attachmentIDs = m.attachmentIDs ?? []
+                guard !text.isEmpty || !attachmentIDs.isEmpty else { throw RemoteError(.badRequest, "The message is empty") }
                 let agent = m.agent?.trimmingCharacters(in: CharacterSet(charactersIn: "@ ")).remoteNilIfEmpty
-                try await host.sendMessage(text, to: m.target, agent: agent)
+                try await host.sendMessage(text, to: m.target, agent: agent, attachmentIDs: attachmentIDs)
                 return .ack
             case .replyPermission(let r):
                 try await host.replyPermission(sessionID: r.sessionID, requestID: r.requestID, decision: r.decision)
@@ -71,6 +72,9 @@ public enum RemoteDispatcher {
                 return .fontChunk(try await host.fontChunk(request))
             case .fontUpload(let chunk):
                 try await host.receiveFontChunk(chunk)
+                return .ack
+            case .attachmentUpload(let chunk):
+                try await host.receiveAttachmentChunk(chunk)
                 return .ack
             }
         } catch let error as RemoteError {

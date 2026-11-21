@@ -51,6 +51,10 @@ public protocol RemoteHost: AnyObject, Sendable {
     func receiveFontChunk(_ chunk: RemoteFontChunk) async throws
     /// The Mac's fonts after every change. The server sends them to the iPhones that sync fonts.
     func fontSettingsUpdates() async -> AsyncStream<RemoteFontSettings>
+    /// One piece of a photo or file uploaded from a phone or iPad.
+    func receiveAttachmentChunk(_ chunk: RemoteAttachmentChunk) async throws
+    /// Sends a user message with optional previously uploaded attachment ids.
+    func sendMessage(_ text: String, to target: RemoteTarget, agent: String?, attachmentIDs: [String]) async throws
 }
 
 public extension RemoteHost {
@@ -109,6 +113,17 @@ public extension RemoteHost {
     func fontSettingsUpdates() async -> AsyncStream<RemoteFontSettings> {
         AsyncStream { $0.finish() }
     }
+
+    func receiveAttachmentChunk(_ chunk: RemoteAttachmentChunk) async throws {
+        throw RemoteError(.unknownMessage, "Update Ensemble on your Mac to send photos and files.")
+    }
+
+    func sendMessage(_ text: String, to target: RemoteTarget, agent: String?, attachmentIDs: [String]) async throws {
+        guard attachmentIDs.isEmpty else {
+            throw RemoteError(.unknownMessage, "Update Ensemble on your Mac to send photos and files.")
+        }
+        try await sendMessage(text, to: target, agent: agent)
+    }
 }
 
 /// An action the phone asked for, as `DemoRemoteHost` records it.
@@ -148,6 +163,7 @@ public actor DemoRemoteHost: RemoteHost {
     private var continuations: [UUID: AsyncStream<RemoteUpdate>.Continuation] = [:]
     private var stagedModels: [String: (providerID: String, modelID: String, name: String)] = [:]
     private var counter = 0
+    private var demoAttachments: [String: (name: String, kind: MessageAttachment.Kind, totalBytes: Int, receivedBytes: Int)] = [:]
 
     public init(data: RemoteDemoData = .sample()) {
         sessions = data.sessions
@@ -187,8 +203,41 @@ public actor DemoRemoteHost: RemoteHost {
         return stream
     }
 
+    public func receiveAttachmentChunk(_ chunk: RemoteAttachmentChunk) async throws {
+        guard RemoteAttachments.isValidUploadID(chunk.uploadID),
+              chunk.totalBytes > 0, chunk.totalBytes <= RemoteAttachments.maxFileBytes,
+              !chunk.data.isEmpty, chunk.data.count <= RemoteAttachments.chunkSize,
+              chunk.offset >= 0, chunk.offset + chunk.data.count <= chunk.totalBytes else {
+            throw RemoteError(.badRequest, "Invalid attachment chunk.")
+        }
+        if chunk.offset == 0 {
+            let safeName = RemoteAttachments.sanitizeFilename(chunk.name, kind: chunk.kind)
+            demoAttachments[chunk.uploadID] = (safeName, chunk.kind, chunk.totalBytes, chunk.data.count)
+        } else {
+            guard var existing = demoAttachments[chunk.uploadID],
+                  existing.totalBytes == chunk.totalBytes,
+                  chunk.offset == existing.receivedBytes else {
+                throw RemoteError(.badRequest, "Attachment chunk out of order.")
+            }
+            existing.receivedBytes += chunk.data.count
+            demoAttachments[chunk.uploadID] = existing
+        }
+    }
+
     public func sendMessage(_ text: String, to target: RemoteTarget, agent: String?) async throws {
+        try await sendMessage(text, to: target, agent: agent, attachmentIDs: [])
+    }
+
+    public func sendMessage(_ text: String, to target: RemoteTarget, agent: String?, attachmentIDs: [String]) async throws {
         recordedActions.append(.sendMessage(text: text, target: target, agent: agent))
+        var claimed: [MessageAttachment] = []
+        for id in attachmentIDs {
+            guard let item = demoAttachments[id], item.receivedBytes == item.totalBytes else {
+                throw RemoteError(.badRequest, "Attachment upload was not found or is incomplete.")
+            }
+            claimed.append(MessageAttachment(kind: item.kind, name: item.name))
+        }
+        for id in attachmentIDs { demoAttachments.removeValue(forKey: id) }
         let sessionID: String
         switch target {
         case .session(let id): sessionID = id
@@ -215,9 +264,14 @@ public actor DemoRemoteHost: RemoteHost {
             transcripts[sessionID]?.items.append(notice)
             emit(.transcriptUpsert(sessionID: sessionID, item: notice))
         }
-        let shown = agent.map { "@\($0) \(text)" } ?? text
-        let item = TranscriptItem.user(id: nextID("user"), text: shown, date: Date())
+        let baseText = text.isEmpty && !claimed.isEmpty ? MessageAttachments.summary(claimed) : text
+        let shown = agent.map { "@\($0) \(baseText)" } ?? baseText
+        let itemID = nextID("user")
+        let item = TranscriptItem.user(id: itemID, text: shown, date: Date())
         transcripts[sessionID]?.items.append(item)
+        if !claimed.isEmpty {
+            transcripts[sessionID]?.attachments[itemID] = claimed
+        }
         emit(.transcriptUpsert(sessionID: sessionID, item: item))
         setActivity(.working, sessionID: sessionID)
         if let t = transcripts[sessionID] {

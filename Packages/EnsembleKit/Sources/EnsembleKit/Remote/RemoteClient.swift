@@ -907,8 +907,40 @@ public final class RemoteClient {
         Task { _ = try? await request(.closeSession(sessionID: id)) }
     }
 
-    public func send(_ text: String, to target: RemoteTarget, agent: String? = nil) async throws {
-        try await request(.sendMessage(RemoteSendMessage(target: target, text: text, agent: agent)))
+    public func send(_ text: String, to target: RemoteTarget, agent: String? = nil, attachmentIDs: [String] = []) async throws {
+        try await request(.sendMessage(RemoteSendMessage(
+            target: target,
+            text: text,
+            agent: agent,
+            attachmentIDs: attachmentIDs.isEmpty ? nil : attachmentIDs
+        )))
+    }
+
+    /// Uploads a photo or file in chunks so it can be attached to the next `send(...)` call.
+    public func uploadAttachment(name: String, kind: MessageAttachment.Kind, data: Data) async throws -> String {
+        guard !data.isEmpty else {
+            throw RemoteError(.badRequest, "That file is empty.")
+        }
+        guard data.count <= RemoteAttachments.maxFileBytes else {
+            throw RemoteError(.badRequest, "\(name) is larger than the 15 MB limit.")
+        }
+        let uploadID = UUID().uuidString.lowercased()
+        let safeName = RemoteAttachments.sanitizeFilename(name, kind: kind)
+        var offset = 0
+        while offset < data.count {
+            let end = min(offset + RemoteAttachments.chunkSize, data.count)
+            let chunk = RemoteAttachmentChunk(
+                uploadID: uploadID,
+                name: safeName,
+                kind: kind,
+                offset: offset,
+                totalBytes: data.count,
+                data: data.subdata(in: offset..<end)
+            )
+            _ = try await request(.attachmentUpload(chunk))
+            offset = end
+        }
+        return uploadID
     }
 
     public func reply(to permission: PermissionRequest, decision: PermissionDecision) async throws {

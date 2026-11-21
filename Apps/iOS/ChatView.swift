@@ -1,5 +1,8 @@
 import EnsembleKit
+import PhotosUI
 import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
 
 /// One session or room chat: transcript, floating composer card, permission mode, and room controls.
 struct ChatView: View {
@@ -23,6 +26,10 @@ struct ChatView: View {
     @State private var showMembers = false
     @State private var showModelPicker = false
     @State private var showDiffSheet = false
+    @State private var showPhotoPicker = false
+    @State private var showFileImporter = false
+    @State private var showCamera = false
+    @State private var pickedPhotos: [PhotosPickerItem] = []
     @State private var showJumpToLatest = false
     @State private var copiedTranscript = false
     @State private var showFind = false
@@ -108,6 +115,10 @@ struct ChatView: View {
             get: { model.drafts[sessionID] ?? "" },
             set: { model.drafts[sessionID] = $0.isEmpty ? nil : $0 }
         )
+    }
+
+    private var stagedAttachments: [StagedRemoteAttachment] {
+        model.pendingAttachments[sessionID] ?? []
     }
 
     private var addressee: Binding<String?> {
@@ -196,6 +207,7 @@ struct ChatView: View {
         RemoteComposerCard(
             draft: draft,
             addressee: addressee,
+            attachments: stagedAttachments,
             focused: $composerFocused,
             room: room,
             mode: currentMode,
@@ -229,6 +241,11 @@ struct ChatView: View {
                 stopPauseHaptic += 1
                 act { try await client.interrupt(target) }
             },
+            onPickPhotos: { showPhotoPicker = true },
+            onTakePhoto: UIImagePickerController.isSourceTypeAvailable(.camera) ? { showCamera = true } : nil,
+            onPickFiles: { showFileImporter = true },
+            onRemoveAttachment: removeAttachment,
+            onDropURLs: importFileURLs,
             onSend: send,
             minLines: minLines
         )
@@ -560,6 +577,45 @@ struct ChatView: View {
             RemoteDiffSheet(client: client, sessionID: sessionID, title: displayTitle)
                 .remoteThemeEnvironment()
         }
+        .photosPicker(
+            isPresented: $showPhotoPicker,
+            selection: $pickedPhotos,
+            maxSelectionCount: max(1, RemoteAttachments.maxAttachmentsPerMessage - stagedAttachments.count),
+            matching: .images
+        )
+        .onChange(of: pickedPhotos) { _, items in
+            guard !items.isEmpty else { return }
+            let selected = items
+            pickedPhotos = []
+            Task {
+                let result = await RemoteAttachmentLoader.loadPhotosPickerItems(selected)
+                appendAttachments(result.loaded)
+                if let err = result.firstError { actionError = err }
+            }
+        }
+        .fileImporter(
+            isPresented: $showFileImporter,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case .success(let urls):
+                importFileURLs(urls)
+            case .failure(let error):
+                actionError = error.localizedDescription
+            }
+        }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraPickerSheet { image in
+                do {
+                    let attachment = try RemoteAttachmentLoader.prepareImage(image, suggestedName: "photo.jpg")
+                    appendAttachments([attachment])
+                } catch {
+                    actionError = error.localizedDescription
+                }
+            }
+            .ignoresSafeArea()
+        }
         .navigationTitle(displayTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbar }
@@ -853,17 +909,55 @@ struct ChatView: View {
         act { try await client.controlRoom(id, action: action) }
     }
 
+    private func appendAttachments(_ items: [StagedRemoteAttachment]) {
+        guard !items.isEmpty else { return }
+        var current = model.pendingAttachments[sessionID] ?? []
+        let roomLeft = max(0, RemoteAttachments.maxAttachmentsPerMessage - current.count)
+        if items.count > roomLeft {
+            actionError = RemoteAttachmentError.tooMany.localizedDescription
+        }
+        current.append(contentsOf: items.prefix(roomLeft))
+        model.pendingAttachments[sessionID] = current.isEmpty ? nil : current
+    }
+
+    private func removeAttachment(_ id: UUID) {
+        var current = model.pendingAttachments[sessionID] ?? []
+        current.removeAll { $0.id == id }
+        model.pendingAttachments[sessionID] = current.isEmpty ? nil : current
+    }
+
+    private func importFileURLs(_ urls: [URL]) {
+        var loaded: [StagedRemoteAttachment] = []
+        var firstError: String?
+        for url in urls {
+            do {
+                loaded.append(try RemoteAttachmentLoader.prepareFile(url: url))
+            } catch {
+                if firstError == nil { firstError = error.localizedDescription }
+            }
+        }
+        appendAttachments(loaded)
+        if let firstError { actionError = firstError }
+    }
+
     private func send() {
         let text = (model.drafts[sessionID] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let attachments = model.pendingAttachments[sessionID] ?? []
+        guard !text.isEmpty || !attachments.isEmpty else { return }
         sendHaptic += 1
         sending = true
         let to = target
         let agent = model.addressees[sessionID]
         Task {
             do {
-                try await client.send(text, to: to, agent: agent)
+                var uploadIDs: [String] = []
+                for item in attachments {
+                    let id = try await client.uploadAttachment(name: item.name, kind: item.kind, data: item.data)
+                    uploadIDs.append(id)
+                }
+                try await client.send(text, to: to, agent: agent, attachmentIDs: uploadIDs)
                 model.drafts[sessionID] = nil
+                model.pendingAttachments[sessionID] = nil
             } catch {
                 actionError = error.localizedDescription
             }
@@ -952,6 +1046,7 @@ private struct EmptySessionView: View {
 private struct RemoteComposerCard: View {
     @Binding var draft: String
     @Binding var addressee: String?
+    let attachments: [StagedRemoteAttachment]
     var focused: FocusState<Bool>.Binding
     let room: RemoteRoom?
     let mode: PermissionMode?
@@ -966,6 +1061,11 @@ private struct RemoteComposerCard: View {
     let onClearPendingModel: (() -> Void)?
     let onControlRoom: (RemoteRoomAction) -> Void
     let onInterrupt: () -> Void
+    let onPickPhotos: () -> Void
+    let onTakePhoto: (() -> Void)?
+    let onPickFiles: () -> Void
+    let onRemoveAttachment: (UUID) -> Void
+    let onDropURLs: ([URL]) -> Void
     let onSend: () -> Void
     /// Lines the message field shows before it has text (the laptop fold layout gives it more room).
     var minLines = 1
@@ -974,6 +1074,10 @@ private struct RemoteComposerCard: View {
 
     private var trimmedEmpty: Bool {
         draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var hasPayload: Bool {
+        !trimmedEmpty || !attachments.isEmpty
     }
 
     private var placeholder: String {
@@ -1018,6 +1122,14 @@ private struct RemoteComposerCard: View {
                     .overlay(Capsule().strokeBorder(RemoteTheme.accent.opacity(0.32), lineWidth: 0.75))
                 }
 
+                if !attachments.isEmpty {
+                    StagedAttachmentStrip(
+                        attachments: attachments,
+                        disabled: sending,
+                        onRemove: onRemoveAttachment
+                    )
+                }
+
                 TextField(placeholder, text: $draft, axis: .vertical)
                     .font(RemoteTheme.font(size: 15, relativeTo: .body))
                     .lineLimit(minLines...max(6, minLines + 4))
@@ -1026,6 +1138,7 @@ private struct RemoteComposerCard: View {
                     .padding(.horizontal, 4)
 
                 HStack(spacing: 8) {
+                    attachMenuButton
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             if let room {
@@ -1079,6 +1192,11 @@ private struct RemoteComposerCard: View {
                 radius: 12,
                 y: 4
             )
+            .dropDestination(for: URL.self) { items, _ in
+                guard connected, !sending, !items.isEmpty else { return false }
+                onDropURLs(items)
+                return true
+            }
         }
         .frame(maxWidth: 740)
         .padding(.horizontal, 12)
@@ -1099,9 +1217,42 @@ private struct RemoteComposerCard: View {
         )
     }
 
+    private var attachMenuButton: some View {
+        Menu {
+            Button {
+                onPickPhotos()
+            } label: {
+                Label("Photo Library", systemImage: "photo.on.rectangle")
+            }
+            if let onTakePhoto {
+                Button {
+                    onTakePhoto()
+                } label: {
+                    Label("Take Photo", systemImage: "camera")
+                }
+            }
+            Button {
+                onPickFiles()
+            } label: {
+                Label("Choose File", systemImage: "doc")
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(RemoteTheme.font(size: 14, weight: .semibold, relativeTo: .subheadline))
+                .foregroundStyle(RemoteTheme.secondaryText)
+                .frame(width: 32, height: 32)
+                .background(RemoteTheme.cardRaised, in: Circle())
+                .overlay(Circle().strokeBorder(RemoteTheme.border, lineWidth: 0.75))
+                .frame(minWidth: 36, minHeight: RemoteTheme.minTapTarget)
+                .contentShape(Rectangle())
+        }
+        .disabled(!connected || sending || attachments.count >= RemoteAttachments.maxAttachmentsPerMessage)
+        .accessibilityLabel("Attach photo or file")
+    }
+
     @ViewBuilder
     private var actionCircleButton: some View {
-        if activity == .working && trimmedEmpty {
+        if activity == .working && !hasPayload {
             Button(action: onInterrupt) {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
                     .fill(RemoteTheme.background)
@@ -1114,10 +1265,18 @@ private struct RemoteComposerCard: View {
             .buttonStyle(.plain)
             .accessibilityLabel(room == nil ? "Stop" : "Pause")
         } else {
-            let canSend = !trimmedEmpty && !sending && connected
+            let canSend = hasPayload && !sending && connected
             Button(action: onSend) {
-                Image(systemName: "arrow.up")
-                    .font(RemoteTheme.font(size: 15, weight: .bold, relativeTo: .body))
+                Group {
+                    if sending {
+                        ProgressView()
+                            .tint(RemoteTheme.onAccent)
+                            .scaleEffect(0.8)
+                    } else {
+                        Image(systemName: "arrow.up")
+                            .font(RemoteTheme.font(size: 15, weight: .bold, relativeTo: .body))
+                    }
+                }
                     .foregroundStyle(canSend ? RemoteTheme.onAccent : RemoteTheme.tertiaryText)
                     .frame(width: 36, height: 36)
                     .background(Circle().fill(canSend ? RemoteTheme.accent : RemoteTheme.track))

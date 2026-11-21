@@ -44,6 +44,8 @@ final class RemoteAppModel {
     var roomsPath: [ChatRoute] = []
     /// Unsent composer text per chat.
     var drafts: [String: String] = [:]
+    /// Unsent photos and files per chat, kept across Duo fold/unfold and rotation.
+    var pendingAttachments: [String: [StagedRemoteAttachment]] = [:]
     /// `@agent` picked in the room composer, per chat.
     var addressees: [String: String] = [:]
     /// Transcript row at the bottom of the screen, per chat, so the position survives a layout change.

@@ -106,7 +106,7 @@ targets:
         INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
-        INFOPLIST_KEY_NSCameraUsageDescription: "Scan the pairing code shown on your Mac."
+        INFOPLIST_KEY_NSCameraUsageDescription: "Scan the pairing code shown on your Mac or take photos to attach to messages."
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: "Connect to Ensemble on your Mac."
         TARGETED_DEVICE_FAMILY: "1,2"
         CODE_SIGN_STYLE: Automatic

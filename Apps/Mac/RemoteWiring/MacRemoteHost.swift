@@ -35,6 +35,7 @@ final class MacRemoteHost: RemoteHost {
     private var updateContinuations: [UUID: AsyncStream<RemoteUpdate>.Continuation] = [:]
     /// Tracks reasoning item ids already announced via `.transcriptUpsert`, keyed by primary session id.
     private var seenReasoningItems: [String: Set<String>] = [:]
+    private let attachmentInbox = RemoteAttachmentInbox()
 
     init(store: SessionStore, rooms: RoomsController? = nil) {
         self.store = store
@@ -523,21 +524,39 @@ final class MacRemoteHost: RemoteHost {
         return engine
     }
 
+    func receiveAttachmentChunk(_ chunk: RemoteAttachmentChunk) async throws {
+        try await attachmentInbox.receive(chunk)
+    }
+
     func sendMessage(_ text: String, to target: RemoteTarget, agent: String?) async throws {
+        try await sendMessage(text, to: target, agent: agent, attachmentIDs: [])
+    }
+
+    func sendMessage(_ text: String, to target: RemoteTarget, agent: String?, attachmentIDs: [String]) async throws {
+        let staged = try await attachmentInbox.claim(attachmentIDs)
+        let urls = staged.map(\.url)
         switch target {
         case .room(let roomID):
-            try await sendToRoom(roomID, text: text, agent: agent)
+            let roomText = roomMessageText(text, files: urls)
+            try await sendToRoom(roomID, text: roomText, agent: agent)
         case .session(let id):
             // A phone may address a room by its Hub row id.
             if let mapped = remoteRoom(sessionID: id) {
-                try await sendToRoom(mapped.room.id, text: text, agent: agent)
+                let roomText = roomMessageText(text, files: urls)
+                try await sendToRoom(mapped.room.id, text: roomText, agent: agent)
                 return
             }
             guard let s = session(id) else { throw MacRemoteHostError.sessionNotFound }
-            await store.send(text, to: s.id)
+            await store.send(text, files: urls, to: s.id)
             broadcast(.transcriptUpdated(transcript: remoteTranscript(for: s)))
             broadcast(.sessionUpserted(session: summary(s)))
         }
+    }
+
+    private func roomMessageText(_ text: String, files: [URL]) -> String {
+        guard !files.isEmpty else { return text }
+        let listing = "Attached files (read them with your tools):\n" + files.map(\.path).joined(separator: "\n")
+        return text.isEmpty ? listing : "\(text)\n\n\(listing)"
     }
 
     /// The user's words to the whole room, or to one agent by name. A name the room does not have is refused rather
