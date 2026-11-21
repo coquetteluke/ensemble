@@ -22,10 +22,25 @@ private struct FoldLayoutKey: EnvironmentKey {
     static let defaultValue = FoldLayout.flat
 }
 
+/// Weak reference to the scene's own UIWindow so multi-window iPad scenes never read another window's bounds.
+final class HostingWindowBox: @unchecked Sendable {
+    weak var window: UIWindow?
+    init(_ window: UIWindow? = nil) { self.window = window }
+}
+
+private struct HostingWindowKey: EnvironmentKey {
+    static let defaultValue = HostingWindowBox()
+}
+
 extension EnvironmentValues {
     var foldLayout: FoldLayout {
         get { self[FoldLayoutKey.self] }
         set { self[FoldLayoutKey.self] = newValue }
+    }
+
+    var hostingWindow: UIWindow? {
+        get { self[HostingWindowKey.self].window }
+        set { self[HostingWindowKey.self] = HostingWindowBox(newValue) }
     }
 }
 
@@ -41,6 +56,7 @@ enum FoldMetrics {
 /// physical screen, mapped into the window.
 private final class HingeView: UIView {
     var onChange: ((FoldLayout) -> Void)?
+    var onWindowChange: ((UIWindow?) -> Void)?
     private var partlyOpen = false
     private var last: FoldLayout = .flat
     private var lastWindowSize: CGSize = .zero
@@ -63,6 +79,7 @@ private final class HingeView: UIView {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
+        onWindowChange?(window)
         guard let window else { return }
         // The window and the hosting view are black or system-coloured by default. While iOS resizes the window
         // during a fold, the panes are laid out a moment after it, and that default colour showed as a black bar
@@ -141,8 +158,8 @@ enum PaneGlide {
     ///   - old: where each pane is now, in window coordinates. Together they cover the window.
     ///   - new: where each pane will be.
     ///   - colors: each pane's background, shown where its picture does not reach during the move.
-    static func run(from old: [PaneRole: CGRect], to new: [PaneRole: CGRect], colors: [PaneRole: UIColor]) {
-        guard old != new, let window = keyWindow, let root = window.rootViewController?.view else { return }
+    static func run(in window: UIWindow?, from old: [PaneRole: CGRect], to new: [PaneRole: CGRect], colors: [PaneRole: UIColor]) {
+        guard old != new, let window, let root = window.rootViewController?.view else { return }
         cleanup?()
         cleanup = nil
         if UIAccessibility.isReduceMotionEnabled {
@@ -263,11 +280,6 @@ enum PaneGlide {
         }
     }
 
-    private static var keyWindow: UIWindow? {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        return scenes.flatMap(\.windows).first(where: \.isKeyWindow)
-    }
-
     /// The first picture of a window costs several frames. Taking one ahead of time moves that cost to launch.
     static func warmUp(_ window: UIWindow?) {
         guard let root = window?.rootViewController?.view else { return }
@@ -277,15 +289,22 @@ enum PaneGlide {
 
 private struct HingeReader: UIViewRepresentable {
     @Binding var layout: FoldLayout
+    @Binding var windowBox: HostingWindowBox
 
     func makeUIView(context: Context) -> HingeView {
         let view = HingeView()
         let binding = $layout
+        let windowBinding = $windowBox
         view.onChange = { layout in
             // No SwiftUI animation: the real layout lands in one step under the gliding pictures of the panes.
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) { binding.wrappedValue = layout }
+        }
+        view.onWindowChange = { window in
+            DispatchQueue.main.async {
+                windowBinding.wrappedValue = HostingWindowBox(window)
+            }
         }
         return view
     }
@@ -293,16 +312,18 @@ private struct HingeReader: UIViewRepresentable {
     func updateUIView(_ uiView: HingeView, context: Context) {}
 }
 
-/// Reads the hinge and hands the fold layout to everything below.
+/// Reads the hinge and hands the fold layout and owning window to everything below.
 struct FoldAware<Content: View>: View {
     @ViewBuilder var content: Content
     @State private var layout: FoldLayout = .flat
+    @State private var windowBox = HostingWindowBox()
 
     var body: some View {
         content
             .environment(\.foldLayout, layout)
+            .environment(\.hostingWindow, windowBox.window)
             .background {
-                HingeReader(layout: $layout)
+                HingeReader(layout: $layout, windowBox: $windowBox)
                     .ignoresSafeArea()
                     .accessibilityHidden(true)
             }

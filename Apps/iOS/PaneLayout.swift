@@ -40,10 +40,20 @@ struct PanePlan: Equatable {
 
     /// The narrowest the chat may get before a side pane has to give way.
     static let chatMinWidth: CGFloat = 340
+    /// Minimum chat column width before showing both the sidebar and details panels at once (iPad Pro 13-inch).
+    static let threePaneChatMinWidth: CGFloat = 440
 
-    /// Width of the list or the details panel as a column.
+    /// Width of the list or the details panel when shown as the only side column.
     static func paneWidth(in width: CGFloat) -> CGFloat {
-        min(340, max(300, (width * 0.4).rounded()))
+        min(320, max(280, (width * 0.36).rounded()))
+    }
+
+    /// Column widths when both side panes fit beside the chat (iPad Pro 13-inch portrait and landscape).
+    static func threePaneWidths(in width: CGFloat) -> (sidebar: CGFloat, details: CGFloat) {
+        if width >= 1200 {
+            return (sidebar: 300, details: 320)
+        }
+        return (sidebar: 280, details: 280)
     }
 
     /// - Parameters:
@@ -52,7 +62,15 @@ struct PanePlan: Equatable {
     ///   - sidebarWanted: the session list is switched on.
     ///   - detailsWanted: the details panel is switched on.
     ///   - hasChat: a chat is open (the details panel describes one chat, so it needs one).
-    static func resolve(size: CGSize, fold: FoldLayout, sidebarWanted: Bool, detailsWanted: Bool, hasChat: Bool) -> PanePlan {
+    ///   - verticalCompact: true on landscape iPhones (such as iPhone 16 Pro Max), where height is tight.
+    static func resolve(
+        size: CGSize,
+        fold: FoldLayout,
+        sidebarWanted: Bool,
+        detailsWanted: Bool,
+        hasChat: Bool,
+        verticalCompact: Bool = false
+    ) -> PanePlan {
         let details = detailsWanted && hasChat
         switch fold {
         case .laptop(let creaseY) where creaseY > 120 && creaseY < size.height - 120:
@@ -65,8 +83,16 @@ struct PanePlan: Equatable {
             }
             return PanePlan(shape: .book(creaseX: creaseX), sidebarWidth: creaseX)
         default:
-            let pane = paneWidth(in: size.width)
-            let fitsBoth = size.width - pane * 2 >= chatMinWidth
+            let three = threePaneWidths(in: size.width)
+            let fitsBoth = !verticalCompact && size.width - three.sidebar - three.details >= threePaneChatMinWidth
+            if fitsBoth && sidebarWanted && details {
+                return PanePlan(shape: .row,
+                                sidebarWidth: three.sidebar,
+                                detailsWidth: three.details,
+                                fitsBoth: true)
+            }
+            let base = paneWidth(in: size.width)
+            let pane = size.width > 0 ? min(base, max(240, size.width - chatMinWidth)) : base
             return PanePlan(shape: .row,
                             sidebarWidth: sidebarWanted && (fitsBoth || !details) ? pane : nil,
                             detailsWidth: details ? pane : nil,
@@ -109,6 +135,7 @@ struct SidebarToggleButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .keyboardShortcut("s", modifiers: [.command, .control])
         .accessibilityLabel(controls.sidebarShown ? "Hide session list" : "Show session list")
     }
 }
@@ -127,6 +154,7 @@ struct DetailsToggleButton: View {
                 .frame(minWidth: 36, minHeight: 36)
                 .contentShape(Rectangle())
         }
+        .keyboardShortcut("i", modifiers: [.command, .option])
         .accessibilityLabel(controls.detailsShown ? "Hide details" : "Show details")
     }
 }

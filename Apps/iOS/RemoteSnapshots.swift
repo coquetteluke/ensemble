@@ -27,48 +27,72 @@ enum RemoteSnapshots {
             try? await Task.sleep(for: .milliseconds(50))
         }
 
-        let cases: [(name: String, width: CGFloat, height: CGFloat, setup: @MainActor () async -> Void)] = [
-            ("duo-split-hub", 951, 669, {
+        struct CaseSpec {
+            let name: String
+            let width: CGFloat
+            let height: CGFloat
+            let hClass: UserInterfaceSizeClass
+            let vClass: UserInterfaceSizeClass
+            let details: Bool
+            let setup: @MainActor () async -> Void
+        }
+
+        let openFixChat: @MainActor () async -> Void = {
+            model.showList(.hub)
+            model.open(ChatRoute(sessionID: RemoteDemoData.IDs.fixSession, title: "Fix login redirect loop"), from: .hub)
+            try? await client.open(sessionID: RemoteDemoData.IDs.fixSession)
+        }
+
+        let cases: [CaseSpec] = [
+            CaseSpec(name: "duo-split-hub", width: 951, height: 669, hClass: .regular, vClass: .regular, details: false) {
                 model.hubPath = []
                 model.roomsPath = []
                 model.showList(.hub)
                 model.tab = .hub
-            }),
-            ("duo-split-chat", 951, 669, {
-                model.showList(.hub)
-                model.open(ChatRoute(sessionID: RemoteDemoData.IDs.fixSession, title: "Fix login redirect loop"), from: .hub)
-                try? await client.open(sessionID: RemoteDemoData.IDs.fixSession)
-            }),
-            ("duo-split-roomchat", 951, 669, {
+            },
+            CaseSpec(name: "duo-split-chat", width: 951, height: 669, hClass: .regular, vClass: .regular, details: false, setup: openFixChat),
+            CaseSpec(name: "duo-split-roomchat", width: 951, height: 669, hClass: .regular, vClass: .regular, details: false) {
                 model.showList(.rooms)
                 model.open(ChatRoute(sessionID: RemoteDemoData.IDs.roomSession, title: "Design the sync API"), from: .rooms)
                 try? await client.open(sessionID: RemoteDemoData.IDs.roomSession)
-            }),
-            ("duo-split-usage", 951, 669, {
+            },
+            CaseSpec(name: "duo-split-usage", width: 951, height: 669, hClass: .regular, vClass: .regular, details: false) {
                 model.showList(.hub)
                 model.tab = .usage
-            }),
-            ("duo-split-settings", 951, 669, {
+            },
+            CaseSpec(name: "duo-split-settings", width: 951, height: 669, hClass: .regular, vClass: .regular, details: false) {
                 model.showList(.hub)
                 model.tab = .settings
-            }),
-            ("duo-split-portrait-chat", 669, 951, {
-                model.showList(.hub)
-                model.open(ChatRoute(sessionID: RemoteDemoData.IDs.fixSession, title: "Fix login redirect loop"), from: .hub)
-                try? await client.open(sessionID: RemoteDemoData.IDs.fixSession)
-            }),
+            },
+            CaseSpec(name: "duo-split-portrait-chat", width: 669, height: 951, hClass: .regular, vClass: .regular, details: false, setup: openFixChat),
+            CaseSpec(name: "ipad13-landscape-3pane", width: 1376, height: 1032, hClass: .regular, vClass: .regular, details: true, setup: openFixChat),
+            CaseSpec(name: "ipad13-portrait-3pane", width: 1032, height: 1376, hClass: .regular, vClass: .regular, details: true, setup: openFixChat),
+            CaseSpec(name: "iphone16pm-portrait-chat", width: 440, height: 956, hClass: .compact, vClass: .regular, details: false, setup: openFixChat),
+            CaseSpec(name: "iphone16pm-landscape-chat", width: 956, height: 440, hClass: .regular, vClass: .compact, details: false, setup: openFixChat),
         ]
+
+        let savedSidebar = UserDefaults.standard.object(forKey: "remote.panes.sidebar")
+        let savedDetails = UserDefaults.standard.object(forKey: "remote.panes.details")
+        defer {
+            if let savedSidebar { UserDefaults.standard.set(savedSidebar, forKey: "remote.panes.sidebar") }
+            else { UserDefaults.standard.removeObject(forKey: "remote.panes.sidebar") }
+            if let savedDetails { UserDefaults.standard.set(savedDetails, forKey: "remote.panes.details") }
+            else { UserDefaults.standard.removeObject(forKey: "remote.panes.details") }
+        }
 
         for style in [(name: "dark", ui: UIUserInterfaceStyle.dark, scheme: ColorScheme.dark),
                       (name: "light", ui: UIUserInterfaceStyle.light, scheme: ColorScheme.light)] {
             for item in cases {
+                UserDefaults.standard.set(true, forKey: "remote.panes.sidebar")
+                UserDefaults.standard.set(item.details, forKey: "remote.panes.details")
                 await item.setup()
                 try? await Task.sleep(for: .milliseconds(250))
 
-                let view = SplitRootView(client: client)
+                let view = MainTabView(client: client)
                     .environment(model)
                     .remoteThemeEnvironment()
-                    .environment(\.horizontalSizeClass, .regular)
+                    .environment(\.horizontalSizeClass, item.hClass)
+                    .environment(\.verticalSizeClass, item.vClass)
                     .environment(\.colorScheme, style.scheme)
 
                 let png = await render(view, size: CGSize(width: item.width, height: item.height), style: style.ui)

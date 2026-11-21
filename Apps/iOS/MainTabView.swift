@@ -87,6 +87,8 @@ struct SplitRootView: View {
     let client: RemoteClient
     @Environment(RemoteAppModel.self) private var model
     @Environment(\.foldLayout) private var fold
+    @Environment(\.hostingWindow) private var hostingWindow
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @AppStorage("remote.panes.sidebar") private var sidebarWanted = true
     @AppStorage("remote.panes.details") private var detailsWanted = false
     /// Where the panes sit on screen, to turn the crease's screen position into a pane width.
@@ -115,7 +117,8 @@ struct SplitRootView: View {
         case .laptop(let creaseY): .laptop(creaseY: creaseY - frame.minY)
         }
         return PanePlan.resolve(size: frame.size, fold: local, sidebarWanted: sidebar,
-                                detailsWanted: details, hasChat: chat != nil)
+                                detailsWanted: details, hasChat: chat != nil,
+                                verticalCompact: verticalSizeClass == .compact)
     }
 
     var body: some View {
@@ -129,7 +132,7 @@ struct SplitRootView: View {
 
         stack {
             if let width = plan.sidebarWidth {
-                sidebarPane()
+                sidebarPane(shortHeight: verticalSizeClass == .compact)
                     .safeAreaPadding(.trailing, isBook ? gutter : 0)
                     // Upright, the top of the screen is a tall band that holds the clock on the right and the
                     // chat's bar. The list's header moves up into the band's free left side, level with that bar,
@@ -195,9 +198,11 @@ struct SplitRootView: View {
         .sensoryFeedback(.selection, trigger: toggleHaptic)
     }
 
-    /// The session list. `compact` is the short form for the lower half of the laptop fold.
-    private func sidebarPane(compact: Bool = false) -> some View {
-        SplitSidebarView(client: client, compact: compact, onOpenRoute: { model.open($0, from: $1) },
+    /// The session list. `compact` is the wide single-row form for the laptop fold deck; `shortHeight` is the
+    /// slim column form for landscape iPhones (such as iPhone 16 Pro Max).
+    private func sidebarPane(compact: Bool = false, shortHeight: Bool = false) -> some View {
+        SplitSidebarView(client: client, compact: compact, shortHeight: shortHeight,
+                         onOpenRoute: { model.open($0, from: $1) },
                          onSelectUtilityTab: selectUtilityTab)
     }
 
@@ -255,7 +260,7 @@ struct SplitRootView: View {
     /// Starts the panes gliding from one plan's places to another's. Call it before the new layout is on screen.
     private func glide(from old: PanePlan, to new: PanePlan) {
         guard old != new, frame.width > 0 else { return }
-        PaneGlide.run(from: paneRects(old), to: paneRects(new), colors: [
+        PaneGlide.run(in: hostingWindow, from: paneRects(old), to: paneRects(new), colors: [
             .chat: UIColor(RemoteTheme.background), .sidebar: UIColor(RemoteTheme.sidebar), .details: UIColor(RemoteTheme.sidebar),
         ])
     }
@@ -295,8 +300,7 @@ struct SplitRootView: View {
     }
 
     private var windowBounds: CGRect {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        return scenes.flatMap(\.windows).first(where: \.isKeyWindow)?.bounds ?? frame
+        hostingWindow?.bounds ?? frame
     }
 
     /// Where each pane sits for a plan, in window coordinates, edge to edge (the panes' backgrounds run under the
@@ -343,6 +347,8 @@ private struct SplitSidebarView: View {
     let client: RemoteClient
     /// One header row with everything in it and no footer, for the lower half of the laptop fold.
     var compact = false
+    /// Slim header and footer for landscape iPhones where height is tight but the column is narrow.
+    var shortHeight = false
     let onOpenRoute: (ChatRoute, RemoteTab) -> Void
     let onSelectUtilityTab: (RemoteTab) -> Void
     @Environment(RemoteAppModel.self) private var model
@@ -351,7 +357,7 @@ private struct SplitSidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            SplitSidebarHeader(client: client, compact: compact, onSelectUtilityTab: onSelectUtilityTab) {
+            SplitSidebarHeader(client: client, compact: compact, shortHeight: shortHeight, onSelectUtilityTab: onSelectUtilityTab) {
                 if model.listTab == .rooms {
                     showNewRoom = true
                 } else {
@@ -371,7 +377,7 @@ private struct SplitSidebarView: View {
                     HubBoardContent(
                         client: client,
                         selectedSessionID: activeSessionID,
-                        showsFilter: !compact,
+                        showsFilter: !compact && !shortHeight,
                         open: { onOpenRoute($0, .hub) }
                     )
                 }
@@ -379,7 +385,7 @@ private struct SplitSidebarView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if !compact {
-                SplitSidebarFooter(onSelect: onSelectUtilityTab)
+                SplitSidebarFooter(slim: shortHeight, onSelect: onSelectUtilityTab)
             }
         }
         .background(RemoteTheme.sidebar.ignoresSafeArea())
@@ -401,6 +407,7 @@ private struct SplitSidebarView: View {
 private struct SplitSidebarHeader: View {
     let client: RemoteClient
     var compact = false
+    var shortHeight = false
     var onSelectUtilityTab: (RemoteTab) -> Void = { _ in }
     let onNew: () -> Void
     @Environment(RemoteAppModel.self) private var model
@@ -424,6 +431,17 @@ private struct SplitSidebarHeader: View {
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
+            } else if shortHeight {
+                HStack(alignment: .center, spacing: 8) {
+                    if controls.isActive {
+                        SidebarToggleButton()
+                            .padding(.leading, -4)
+                    }
+                    segments
+                    newButton
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
             } else {
                 VStack(spacing: 10) {
                     HStack(alignment: .center, spacing: 8) {
@@ -477,6 +495,7 @@ private struct SplitSidebarHeader: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .keyboardShortcut("n", modifiers: .command)
         .disabled(!client.state.isConnected || client.availableModels.isEmpty)
         .accessibilityLabel(model.listTab == .rooms ? "New room" : "New session")
         .accessibilityHint(
@@ -511,6 +530,8 @@ private struct SplitSidebarHeader: View {
             HStack(spacing: 6) {
                 Text(title)
                     .font(RemoteTheme.font(size: 13.5, weight: active ? .semibold : .medium, relativeTo: .subheadline))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
                 if badge > 0 {
                     Text("\(badge)")
                         .font(RemoteTheme.font(size: 11, weight: .semibold, relativeTo: .caption2).monospacedDigit())
@@ -540,6 +561,7 @@ private struct SplitSidebarHeader: View {
 }
 
 private struct SplitSidebarFooter: View {
+    var slim = false
     let onSelect: (RemoteTab) -> Void
     @Environment(RemoteAppModel.self) private var model
 
@@ -549,9 +571,10 @@ private struct SplitSidebarFooter: View {
             HStack(spacing: 8) {
                 footerButton("Usage", systemImage: "chart.bar", target: .usage)
                 footerButton("Settings", systemImage: "gearshape", target: .settings)
+                    .keyboardShortcut(",", modifiers: .command)
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .padding(.vertical, slim ? 5 : 8)
             .background(RemoteTheme.sidebar)
         }
     }
@@ -562,9 +585,9 @@ private struct SplitSidebarFooter: View {
             onSelect(target)
         } label: {
             Label(title, systemImage: systemImage)
-                .font(RemoteTheme.font(size: 13.5, weight: active ? .semibold : .medium, relativeTo: .subheadline))
+                .font(RemoteTheme.font(size: slim ? 12.5 : 13.5, weight: active ? .semibold : .medium, relativeTo: .subheadline))
                 .foregroundStyle(active ? RemoteTheme.accent : RemoteTheme.secondaryText)
-                .frame(maxWidth: .infinity, minHeight: RemoteTheme.minTapTarget)
+                .frame(maxWidth: .infinity, minHeight: slim ? 34 : RemoteTheme.minTapTarget)
                 .background(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(active ? RemoteTheme.accent.opacity(0.14) : RemoteTheme.card.opacity(0.5))
