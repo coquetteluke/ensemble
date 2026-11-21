@@ -8,7 +8,8 @@ public enum TranscriptExport {
         directory: String? = nil,
         modelName: String? = nil,
         items: [TranscriptItem],
-        agents: [UUID: AgentSpec] = [:]
+        agents: [UUID: AgentSpec] = [:],
+        attachments: [String: [MessageAttachment]] = [:]
     ) -> String {
         let heading = title.trimmingCharacters(in: .whitespacesAndNewlines)
         var sections: [String] = ["# \(heading.isEmpty ? "Conversation" : heading)"]
@@ -33,8 +34,12 @@ public enum TranscriptExport {
 
         for item in items {
             switch item {
-            case .user(_, let text, _):
-                let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            case .user(let id, let text, _):
+                var body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                // Pictures and files cannot go into the text: they are named on a line of their own.
+                if let attached = attachments[id], !attached.isEmpty {
+                    body += (body.isEmpty ? "" : "\n\n") + "Attached: " + MessageAttachments.summary(attached)
+                }
                 guard !body.isEmpty else { continue }
                 flushTools()
                 sections.append("## You\n\n\(body)")

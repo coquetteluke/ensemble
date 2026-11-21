@@ -18,31 +18,40 @@ public enum PictureThumbnails {
 
     private static let box = Box()
 
-    private static func key(_ path: String, _ maxPixel: Int) -> NSString { "\(maxPixel)|\(path)" as NSString }
+    private static func key(_ path: String, _ shortSide: Int) -> NSString { "\(shortSide)|\(path)" as NSString }
 
-    public static func cached(_ path: String, maxPixel: Int) -> CGImage? {
-        box.cache.object(forKey: key(path, maxPixel))
+    public static func cached(_ path: String, shortSide: Int) -> CGImage? {
+        box.cache.object(forKey: key(path, shortSide))
     }
 
-    /// Reads and scales the picture now, on the calling thread. Nil when the file is missing or not a picture.
-    public static func load(_ path: String, maxPixel: Int) -> CGImage? {
-        if let image = cached(path, maxPixel: maxPixel) { return image }
+    /// Reads and scales the picture now, on the calling thread, so its shorter side has about `shortSide` pixels (a
+    /// wide screenshot stays sharp at thumbnail height). Never scaled up. Nil when the file is missing or not a picture.
+    public static func load(_ path: String, shortSide: Int) -> CGImage? {
+        if let image = cached(path, shortSide: shortSide) { return image }
         let url = URL(fileURLWithPath: path) as CFURL
         guard let source = CGImageSourceCreateWithURL(url, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        var maxPixel = shortSide
+        if let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.doubleValue,
+           let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.doubleValue, min(width, height) > 0 {
+            let scale = min(1, Double(shortSide) / min(width, height))
+            // The longer side, capped so a very long strip cannot ask for a huge bitmap.
+            maxPixel = min(Int((max(width, height) * scale).rounded(.up)), 4096)
+        }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+            kCGImageSourceThumbnailMaxPixelSize: max(maxPixel, 1),
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
-        box.cache.setObject(image, forKey: key(path, maxPixel))
+        box.cache.setObject(image, forKey: key(path, shortSide))
         return image
     }
 
     /// The same, off the main thread.
-    public static func loadInBackground(_ path: String, maxPixel: Int) async -> CGImage? {
-        if let image = cached(path, maxPixel: maxPixel) { return image }
-        return await Task.detached(priority: .userInitiated) { load(path, maxPixel: maxPixel) }.value
+    public static func loadInBackground(_ path: String, shortSide: Int) async -> CGImage? {
+        if let image = cached(path, shortSide: shortSide) { return image }
+        return await Task.detached(priority: .userInitiated) { load(path, shortSide: shortSide) }.value
     }
 }
 
@@ -109,28 +118,41 @@ public struct PictureThumbnail: View {
         self.height = height
     }
 
-    private var maxPixel: Int { Int(height * 2 * 3) }
+    /// The thumbnail's frame for a picture of this shape. Most pictures are `height` tall and as wide as their shape
+    /// asks. A wide strip (a cropped toolbar) is shown whole at 3.5 times the height wide and as short as that makes
+    /// it, instead of being cut to its middle; a very tall or very thin picture is cut so it stays large enough to see
+    /// and click.
+    static func frame(pixelWidth: Int, pixelHeight: Int, height: CGFloat) -> CGSize {
+        let shape = CGFloat(max(pixelWidth, 1)) / CGFloat(max(pixelHeight, 1))
+        let widest = height * 3.5
+        if height * shape > widest {
+            return CGSize(width: widest, height: max(widest / shape, height * 0.3))
+        }
+        return CGSize(width: max(height * shape, height * 0.6), height: height)
+    }
 
     public var body: some View {
+        // Two pixels per point at the zoomed height.
+        let shortSide = Int((theme.z(height) * 2).rounded(.up))
         // A snapshot is drawn once, so its pictures are read on the spot.
-        let image = loaded ?? PictureThumbnails.cached(path, maxPixel: maxPixel)
-            ?? (isSnapshot ? PictureThumbnails.load(path, maxPixel: maxPixel) : nil)
+        let image = loaded ?? PictureThumbnails.cached(path, shortSide: shortSide)
+            ?? (isSnapshot ? PictureThumbnails.load(path, shortSide: shortSide) : nil)
         Group {
             if let image {
-                let shape = CGFloat(image.width) / CGFloat(max(image.height, 1))
-                let side = theme.z(height)
+                let size = Self.frame(pixelWidth: image.width, pixelHeight: image.height, height: theme.z(height))
                 Image(decorative: image, scale: 1)
                     .resizable()
                     .interpolation(.high)
                     .aspectRatio(contentMode: .fill)
-                    .frame(width: min(max(side * shape, side * 0.6), side * 2.4), height: side)
+                    .frame(width: size.width, height: size.height)
                     .clipShape(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: theme.z(10), style: .continuous)
                             .strokeBorder(theme.border, lineWidth: 1)
                     )
                     .contentShape(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous))
-            } else if failed {
+            } else if failed || isSnapshot || !FileManager.default.fileExists(atPath: path) {
+                // The file is gone or is not a picture: its name, so the message still says something was attached.
                 AttachmentChip(attachment: MessageAttachment(kind: .image, name: label == "Picture" ? nil : label))
             } else {
                 RoundedRectangle(cornerRadius: theme.z(10), style: .continuous)
@@ -138,10 +160,11 @@ public struct PictureThumbnail: View {
                     .frame(width: theme.z(height), height: theme.z(height))
             }
         }
-        .task(id: path) {
-            guard loaded == nil, !isSnapshot else { return }
-            if let image = await PictureThumbnails.loadInBackground(path, maxPixel: maxPixel) {
+        .task(id: "\(shortSide)|\(path)") {
+            guard !isSnapshot else { return }
+            if let image = await PictureThumbnails.loadInBackground(path, shortSide: shortSide) {
                 loaded = image
+                failed = false
             } else {
                 failed = true
             }

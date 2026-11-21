@@ -350,7 +350,8 @@ struct SidebarView: View {
                     directory: current.directory,
                     modelName: store.modelName(current.info.model),
                     items: current.items,
-                    agents: store.agents
+                    agents: store.agents,
+                    attachments: current.attachments
                 )
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(markdown, forType: .string)

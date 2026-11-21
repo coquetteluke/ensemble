@@ -313,7 +313,7 @@ struct ComposerView: View {
     }
 
     private var attachmentChips: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
+        AdaptiveScroll(.horizontal, snapshotAlignment: .leading) {
             HStack(spacing: theme.z(6)) {
                 ForEach(attachments, id: \.self) { url in
                     let attachment = MessageAttachments.forFiles([url]).first
@@ -352,6 +352,7 @@ struct ComposerView: View {
                 }
             }
         }
+        .scrollIndicators(.hidden)
     }
 
     // MARK: Controls

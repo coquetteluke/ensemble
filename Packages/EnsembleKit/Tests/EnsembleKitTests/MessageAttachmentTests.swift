@@ -1,5 +1,6 @@
 import Foundation
 import ImageIO
+import SwiftUI
 import Testing
 @testable import EnsembleKit
 
@@ -132,8 +133,8 @@ struct MessageAttachmentTests {
         let path = try #require(first[0].path)
         let source = try #require(CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil))
         #expect(CGImageSourceGetCount(source) == 1)
-        #expect(PictureThumbnails.load(path, maxPixel: 64)?.width == 1)
-        #expect(PictureThumbnails.load(root.appendingPathComponent("missing.png").path, maxPixel: 64) == nil)
+        #expect(PictureThumbnails.load(path, shortSide: 64)?.width == 1)
+        #expect(PictureThumbnails.load(root.appendingPathComponent("missing.png").path, shortSide: 64) == nil)
 
         let files = try #require(loaded.attachments["u3"])
         #expect(files.map(\.kind) == [.file, .image])
@@ -196,6 +197,31 @@ struct MessageAttachmentTests {
         #expect(MessageAttachments.fileExtension(forMediaType: "IMAGE/WEBP") == "webp")
         #expect(MessageAttachments.fileExtension(forMediaType: "application/x-unknown") == "png")
         #expect(list[0].forRemote.path == nil && list[0].forRemote.name == "Screenshot 1.PNG")
+    }
+
+    @Test func thumbnailFramesKeepWideStripsWholeAndOddShapesClickable() {
+        // An ordinary screenshot: the set height, as wide as its shape.
+        #expect(PictureThumbnail.frame(pixelWidth: 2000, pixelHeight: 1301, height: 96).height == 96)
+        #expect(abs(PictureThumbnail.frame(pixelWidth: 2000, pixelHeight: 1301, height: 96).width - 147.58) < 0.01)
+        // A cropped toolbar (1058 by 98): shown whole, 336 wide, not cut to its middle.
+        let strip = PictureThumbnail.frame(pixelWidth: 1058, pixelHeight: 98, height: 96)
+        #expect(strip.width == 336 && abs(strip.height - 31.12) < 0.01)
+        // Thinner still: never shorter than 0.3 of the height. Very tall: never narrower than 0.6 of it.
+        let thin = PictureThumbnail.frame(pixelWidth: 4000, pixelHeight: 40, height: 96)
+        #expect(thin.width == 336 && abs(thin.height - 28.8) < 0.01)
+        let tall = PictureThumbnail.frame(pixelWidth: 100, pixelHeight: 2000, height: 96)
+        #expect(abs(tall.width - 57.6) < 0.01 && tall.height == 96)
+        #expect(PictureThumbnail.frame(pixelWidth: 0, pixelHeight: 0, height: 40) == CGSize(width: 40, height: 40))
+    }
+
+    @Test func theMarkdownExportNamesAttachments() {
+        let (items, attachments) = rows()
+        let plain = TranscriptExport.markdown(title: "T", items: items)
+        #expect(!plain.contains("Attached:"))
+        let named = TranscriptExport.markdown(title: "T", items: items, attachments: attachments)
+        #expect(named.contains("## You\n\nlook at this\n\nAttached: Picture"))
+        #expect(named.contains("## You\n\nAttached: Picture, notes.pdf"), "a message that is only attachments is still listed")
+        #expect(!named.contains("/Users/me"))
     }
 
     @Test func decodingToleratesMissingAndUnknownFields() throws {

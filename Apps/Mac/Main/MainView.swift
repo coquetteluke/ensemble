@@ -231,7 +231,8 @@ struct MainView: View {
                 directory: session.directory,
                 modelName: store.modelName(session.info.model),
                 items: session.items,
-                agents: store.agents
+                agents: store.agents,
+                attachments: session.attachments
             )
         } else {
             return

@@ -177,7 +177,9 @@ struct ConversationView: View {
             ProposalCardsHost(session: session)
             if let todos = TodoParser.latest(in: session.items), !todos.isEmpty,
                session.isWorking || todos.contains(where: { $0.status == .pending || $0.status == .inProgress }) {
-                TaskListCard(items: todos, runningTasks: store.backgroundWork(forSession: session.id).count)
+                // Background work under this session's top-level session; a subagent does not count itself.
+                TaskListCard(items: todos, runningTasks: store.backgroundWork(forSession: session.id)
+                    .filter { $0.openSessionID != session.id || $0.kind != .subagent }.count)
             }
             if session.isWorking {
                 WorkingRow(items: session.items, since: session.workingSince,
