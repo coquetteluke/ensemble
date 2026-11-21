@@ -24,6 +24,8 @@ actor ACPEngineCore {
         var queuedSynthetic: [String]
         var text: String
         var synthetic: Bool
+        /// The files sent with the message, shown on its row.
+        var attachments: [MessageAttachment] = []
     }
 
     struct RunningTurn: Sendable {
@@ -802,6 +804,13 @@ actor ACPEngineCore {
 
     // MARK: Transcripts and panels
 
+    /// The transcript with the files sent from Ensemble beside their messages. Messages the agent replays from its own
+    /// history carry no files (a replayed picture is still the text "[image]").
+    func attachedTranscript(_ id: String) async throws -> AttachedTranscript {
+        let items = try await transcript(id)
+        return AttachedTranscript(items: items, attachments: liveSession(id).transcript.attachments)
+    }
+
     func transcript(_ id: String) async throws -> [TranscriptItem] {
         let record = try record(id)
         let live = liveSession(id)
@@ -860,8 +869,9 @@ actor ACPEngineCore {
         save()
         var live = liveSession(id)
         live.transcript.syntheticTexts = Set(record.syntheticTexts)
-        let shown = text.isEmpty ? files.map(\.lastPathComponent).joined(separator: ", ") : text
-        live.queue.append(PendingPrompt(blocks: blocks, queuedSynthetic: queued, text: shown, synthetic: synthetic))
+        // The row shows what was typed; the files hang on it as attachments.
+        live.queue.append(PendingPrompt(blocks: blocks, queuedSynthetic: queued, text: text, synthetic: synthetic,
+                                        attachments: synthetic ? [] : MessageAttachments.forFiles(files)))
         lives[id] = live
         if renamed { emit(.sessionUpdated(record.engineSession)) }
         emit(.activity(sessionID: id, .working))
@@ -919,7 +929,9 @@ actor ACPEngineCore {
         if let plan = pendingPlans.removeValue(forKey: id) { emit(.permissionReplied(sessionID: id, requestID: plan.id)) }
         var addEvents: [EngineEvent] = []
         for notice in prompt.queuedSynthetic { addEvents += live.transcript.addUser(notice, synthetic: true) }
-        if !prompt.text.isEmpty { addEvents += live.transcript.addUser(prompt.text, synthetic: prompt.synthetic) }
+        if !prompt.text.isEmpty || !prompt.attachments.isEmpty {
+            addEvents += live.transcript.addUser(prompt.text, synthetic: prompt.synthetic, attachments: prompt.attachments)
+        }
         guard let key = live.connection, let gen = live.generation, let agentID = store[id]?.agentSessionID else {
             lives[id] = live
             finishTurn(id, token: token, result: nil, error: ACPEngineError.processFailed("the session is not open"))

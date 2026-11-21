@@ -38,6 +38,7 @@ struct ConversationView: View {
             transcript
                 .environment(\.transcriptActions, enrichedTranscriptActions)
                 .environment(\.transcriptFindHighlight, findHighlight)
+                .environment(\.messageAttachments, session.attachments)
                 .overlay(alignment: .topTrailing) {
                     if showFind && !isSnapshot {
                         TranscriptFindBar(
@@ -176,7 +177,7 @@ struct ConversationView: View {
             ProposalCardsHost(session: session)
             if let todos = TodoParser.latest(in: session.items), !todos.isEmpty,
                session.isWorking || todos.contains(where: { $0.status == .pending || $0.status == .inProgress }) {
-                TaskListCard(items: todos)
+                TaskListCard(items: todos, runningTasks: store.backgroundWork(forSession: session.id).count)
             }
             if session.isWorking {
                 WorkingRow(items: session.items, since: session.workingSince,

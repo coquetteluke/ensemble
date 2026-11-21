@@ -503,11 +503,14 @@ public struct RemoteTranscript: Codable, Hashable, Sendable {
     public var pendingModelName: String?
     /// Inline second opinions on replies in this transcript (added after protocol 4 shipped).
     public var secondOpinions: [RemoteSecondOpinion]
+    /// Pictures and files attached to the user's messages, by message row id (added after protocol 4 shipped). Names
+    /// and kinds only: the bytes stay on the Mac, so a chat with many pictures costs the relay nothing extra.
+    public var attachments: [String: [MessageAttachment]]
 
     public init(sessionID: String, title: String, items: [TranscriptItem], activity: SessionActivity = .idle,
                 permissionMode: PermissionMode? = nil, roomID: UUID? = nil, agents: [RemoteAgent] = [],
                 modelProviderID: String? = nil, modelID: String? = nil, pendingModelName: String? = nil,
-                secondOpinions: [RemoteSecondOpinion] = []) {
+                secondOpinions: [RemoteSecondOpinion] = [], attachments: [String: [MessageAttachment]] = [:]) {
         self.sessionID = sessionID
         self.title = title
         self.items = items
@@ -519,11 +522,12 @@ public struct RemoteTranscript: Codable, Hashable, Sendable {
         self.modelID = modelID
         self.pendingModelName = pendingModelName
         self.secondOpinions = secondOpinions
+        self.attachments = attachments
     }
 
     private enum CodingKeys: String, CodingKey {
         case sessionID, title, items, activity, permissionMode, roomID, agents
-        case modelProviderID, modelID, pendingModelName, secondOpinions
+        case modelProviderID, modelID, pendingModelName, secondOpinions, attachments
     }
 
     public init(from decoder: any Decoder) throws {
@@ -539,6 +543,29 @@ public struct RemoteTranscript: Codable, Hashable, Sendable {
         modelID = try c.decodeIfPresent(String.self, forKey: .modelID)
         pendingModelName = try c.decodeIfPresent(String.self, forKey: .pendingModelName)
         secondOpinions = (try? c.decodeIfPresent([RemoteSecondOpinion].self, forKey: .secondOpinions)) ?? []
+        attachments = (try? c.decodeIfPresent([String: [MessageAttachment]].self, forKey: .attachments)) ?? [:]
+    }
+
+    /// What a phone gets for a transcript with attachments. The table goes out without the Mac's file paths, and a
+    /// message that is only attachments gets a few plain words as its text ("Picture", "notes.pdf"), so a phone
+    /// app from before attachments shows those words instead of an empty bubble. A newer phone draws chips and
+    /// leaves the words out (`RemoteTranscript.showsText(of:)`).
+    public static func remoteRows(_ items: [TranscriptItem], attachments: [String: [MessageAttachment]])
+        -> (items: [TranscriptItem], attachments: [String: [MessageAttachment]]) {
+        guard !attachments.isEmpty else { return (items, [:]) }
+        var table: [String: [MessageAttachment]] = [:]
+        let mapped = items.map { item -> TranscriptItem in
+            guard case .user(let id, let text, let date) = item, let attached = attachments[id], !attached.isEmpty else { return item }
+            table[id] = attached.map(\.forRemote)
+            return text.isEmpty ? .user(id: id, text: MessageAttachments.summary(attached), date: date) : item
+        }
+        return (mapped, table)
+    }
+
+    /// False when a user row's text is only the stand-in for its attachments, which the phone draws as chips.
+    public func showsText(of itemID: String, text: String) -> Bool {
+        guard let attached = attachments[itemID], !attached.isEmpty else { return true }
+        return text != MessageAttachments.summary(attached)
     }
 }
 

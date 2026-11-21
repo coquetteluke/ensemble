@@ -209,6 +209,8 @@ public final class SessionStore {
         for info in seed.sessions {
             let model = SessionModel(info: info, permissionMode: seed.modes[info.id] ?? defaultPermissionMode)
             model.items = seed.transcripts[info.id] ?? []
+            let rowIDs = Set(model.items.map(\.id))
+            model.attachments = seed.attachments.filter { rowIDs.contains($0.key) }
             model.transcriptLoaded = true
             model.activity = seed.activities[info.id] ?? .idle
             if model.isWorking { model.workingSince = Date().addingTimeInterval(-42) }
@@ -346,7 +348,7 @@ public final class SessionStore {
         do {
             let links = threadLinks.links(for: primaryID)
             let fetched = links.isEmpty
-                ? try await engine.transcript(primaryID)
+                ? try await fetchTranscript(primaryID, for: primaryID)
                 : try await loadMergedTranscript(for: primaryID, links: links)
             guard byID[primaryID] === model else { return }
             model.items = Self.mergeLoadedTranscript(
@@ -369,6 +371,17 @@ public final class SessionStore {
             }
         }
         await refreshPanels(primaryID)
+    }
+
+    /// One engine session's transcript. When the engine keeps the pictures and files attached to messages
+    /// (`EngineMessageAttachments`) they are noted on the conversation `primaryID` shows, by message row id.
+    func fetchTranscript(_ sessionID: String, for primaryID: String) async throws -> [TranscriptItem] {
+        guard let source = engine as? any EngineMessageAttachments else { return try await engine.transcript(sessionID) }
+        let fetched = try await source.attachedTranscript(sessionID)
+        if !fetched.attachments.isEmpty, let model = byID[primaryID] {
+            model.attachments.merge(fetched.attachments) { _, new in new }
+        }
+        return fetched.items
     }
 
     /// Merges a fetched transcript with live or optimistic items appended before or during the fetch so
@@ -681,12 +694,19 @@ public final class SessionStore {
         guard !trimmed.isEmpty || !files.isEmpty else { return }
         deliveringSessionIDs.insert(primaryID)
         defer { deliveringSessionIDs.remove(primaryID) }
-        let shown = Self.shownText(trimmed, files: files)
+        // The row shows what was typed; attached pictures and files hang on it (`SessionModel.attachments`).
+        let shown = trimmed
+        let attached = MessageAttachments.forFiles(files)
+        func appendUserRow() {
+            let id = "user-\(UUID().uuidString)"
+            session.items.append(.user(id: id, text: shown, date: Date()))
+            if !attached.isEmpty { session.attachments[id] = attached }
+        }
 
         // Over its provider's daily spending cap (`UsageCaps.swift`): shown as not sent, nothing reaches the engine.
         // Every send goes through here, queued messages and auto-continue included.
         if let refusal = spendingCapRefusal(model: effectiveModel(for: session)) {
-            if !shown.isEmpty { session.items.append(.user(id: "user-\(UUID().uuidString)", text: shown, date: Date())) }
+            appendUserRow()
             session.items.append(.error(id: "cap-\(UUID().uuidString)", message: "Not sent. " + refusal.message))
             session.touch()
             return
@@ -708,7 +728,7 @@ public final class SessionStore {
                     if lastError != nil {
                         let errorMessage = lastError ?? "Could not switch model."
                         session.info.model = previous
-                        session.items.append(.user(id: "user-\(UUID().uuidString)", text: shown, date: Date()))
+                        appendUserRow()
                         session.items.append(.error(id: "error-\(UUID().uuidString)", message: errorMessage))
                         session.setActivity(.failed)
                         session.touch()
@@ -730,7 +750,7 @@ public final class SessionStore {
                     targetBackingID = prepared.backingSessionID
                     promptText = prepared.promptText
                 } catch {
-                    session.items.append(.user(id: "user-\(UUID().uuidString)", text: shown, date: Date()))
+                    appendUserRow()
                     session.items.append(.error(id: "error-\(UUID().uuidString)", message: "Could not send: \(error.localizedDescription)"))
                     session.setActivity(.failed)
                     session.touch()
@@ -741,7 +761,7 @@ public final class SessionStore {
             }
         }
 
-        session.items.append(.user(id: "user-\(UUID().uuidString)", text: shown, date: Date()))
+        appendUserRow()
         session.setActivity(.working)
         session.info.updated = Date()
         session.touch()

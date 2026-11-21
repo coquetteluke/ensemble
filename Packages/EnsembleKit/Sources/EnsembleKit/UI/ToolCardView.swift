@@ -16,7 +16,8 @@ public struct ToolSummary: Equatable, Sendable {
         additions = nil
         deletions = nil
         monospacedSubject = false
-        switch tool.name.lowercased() {
+        // Every engine's plan or todo tool (`TodoParser`) reads the same way, whatever it is called.
+        switch TodoParser.isPlanTool(tool.name) ? "todowrite" : tool.name.lowercased() {
         case "bash", "shell", "run", "command":
             symbol = "terminal"
             verb = running ? "Running" : "Ran"

@@ -304,7 +304,8 @@ struct ComposerView: View {
                     onSubmit: submit,
                     onCycleMode: { Task { await store.setPermissionMode(store.nextPermissionMode(for: session.id), for: session.id) } },
                     onKey: handleKey,
-                    dictation: liveDictation
+                    dictation: liveDictation,
+                    onAttach: { urls in window.attachments[session.id, default: []].append(contentsOf: urls) }
                 )
                 .frame(height: min(max(textHeight, theme.z(22)), theme.z(220)))
             }
@@ -315,27 +316,39 @@ struct ComposerView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: theme.z(6)) {
                 ForEach(attachments, id: \.self) { url in
+                    let attachment = MessageAttachments.forFiles([url]).first
+                    let isPicture = attachment?.kind == .image
                     HStack(spacing: theme.z(6)) {
-                        Image(systemName: "doc")
-                            .font(theme.font(size: 11))
-                            .foregroundStyle(theme.textTertiary)
-                        Text(url.lastPathComponent)
-                            .font(theme.font(size: 12))
-                            .foregroundStyle(theme.textPrimary)
-                            .lineLimit(1)
+                        if isPicture {
+                            // A picture shows itself; its name is the tooltip.
+                            PictureThumbnail(path: url.path, label: attachment?.label ?? "Picture", height: 40)
+                                .help(attachment?.label ?? "Picture")
+                        } else {
+                            Image(systemName: "doc")
+                                .font(theme.font(size: 11))
+                                .foregroundStyle(theme.textTertiary)
+                            Text(url.lastPathComponent)
+                                .font(theme.font(size: 12))
+                                .foregroundStyle(theme.textPrimary)
+                                .lineLimit(1)
+                        }
                         Button {
                             window.attachments[session.id]?.removeAll { $0 == url }
                         } label: {
                             Image(systemName: "xmark")
                                 .font(theme.font(size: 9, weight: .bold))
                                 .foregroundStyle(theme.textTertiary)
+                                .frame(width: theme.z(16), height: theme.z(16))
+                                .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .help("Remove \(url.lastPathComponent)")
+                        .help("Remove \(attachment?.label ?? url.lastPathComponent)")
+                        .accessibilityLabel("Remove \(attachment?.label ?? url.lastPathComponent)")
                     }
-                    .padding(.horizontal, theme.z(8))
-                    .frame(height: theme.z(26))
-                    .background(RoundedRectangle(cornerRadius: theme.z(7)).fill(theme.hover))
+                    .padding(.leading, theme.z(isPicture ? 4 : 8))
+                    .padding(.trailing, theme.z(isPicture ? 4 : 8))
+                    .frame(height: theme.z(isPicture ? 48 : 26))
+                    .background(RoundedRectangle(cornerRadius: theme.z(isPicture ? 12 : 7)).fill(theme.hover))
                 }
             }
         }

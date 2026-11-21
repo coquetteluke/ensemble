@@ -124,14 +124,16 @@ extension SessionStore {
 
         case .steer:
             guard let control = steeringControl else { return }
-            let shown = Self.shownText(message.text, files: message.files)
+            // The row shows what was typed; attached pictures and files hang on it, as in `deliver`.
+            let item = TranscriptItem.user(id: "user-\(UUID().uuidString)", text: message.text, date: Date())
+            let attached = MessageAttachments.forFiles(message.files)
+            if !attached.isEmpty { session.attachments[item.id] = attached }
             if let refusal = spendingCapRefusal(model: effectiveModel(for: session)) {
-                if !shown.isEmpty { session.items.append(.user(id: "user-\(UUID().uuidString)", text: shown, date: Date())) }
+                session.items.append(item)
                 session.items.append(.error(id: "cap-\(UUID().uuidString)", message: "Not sent. " + refusal.message))
                 session.touch()
                 return
             }
-            let item = TranscriptItem.user(id: "user-\(UUID().uuidString)", text: shown, date: Date())
             session.items.append(item)
             session.info.updated = Date()
             session.touch()
@@ -160,13 +162,6 @@ extension SessionStore {
             try? await Task.sleep(for: Self.queueSettleDelay)
             await deliver(message.text, files: message.files, to: primaryID)
         }
-    }
-
-    /// The text shown in the transcript for a message with attachments.
-    static func shownText(_ text: String, files: [URL]) -> String {
-        guard !files.isEmpty else { return text }
-        let names = files.map(\.lastPathComponent).joined(separator: ", ")
-        return text.isEmpty ? "Attached: \(names)" : "\(text)\n\nAttached: \(names)"
     }
 
     /// Stops held messages from going out on their own (the user stopped the turn). It holds whether or not the

@@ -148,16 +148,40 @@ enum ToolCards {
 
 enum TranscriptMapper {
     static func items(from messages: [Wire.Message]) -> [TranscriptItem] {
-        messages.flatMap(items(from:))
+        messages.flatMap { items(from: $0) }
     }
 
-    static func items(from message: Wire.Message) -> [TranscriptItem] {
+    /// The transcript with each user message's files beside it instead of as "Attached: name" lines.
+    static func attached(from messages: [Wire.Message]) -> AttachedTranscript {
+        var result = AttachedTranscript()
+        for message in messages {
+            result.items += items(from: message, attachmentsApart: true)
+            let files = attachments(of: message)
+            if !files.isEmpty { result.attachments[message.id] = files }
+        }
+        return result
+    }
+
+    /// A user message's files. A picture is shown from its own file when the message names one on this Mac.
+    static func attachments(of message: Wire.Message) -> [MessageAttachment] {
+        guard message.type == "user" else { return [] }
+        return (message.files ?? []).enumerated().map { index, file in
+            let url = file.source?.uri.flatMap { URL(string: $0) }
+            let local = url.flatMap { $0.isFileURL ? $0 : nil }
+            let name = file.name ?? url?.lastPathComponent
+            let mime = file.mime ?? (name as NSString?).flatMap { MessageAttachments.imageMediaTypes[$0.pathExtension.lowercased()] }
+            return MessageAttachment(id: "\(message.id):\(index)", kind: mime?.hasPrefix("image/") == true ? .image : .file,
+                                     name: name, mediaType: mime, path: local?.path)
+        }
+    }
+
+    static func items(from message: Wire.Message, attachmentsApart: Bool = false) -> [TranscriptItem] {
         let date = Wire.date(message.time.created)
         switch message.type {
         case "user":
             var text = message.text ?? ""
             let names = (message.files ?? []).compactMap { $0.name ?? $0.source?.uri.map { URL(string: $0)?.lastPathComponent ?? $0 } }
-            if !names.isEmpty {
+            if !names.isEmpty, !attachmentsApart {
                 text += (text.isEmpty ? "" : "\n\n") + names.map { "Attached: \($0)" }.joined(separator: "\n")
             }
             return [.user(id: message.id, text: text, date: date)]

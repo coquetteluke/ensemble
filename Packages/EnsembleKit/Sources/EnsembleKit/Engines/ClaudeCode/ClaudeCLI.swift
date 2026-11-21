@@ -152,7 +152,7 @@ enum ClaudeCLI {
             }
         }
         if !listed.isEmpty {
-            blocks.append(["type": "text", "text": .string("Attached files (read them with your tools):\n" + listed.joined(separator: "\n"))])
+            blocks.append(["type": "text", "text": .string(ClaudeTranscriptBuilder.attachedFilesPrefix + "\n" + listed.joined(separator: "\n"))])
         }
         if blocks.isEmpty { throw ClaudeCodeError.invalidArgument("The message is empty.") }
         return blocks

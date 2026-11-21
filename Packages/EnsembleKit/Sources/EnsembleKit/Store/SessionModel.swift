@@ -15,6 +15,8 @@ public final class SessionModel: Identifiable {
     public internal(set) var usage: Usage
     public internal(set) var context: ContextBreakdown?
     public internal(set) var changedFiles: [FileChange] = []
+    /// Pictures and files attached to your messages, by the id of the message row (`Model/Attachments.swift`).
+    public internal(set) var attachments: [String: [MessageAttachment]] = [:]
     /// The engine session type has no permission mode yet, so the store keeps it here.
     public internal(set) var permissionMode: PermissionMode
     public internal(set) var transcriptLoaded = false
@@ -86,6 +88,8 @@ public struct StoreSeed: Sendable {
     public var sessionAgentIDs: [String: [UUID]]
     public var extraFolders: [String: [String]]
     public var selectedSessionID: String?
+    /// Pictures and files attached to user rows, by row id.
+    public var attachments: [String: [MessageAttachment]]
 
     public init(sessions: [EngineSession] = [], transcripts: [String: [TranscriptItem]] = [:],
                 activities: [String: SessionActivity] = [:], permissions: [PermissionRequest] = [],
@@ -93,7 +97,7 @@ public struct StoreSeed: Sendable {
                 modes: [String: PermissionMode] = [:], connectors: [ConnectorInfo] = [], models: [ModelInfo] = [],
                 providers: [ProviderInfo] = [], schedules: [ScheduleInfo] = [], agents: [AgentSpec] = [],
                 sessionAgentIDs: [String: [UUID]] = [:], extraFolders: [String: [String]] = [:],
-                selectedSessionID: String? = nil) {
+                selectedSessionID: String? = nil, attachments: [String: [MessageAttachment]] = [:]) {
         self.sessions = sessions
         self.transcripts = transcripts
         self.activities = activities
@@ -109,5 +113,6 @@ public struct StoreSeed: Sendable {
         self.sessionAgentIDs = sessionAgentIDs
         self.extraFolders = extraFolders
         self.selectedSessionID = selectedSessionID
+        self.attachments = attachments
     }
 }

@@ -18,8 +18,11 @@ struct TranscriptRow: View {
 
     var body: some View {
         switch item {
-        case .user(_, let text, _):
-            UserMessageBubble(text: text)
+        case .user(let id, let text, _):
+            // Attachments arrive as names and kinds; the pictures themselves stay on the Mac.
+            let attached = client.openTranscript?.attachments[id] ?? []
+            UserMessageBubble(text: client.openTranscript?.showsText(of: id, text: text) == false ? "" : text,
+                              attachments: attached)
         case .agentText(let id, let text, let agentID, let streaming):
             AgentTextRow(
                 itemID: id,
@@ -65,8 +68,26 @@ struct TranscriptRow: View {
 
 private struct UserMessageBubble: View {
     let text: String
+    var attachments: [MessageAttachment] = []
 
     var body: some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            if !attachments.isEmpty {
+                VStack(alignment: .trailing, spacing: 6) {
+                    ForEach(attachments) { attachment in
+                        AttachmentChipRow(attachment: attachment)
+                    }
+                }
+                .padding(.leading, 48)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            if !text.isEmpty || attachments.isEmpty {
+                bubble
+            }
+        }
+    }
+
+    private var bubble: some View {
         HStack {
             Spacer(minLength: 48)
             Text(text)
@@ -86,6 +107,34 @@ private struct UserMessageBubble: View {
                 )
                 .textSelection(.enabled)
         }
+    }
+}
+
+/// A picture or file attached to a message: an icon and its name ("Picture" for a picture without one). The file
+/// itself is on the Mac.
+private struct AttachmentChipRow: View {
+    let attachment: MessageAttachment
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: attachment.kind == .image ? "photo" : "doc")
+                .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
+                .foregroundStyle(RemoteTheme.secondaryText)
+            Text(attachment.label)
+                .font(RemoteTheme.font(size: 14, relativeTo: .subheadline))
+                .foregroundStyle(RemoteTheme.primaryText)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(RemoteTheme.userBubble, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(RemoteTheme.border.opacity(0.6), lineWidth: 0.75)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(attachment.kind == .image ? "Picture \(attachment.name ?? "")" : "File \(attachment.label)")
     }
 }
 

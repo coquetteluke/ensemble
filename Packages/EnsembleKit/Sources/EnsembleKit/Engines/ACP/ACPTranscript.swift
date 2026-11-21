@@ -561,6 +561,8 @@ struct ACPTranscriptState: Sendable {
     /// Texts Ensemble injected (board messages); replayed user messages with exactly this text become notices.
     var syntheticTexts: Set<String>
     private(set) var items: [TranscriptItem] = []
+    /// Files sent with a message from Ensemble, by the id of its row.
+    private(set) var attachments: [String: [MessageAttachment]] = [:]
     private(set) var tools: [String: ACPToolState] = [:]
     private(set) var turn = 0
     /// Distinguishes rows of this state from rows built by an earlier one (after a restart or a reload), so live
@@ -615,14 +617,17 @@ struct ACPTranscriptState: Sendable {
     // MARK: Input
 
     /// A message the user (or, when `synthetic`, Ensemble's room relay) sent. Not echoed by agents during live turns.
-    mutating func addUser(_ text: String, synthetic: Bool, date: Date = Date()) -> [EngineEvent] {
+    mutating func addUser(_ text: String, synthetic: Bool, attachments attached: [MessageAttachment] = [],
+                          date: Date = Date()) -> [EngineEvent] {
         let events = closeAll()
         turn += 1
         planID = nil
         if synthetic {
             items.append(.notice(id: nextID("n"), text: text))
         } else {
-            items.append(.user(id: nextID("u"), text: text, date: date))
+            let id = nextID("u")
+            items.append(.user(id: id, text: text, date: date))
+            if !attached.isEmpty { attachments[id] = attached }
         }
         return events
     }

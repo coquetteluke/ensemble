@@ -357,30 +357,51 @@ public struct WorkingRow: View {
 
 // MARK: - Task list
 
-/// The agent's todo list, pinned under the newest message: check marks for done, a spinner for the
-/// item in progress, dashed circles for the rest.
+/// The agent's task list, pinned under the newest message: a filled check for done, three dots in a circle for
+/// the step in progress, dashed circles for the rest. Background work still running for the session is counted
+/// on a line under the step in progress ("1 running task").
 public struct TaskListCard: View {
     let items: [TodoItem]
+    let runningTasks: Int
     @Environment(\.theme) private var theme
 
-    public init(items: [TodoItem]) { self.items = items }
+    public init(items: [TodoItem], runningTasks: Int = 0) {
+        self.items = items
+        self.runningTasks = runningTasks
+    }
+
+    /// "1 running task", "2 running tasks"; nil when nothing runs.
+    public static func runningLabel(_ count: Int) -> String? {
+        guard count > 0 else { return nil }
+        return count == 1 ? "1 running task" : "\(count) running tasks"
+    }
 
     public var body: some View {
         let iconBaseline = theme.z(4.5)
+        // The line goes under the first step in progress only.
+        let runningRow = Self.runningLabel(runningTasks).flatMap { _ in items.firstIndex { $0.status == .inProgress } }
         VStack(alignment: .leading, spacing: theme.z(11)) {
-            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+            ForEach(Array(items.enumerated()), id: \.offset) { offset, item in
                 HStack(alignment: .firstTextBaseline, spacing: theme.z(10)) {
                     icon(item.status)
                         .frame(width: theme.z(16), height: theme.z(16))
                         .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + iconBaseline }
-                    Text(item.status == .inProgress ? (item.activeForm ?? item.content) : item.content)
-                        .font(theme.font(size: 13.5))
-                        .foregroundStyle(color(item.status))
-                        .strikethrough(item.status == .cancelled)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: theme.z(5)) {
+                        Text(item.status == .inProgress ? (item.activeForm ?? item.content) : item.content)
+                            .font(theme.font(size: 13.5))
+                            .foregroundStyle(color(item.status))
+                            .strikethrough(item.status == .cancelled)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if offset == runningRow, let running = Self.runningLabel(runningTasks) {
+                            Text(running)
+                                .font(theme.font(size: 12.5).monospacedDigit())
+                                .foregroundStyle(theme.textPrimary)
+                                .padding(.leading, theme.z(10))
+                        }
+                    }
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(item.content), \(label(item.status))")
+                .accessibilityLabel(accessibilityText(item, running: offset == runningRow))
             }
         }
         .padding(.horizontal, theme.z(16))
@@ -400,7 +421,9 @@ public struct TaskListCard: View {
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(theme.background, theme.textSecondary)
         case .inProgress:
-            Spinner(size: 12.5, lineWidth: 1.6)
+            Image(systemName: "ellipsis.circle")
+                .font(theme.font(size: 14))
+                .foregroundStyle(theme.textPrimary)
         case .pending:
             Circle()
                 .strokeBorder(theme.textSecondary, style: StrokeStyle(lineWidth: theme.z(1.3), dash: [theme.z(2.4), theme.z(2.1)]))
@@ -412,12 +435,19 @@ public struct TaskListCard: View {
         }
     }
 
+    /// Only the step in progress is bright; done and to-do steps step back.
     private func color(_ status: TodoItem.Status) -> Color {
         switch status {
-        case .completed: theme.textSecondary
+        case .inProgress: theme.textPrimary
+        case .completed, .pending: theme.textSecondary
         case .cancelled: theme.textTertiary
-        case .inProgress, .pending: theme.textPrimary
         }
+    }
+
+    private func accessibilityText(_ item: TodoItem, running: Bool) -> String {
+        var text = "\(item.content), \(label(item.status))"
+        if running, let label = Self.runningLabel(runningTasks) { text += ", \(label)" }
+        return text
     }
 
     private func label(_ status: TodoItem.Status) -> String {
