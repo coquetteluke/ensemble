@@ -90,6 +90,11 @@ enum ParitySnapshots {
                     MainView(store: store, window: tabbed, remoteControlOverride: true, zoomOverride: zoom)
                 }
             }
+            // The schedule editor's trigger card on Monthly.
+            save("schedule-monthly-\(tone)\(suffix)", width: 560, height: nil, scheme: scheme) {
+                ScheduleTriggerCard(trigger: .constant(.monthly(day: 1, hour: 9, minute: 0)), now: Self.now)
+                    .padding(20)
+            }
             // The About window: before a check, with a newer version, and when the check fails.
             save("about-\(tone)\(suffix)", width: AboutView.size.width * 3 + 48, height: AboutView.size.height + 32, scheme: scheme) {
                 HStack(spacing: 16) {

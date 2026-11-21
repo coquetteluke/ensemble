@@ -1,7 +1,7 @@
 import SwiftUI
 import EnsembleKit
 
-/// The trigger card: Hourly, Daily, Weekdays, Weekly or Custom (cron), the choices for that kind, and the next three
+/// The trigger card: Hourly, Daily, Weekdays, Weekly, Monthly or Custom (cron), the choices for that kind, and the next three
 /// times it runs (or why it cannot).
 struct ScheduleTriggerCard: View {
     @Binding var trigger: ScheduleTrigger
@@ -56,6 +56,14 @@ struct ScheduleTriggerCard: View {
                     }
                 }
                 row("At") { timeChip(hour, minute) { .weekly(days: days, hour: $0, minute: $1) } }
+            }
+        case .monthly(let day, let hour, let minute):
+            row("Every month on the") {
+                ScheduleMonthDayChip(day: Binding(get: { day }, set: { trigger = .monthly(day: $0, hour: hour, minute: minute) }))
+                Text("at")
+                    .font(theme.font(size: 13))
+                    .foregroundStyle(theme.textSecondary)
+                timeChip(hour, minute) { .monthly(day: day, hour: $0, minute: $1) }
             }
         case .custom:
             VStack(alignment: .leading, spacing: theme.z(6)) {

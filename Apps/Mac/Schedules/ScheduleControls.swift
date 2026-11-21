@@ -211,6 +211,35 @@ struct ScheduleMinuteChip: View {
     }
 }
 
+/// The day of the month for a monthly task: 1 to 28, so no month is skipped.
+struct ScheduleMonthDayChip: View {
+    @Binding var day: Int
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        ScheduleChip(symbol: "calendar", text: ScheduleTrigger.ordinal(day)) { dismiss in
+            VStack(alignment: .leading, spacing: theme.z(10)) {
+                ScheduleGridLabel(text: "Day of the month")
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: theme.z(4)), count: 7), spacing: theme.z(4)) {
+                    ForEach(Array(ScheduleTrigger.monthlyDays), id: \.self) { value in
+                        ScheduleGridButton(text: "\(value)", selected: value == day) {
+                            day = value
+                            dismiss()
+                        }
+                    }
+                }
+                Text("Days 29 to 31 are left out, because some months do not have them.")
+                    .font(theme.font(size: 11.5))
+                    .foregroundStyle(theme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(theme.z(12))
+            .frame(width: theme.z(300))
+            .background(theme.popover)
+        }
+    }
+}
+
 struct ScheduleGridLabel: View {
     let text: String
     @Environment(\.theme) private var theme

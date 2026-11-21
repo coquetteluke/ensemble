@@ -158,7 +158,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | A gallery of ready-made tasks to start from | Has | | Built in this pass: six templates that only read and report |
 | Create a task by describing it in a chat | Missing | 3 | |
 | Hourly, daily, weekdays, weekly | Has | | Plus custom cron |
-| Monthly and one-time | Missing | 3 | |
+| Monthly and one-time | Partly | 4 | Monthly was built in this pass; one-time is not |
 | Start a run from a repository event or a web call | Not planned | 4 | Needs a server |
 | Catch up one missed run after sleep | Has | | |
 | Per-task permission mode | Has | | |
@@ -281,7 +281,7 @@ Counting only gaps nobody else is building.
 | 6 | Message box: "+" menu, @ files, bring back the last message | 2 | After the pictures session lands |
 | 7 | Search: needs you, working, recent and actions before you type | 2 | Built |
 | 8 | Context: tokens left before compacting, a Compact button; Background tasks with a Finished group | 2 | Built |
-| 9 | Scheduled: ready-made tasks, search and sort, monthly, one-time | 2 | Templates, search and sort built; monthly and one-time not yet |
+| 9 | Scheduled: ready-made tasks, search and sort, monthly, one-time | 2 | Built, except one-time |
 | 10 | Keys for next and previous session; check for updates and About | 2 | Built |
 | 11 | Files pane with a tree and search | 2 | Built |
 | 12 | Agent reply actions: fork from here, read aloud, time | 2 | After the pictures session lands |
@@ -308,5 +308,6 @@ Details in `docs/PROGRESS.md`.
 - Plan pace warning under a limit's bar (gap 14).
 - Files tab with the folder's tree and search (gap 11).
 - About window and a manual check for updates (rest of gap 10).
+- Monthly schedules (rest of gap 9, except one-time).
 
 Not clicked through in a running window: the owner's own Ensemble was open during the work, so each piece stands on its tests, both builds and its rendered snapshot.
