@@ -1,6 +1,7 @@
 #if os(macOS)
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 @testable import EnsembleKit
 
@@ -159,6 +160,49 @@ func makeAgentToolsServer(limits: AgentToolsServer.Limits = .init(), folders: [S
         #expect(AgentToolsBridge.socketProblem(path) == nil)
         server.stop()
         #expect(!FileManager.default.fileExists(atPath: path))
+    }
+
+    /// Starting the server leaves the process's file mode mask alone. The mask belongs to the whole process: while
+    /// `start` used to tighten it to 0177 around `bind`, a folder any other thread made in that moment lost its execute
+    /// bit and could not be opened, and one random test in most full runs failed with a permission error.
+    @Test func startingLeavesFoldersOtherThreadsMakeAlone() throws {
+        final class Probe: Sendable {
+            let finished = Atomic<Bool>(false)
+            let made = Atomic<Int>(0)
+            let wrongMode = Atomic<Int>(0)
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ensemble-tools-mask-\(UUID().uuidString)").path
+        try #require(mkdir(root, 0o700) == 0)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let probe = Probe()
+        let workers = DispatchGroup()
+        // Four threads make a folder, read its mode and remove it, over and over, while the server starts.
+        for worker in 0..<4 {
+            workers.enter()
+            Thread {
+                let path = "\(root)/\(worker)"
+                var info = stat()
+                while !probe.finished.load(ordering: .relaxed) {
+                    guard mkdir(path, 0o700) == 0 else { continue }
+                    if lstat(path, &info) != 0 || info.st_mode & 0o777 != 0o700 { probe.wrongMode.add(1, ordering: .relaxed) }
+                    probe.made.add(1, ordering: .relaxed)
+                    rmdir(path)
+                }
+                workers.leave()
+            }.start()
+        }
+        defer {
+            probe.finished.store(true, ordering: .relaxed)
+            workers.wait()
+        }
+        let allWorking = Date().addingTimeInterval(10)
+        while probe.made.load(ordering: .relaxed) < 40, allWorking.timeIntervalSinceNow > 0 { usleep(200) }
+        for _ in 0..<50 {
+            let (server, _, _) = try makeAgentToolsServer()
+            server.stop()
+        }
+        #expect(probe.made.load(ordering: .relaxed) >= 40)
+        #expect(probe.wrongMode.load(ordering: .relaxed) == 0, "a folder made while the server started did not get the mode it asked for")
     }
 
     @Test func attachmentsCarryAKeyPerSession() throws {

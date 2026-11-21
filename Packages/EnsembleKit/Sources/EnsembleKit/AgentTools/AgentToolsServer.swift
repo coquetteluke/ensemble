@@ -134,9 +134,23 @@ public final class AgentToolsServer: AgentToolsAttaching, Sendable {
         #endif
         let fm = FileManager.default
         let folder = parent.appendingPathComponent("ensemble-tools-\(UUID().uuidString.prefix(8).lowercased())", isDirectory: true)
-        try fm.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        // A folder that already existed keeps its mode; insist on 0700.
-        chmod(folder.path, 0o700)
+        // The socket is kept private by its folder and by the order of the steps, never by the process's file mode mask.
+        // The mask belongs to the whole process: while it is tightened, a folder any other thread makes loses its
+        // execute bit and cannot be opened, and a child process started in that moment keeps the tight mask for good.
+        // 1. `mkdir` makes the folder with mode 0700 in one step and fails if anything is already at that path. So the
+        //    folder is new, this user's, and closed to every other user from the moment it exists (a mask can only
+        //    take bits away from 0700; `chmod` puts back any owner bit an unusual one took).
+        // 2. `bind` makes the socket inside it. Reaching a file needs search permission on its folder, so no other
+        //    user can reach the socket even before its own mode is set.
+        // 3. `chmod` sets the socket to 0600 before `listen`, so it is private on its own before the first connection.
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard mkdir(folder.path, 0o700) == 0 else {
+            throw StartError.socket("could not make a private folder in \(parent.path)")
+        }
+        guard chmod(folder.path, 0o700) == 0 else {
+            rmdir(folder.path)
+            throw StartError.socket("could not make \(folder.path) private")
+        }
         let path = folder.appendingPathComponent("s").path
         guard path.utf8.count <= AgentToolsBridge.maxSocketPathLength else {
             try? fm.removeItem(at: folder)
@@ -147,9 +161,9 @@ public final class AgentToolsServer: AgentToolsAttaching, Sendable {
             try? fm.removeItem(at: folder)
             throw StartError.socket("no socket")
         }
-        let oldMask = umask(0o177)
+        // No file mode mask is set for `bind`: the folder made above already keeps every other user out, so the socket
+        // is private whatever mode `bind` gives it, and `chmod` makes it 0600 before `listen` lets anyone connect.
         let bound = AgentToolsBridge.withUnixAddress(path) { bind(fd, $0, $1) }
-        umask(oldMask)
         guard bound == 0, chmod(path, 0o600) == 0, listen(fd, 16) == 0 else {
             close(fd)
             try? fm.removeItem(at: folder)
