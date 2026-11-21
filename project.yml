@@ -66,7 +66,7 @@ targets:
         CODE_SIGN_IDENTITY: "-"
         SKIP_INSTALL: YES
   # "Install Ensemble": the graphical installer on the disk image. scripts/make-installer.sh puts the built
-  # Ensemble.app into its Resources. It compiles two EnsembleKit files directly and links nothing else.
+  # Ensemble.app into its Resources. It compiles three EnsembleKit files directly and links nothing else.
   EnsembleInstaller:
     type: application
     platform: macOS
@@ -75,6 +75,7 @@ targets:
       - path: Apps/Mac/Assets.xcassets
       - path: Packages/EnsembleKit/Sources/EnsembleKit/Engine/EngineSetup.swift
       - path: Packages/EnsembleKit/Sources/EnsembleKit/Install/AppInstaller.swift
+      - path: Packages/EnsembleKit/Sources/EnsembleKit/Install/EngineInstaller.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.coquetteluke.ensemble.installer

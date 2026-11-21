@@ -1,0 +1,134 @@
+[
+ {
+  "tag_name": "v2.3.2",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+   {
+    "name": "opencode-darwin-arm64.zip",
+    "size": 109126744,
+    "digest": "sha256:31ab5a06a29edc7e49b895f35c2b64ebfe7c7f0437b0f2581b006efcd79fee1a",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v2.3.2/opencode-darwin-arm64.zip"
+   },
+   {
+    "name": "opencode-darwin-x64.zip",
+    "size": 114496819,
+    "digest": "sha256:1875a6d1106702f04c9468831563c061bd00337f891a1b4a6cd151155e6aaf5c",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v2.3.2/opencode-darwin-x64.zip"
+   },
+   {
+    "name": "SHA256SUMS",
+    "size": 2544,
+    "digest": "sha256:e048092ace7fe33004c526100df2b10c258269ba460de6e2b17ff52b718d95ad",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v2.3.2/SHA256SUMS"
+   }
+  ]
+ },
+ {
+  "tag_name": "v2.3.1",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+   {
+    "name": "opencode-darwin-arm64.zip",
+    "size": 109121101,
+    "digest": "sha256:7c98869cb57bbc76ad4fa732b591fd61adabeb7a4ab7b9ef9aa91489d356147c",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v2.3.1/opencode-darwin-arm64.zip"
+   },
+   {
+    "name": "opencode-darwin-x64.zip",
+    "size": 114491849,
+    "digest": "sha256:12a294c5c094ec856dea77eae08866279d3920700737d26564ca046f3c44b8d2",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v2.3.1/opencode-darwin-x64.zip"
+   },
+   {
+    "name": "SHA256SUMS",
+    "size": 2544,
+    "digest": "sha256:fb15f2ba02dc0b78cee589ded0c6664a987b29f8ced3fd51dbde1db0c8e2ed29",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v2.3.1/SHA256SUMS"
+   }
+  ]
+ },
+ {
+  "tag_name": "v1.19.6",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+   {
+    "name": "opencode-darwin-arm64.zip",
+    "size": 64493115,
+    "digest": "sha256:c0be3f34dde2fdcb31b25120f303c6ed5b69b828f16e5e0fbecff21a882adda1",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v1.19.6/opencode-darwin-arm64.zip"
+   },
+   {
+    "name": "opencode-darwin-x64.zip",
+    "size": 69315249,
+    "digest": "sha256:39aabb10005059f80f007a119a33405dcd46325300993eb6cbcc961c7243dd31",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v1.19.6/opencode-darwin-x64.zip"
+   }
+  ]
+ },
+ {
+  "tag_name": "process-daemon-v0.6.0",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+   {
+    "name": "SHA256SUMS",
+    "size": 1016,
+    "digest": "sha256:46934b75f4b56ca7e75a937a0f8d8d7e4073e7d9ab57b7d416eb0a40efafc1a7",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/process-daemon-v0.6.0/SHA256SUMS"
+   }
+  ]
+ },
+ {
+  "tag_name": "v2.3.0",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+   {
+    "name": "opencode-darwin-arm64.zip",
+    "size": 108043550,
+    "digest": "sha256:7907df2b12720a840fbb49c5b978b9b82925b6bf75479a5fd216afa8932b6702",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v2.3.0/opencode-darwin-arm64.zip"
+   },
+   {
+    "name": "opencode-darwin-x64.zip",
+    "size": 113407057,
+    "digest": "sha256:79a4841925e3344d5bb4b000acf6c50b11de301e9047aa9bea9e288e77fe4249",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v2.3.0/opencode-darwin-x64.zip"
+   },
+   {
+    "name": "SHA256SUMS",
+    "size": 2544,
+    "digest": "sha256:8684fbfb1e03debf1471a49c4baf345c8453b97db83b8d1f225816bd69cf9d5a",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v2.3.0/SHA256SUMS"
+   }
+  ]
+ },
+ {
+  "tag_name": "v2.2.7",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+   {
+    "name": "opencode-darwin-arm64.zip",
+    "size": 108290453,
+    "digest": "sha256:811c42be9cad489ea8c411ead49e06f691deee4957ba9a0a56a159a7d6c1abdc",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v2.2.7/opencode-darwin-arm64.zip"
+   },
+   {
+    "name": "opencode-darwin-x64.zip",
+    "size": 113689920,
+    "digest": "sha256:3e4ea96ece041218cc74bc7c7d5cd202ff1f7983e32fc7ab6c58d532445e7961",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v2.2.7/opencode-darwin-x64.zip"
+   },
+   {
+    "name": "SHA256SUMS",
+    "size": 2544,
+    "digest": "sha256:72c73a07124c65662239facaa7da2f3fe474078bbd4cbfa68bf90ae8fdca3b8b",
+    "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v2.2.7/SHA256SUMS"
+   }
+  ]
+ }
+]

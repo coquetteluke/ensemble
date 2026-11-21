@@ -172,71 +172,92 @@ struct InstallerView: View {
         }
         return VStack(alignment: .leading, spacing: 22) {
             heading("Installing", label)
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(InstallerColors.raised)
-                    Capsule().fill(InstallerColors.accent).frame(width: max(8, proxy.size.width * fraction))
-                }
-            }
-            .frame(height: 8)
-            .animation(.easeInOut(duration: 0.35), value: fraction)
-            .accessibilityLabel("Install progress")
-            .accessibilityValue("\(Int(fraction * 100)) percent")
+            progressBar(fraction, label: "Install progress")
             Spacer()
         }
     }
 
     private var engine: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            heading("Set up the engine", "Ensemble is installed. It runs its agents through OpenCode, which is not on this Mac yet. "
-                    + (model.steps.count == 1 ? "Run this command in Terminal." : "Run these commands in Terminal, one at a time.")
-                    + " This window moves on by itself when OpenCode is installed.")
-            ForEach(Array(model.steps.enumerated()), id: \.element.id) { index, step in
-                commandCard(step, number: model.steps.count > 1 ? index + 1 : nil)
+        VStack(alignment: .leading, spacing: 18) {
+            heading("Set up the engine", "Ensemble is installed. It runs its agents through OpenCode, a free, open-source program that is not on this Mac yet.")
+            VStack(alignment: .leading, spacing: 12) {
+                switch model.engineInstall {
+                case .idle, .failed:
+                    Text("The installer downloads OpenCode (about 110 MB) from OpenCode's own releases, checks that it is the file OpenCode published and signed, and puts it in \(model.engineFolderName).")
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(InstallerColors.secondary)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if case .failed(let message) = model.engineInstall {
+                        Text(message)
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(InstallerColors.danger)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                case .working(let stage):
+                    Text(Self.label(for: stage)).font(.system(size: 13, weight: .medium))
+                    progressBar(Self.fraction(for: stage), label: "Engine install progress")
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(InstallerColors.raised))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(InstallerColors.border, lineWidth: 1))
+            if model.setup.homebrewInstalled, !model.isInstallingEngine {
+                HStack(spacing: 8) {
+                    Text("Or with Homebrew:").font(.system(size: 12)).foregroundStyle(InstallerColors.secondary)
+                    Text(EngineSetup.openCodeCommand).font(.system(size: 11.5, design: .monospaced)).textSelection(.enabled)
+                    Button(model.copied ? "Copied" : "Copy") { model.copyHomebrewCommand() }
+                        .buttonStyle(InstallerSecondaryButton())
+                        .accessibilityLabel("Copy the Homebrew command")
+                }
             }
             Spacer(minLength: 0)
-            HStack(spacing: 10) {
-                Button("Open Terminal") { model.openTerminal() }.buttonStyle(InstallerSecondaryButton())
-                if model.checkedWithoutLuck {
-                    Text("OpenCode is not installed yet.").font(.system(size: 12)).foregroundStyle(InstallerColors.secondary)
+            if !model.isInstallingEngine {
+                HStack(spacing: 10) {
+                    if model.checkedWithoutLuck {
+                        Text("OpenCode is not installed yet.").font(.system(size: 12)).foregroundStyle(InstallerColors.secondary)
+                    }
+                    Spacer()
+                    Button("Set up later") { model.setUpLater() }.buttonStyle(InstallerSecondaryButton())
+                    Button(model.engineInstall == .idle ? "Install the engine" : "Try again") { model.installEngine() }
+                        .buttonStyle(InstallerPrimaryButton())
+                        .keyboardShortcut(.defaultAction)
                 }
-                Spacer()
-                Button("Set up later") { model.setUpLater() }.buttonStyle(InstallerSecondaryButton())
-                Button("Check again") { model.checkAgain() }
-                    .buttonStyle(InstallerPrimaryButton())
-                    .keyboardShortcut(.defaultAction)
             }
         }
     }
 
-    private func commandCard(_ step: EngineSetup.Step, number: Int?) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text(number.map { "\($0). \(step.title)" } ?? step.title).font(.system(size: 13, weight: .semibold))
-                Spacer()
-                if step.done {
-                    Label("Installed", systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(InstallerColors.success)
-                }
-            }
-            HStack(spacing: 10) {
-                Text(step.command)
-                    .font(.system(size: 11.5, design: .monospaced))
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Button(model.copied == step.kind ? "Copied" : "Copy") { model.copy(step) }
-                    .buttonStyle(InstallerSecondaryButton())
-                    .accessibilityLabel("Copy the command for \(step.title)")
-            }
-            .padding(9)
-            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(InstallerColors.code))
+    static func label(for stage: EngineInstaller.Stage) -> String {
+        switch stage {
+        case .finding: "Finding the newest OpenCode"
+        case .downloading(let fraction): "Downloading OpenCode, \(Int(fraction * 100))%"
+        case .checking: "Checking the download"
+        case .installing: "Installing"
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(InstallerColors.raised))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(InstallerColors.border, lineWidth: 1))
-        .opacity(step.done ? 0.6 : 1)
+    }
+
+    static func fraction(for stage: EngineInstaller.Stage) -> Double {
+        switch stage {
+        case .finding: 0.03
+        case .downloading(let fraction): 0.05 + 0.8 * fraction
+        case .checking: 0.9
+        case .installing: 0.97
+        }
+    }
+
+    private func progressBar(_ fraction: Double, label: String) -> some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(InstallerColors.code)
+                Capsule().fill(InstallerColors.accent).frame(width: max(8, proxy.size.width * fraction))
+            }
+        }
+        .frame(height: 8)
+        .animation(.easeInOut(duration: 0.35), value: fraction)
+        .accessibilityLabel(label)
+        .accessibilityValue("\(Int(fraction * 100)) percent")
     }
 
     private var done: some View {
@@ -247,7 +268,7 @@ struct InstallerView: View {
                 .accessibilityHidden(true)
             heading("Ensemble is installed", model.setup.openCodeInstalled
                     ? "It is in \(model.destinationName), and its engine is ready. You can eject the installer disk and delete the download."
-                    : "It is in \(model.destinationName). The engine is not set up yet: Ensemble shows the same commands when you open it. You can eject the installer disk and delete the download.")
+                    : "It is in \(model.destinationName). The engine is not set up yet: Ensemble offers to install it when you open it. You can eject the installer disk and delete the download.")
             Spacer()
             HStack(spacing: 10) {
                 Spacer()

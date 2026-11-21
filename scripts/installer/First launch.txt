@@ -12,9 +12,10 @@ ENSEMBLE: FIRST LAUNCH
    Next to "Install Ensemble" was blocked to protect your Mac, press Open Anyway.
    Press Open Anyway again in the dialog, then use Touch ID or your Mac password.
 
-4. The installer opens. Press Install. It copies Ensemble to your Applications
-   folder, shows the command that installs the engine (brew install opencode),
-   and opens Ensemble. macOS does not ask again for Ensemble itself.
+4. The installer opens. Press Install, then Install the engine. It copies
+   Ensemble to your Applications folder, downloads the engine (OpenCode) for
+   you, and opens Ensemble. You do not need Homebrew. macOS does not ask again
+   for Ensemble itself.
 
 To skip steps 2 and 3, eject this disk, run this in Terminal, and open the
 download again:

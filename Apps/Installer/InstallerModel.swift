@@ -13,23 +13,31 @@ final class InstallerModel {
         case failed(String)
     }
 
+    /// The engine download, which only starts when the person presses Install the engine.
+    enum EngineInstall: Equatable {
+        case idle
+        case working(EngineInstaller.Stage)
+        case failed(String)
+    }
+
     private(set) var phase: Phase = .welcome
     private(set) var setup = EngineSetup(homebrewInstalled: true, openCodeInstalled: false)
-    /// Homebrew was missing when the engine step opened, so its row stays listed (ticked once it is installed).
-    private(set) var includeHomebrew = false
+    private(set) var engineInstall: EngineInstall = .idle
     private(set) var checkedWithoutLuck = false
-    private(set) var copied: EngineSetup.Step.Kind?
+    private(set) var copied = false
     /// Ensemble is open from the place it is about to be replaced in.
     private(set) var appIsOpen = false
 
     let installer: AppInstaller
+    let engineInstaller: EngineInstaller
     let version: String?
     let replacingVersion: String?
     let icon: NSImage
 
     /// `forPictures` draws a first install, whatever is in the destination on the Mac that makes the pictures.
-    init(payload: URL, destinationFolder: URL, forPictures: Bool = false) {
+    init(payload: URL, destinationFolder: URL, engineInstaller: EngineInstaller = EngineInstaller(), forPictures: Bool = false) {
         installer = AppInstaller(payload: payload, destinationFolder: destinationFolder)
+        self.engineInstaller = engineInstaller
         version = AppInstaller.version(of: payload)
         replacingVersion = forPictures ? nil : AppInstaller.version(of: installer.installedURL)
         let systemIcon = FileManager.default.fileExists(atPath: payload.path)
@@ -55,15 +63,21 @@ final class InstallerModel {
     }
 
     /// For pictures of each screen.
-    func show(_ phase: Phase, setup: EngineSetup? = nil, includeHomebrew: Bool = false) {
+    func show(_ phase: Phase, setup: EngineSetup? = nil, engineInstall: EngineInstall = .idle) {
         self.phase = phase
         if let setup { self.setup = setup }
-        self.includeHomebrew = includeHomebrew
+        self.engineInstall = engineInstall
     }
 
     var title: String { version.map { "Ensemble \($0)" } ?? "Ensemble" }
     var destinationName: String { (installer.destinationFolder.path as NSString).abbreviatingWithTildeInPath }
-    var steps: [EngineSetup.Step] { setup.steps(includeHomebrew: includeHomebrew) }
+    var engineFolderName: String { (engineInstaller.destinationFolder.path as NSString).abbreviatingWithTildeInPath }
+    var isInstallingEngine: Bool { if case .working = engineInstall { true } else { false } }
+
+    /// Where OpenCode is looked for: the usual places, plus the folder this installer puts it in.
+    private func detectSetup() -> EngineSetup {
+        EngineSetup.detect(engineSearchPaths: EngineSetup.engineSearchPaths() + [engineInstaller.destinationFolder.path])
+    }
 
     private func runningCopies() -> [NSRunningApplication] {
         let target = installer.installedURL.standardizedFileURL.path
@@ -103,47 +117,78 @@ final class InstallerModel {
     }
 
     private func beginEngineStep() {
-        setup = EngineSetup.detect()
-        includeHomebrew = !setup.homebrewInstalled
+        setup = detectSetup()
         phase = setup.openCodeInstalled ? .done : .engine
     }
 
-    /// Looks every three seconds while the engine step is open, and moves on by itself once OpenCode is there.
+    /// Downloads OpenCode from its own releases, checks it and installs it. Only ever started by the person (the
+    /// Install the engine button) or by `--unattended`.
+    func installEngine() {
+        guard phase == .engine, !isInstallingEngine else { return }
+        engineInstall = .working(.finding)
+        checkedWithoutLuck = false
+        let engineInstaller = engineInstaller
+        Task {
+            do {
+                try await engineInstaller.install { stage in
+                    Task { @MainActor in
+                        if case .working = self.engineInstall { self.engineInstall = .working(stage) }
+                    }
+                }
+                engineInstall = .idle
+                setup = detectSetup()
+                setup.openCodeInstalled = true
+                phase = .done
+            } catch {
+                engineInstall = .failed(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Looks every three seconds while the engine step is open, and moves on by itself if OpenCode arrives some
+    /// other way (Homebrew, for example).
     func watchForTheEngine() async {
         while !Task.isCancelled, phase == .engine {
             try? await Task.sleep(for: .seconds(3))
-            guard phase == .engine else { return }
-            setup = EngineSetup.detect()
+            guard phase == .engine, !isInstallingEngine else { continue }
+            setup = detectSetup()
             if setup.openCodeInstalled { phase = .done }
         }
     }
 
     func checkAgain() {
-        setup = EngineSetup.detect()
+        setup = detectSetup()
         checkedWithoutLuck = !setup.openCodeInstalled
         if setup.openCodeInstalled { phase = .done }
     }
 
-    func setUpLater() { phase = .done }
-
-    func copy(_ step: EngineSetup.Step) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(step.command, forType: .string)
-        copied = step.kind
-        Task {
-            try? await Task.sleep(for: .seconds(2))
-            if copied == step.kind { copied = nil }
-        }
+    func setUpLater() {
+        guard !isInstallingEngine else { return }
+        phase = .done
     }
 
-    func openTerminal() {
-        NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"),
-                                           configuration: NSWorkspace.OpenConfiguration())
+    func copyHomebrewCommand() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(EngineSetup.openCodeCommand, forType: .string)
+        copied = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            copied = false
+        }
     }
 
     func openEnsemble() {
         NSWorkspace.shared.openApplication(at: installer.installedURL, configuration: NSWorkspace.OpenConfiguration()) { _, _ in
             Task { @MainActor in NSApp.terminate(nil) }
+        }
+    }
+
+    /// For `--unattended`: opens Ensemble and reports whether it started.
+    func openEnsembleAndWait() async -> Bool {
+        await withCheckedContinuation { continuation in
+            NSWorkspace.shared.openApplication(at: installer.installedURL, configuration: NSWorkspace.OpenConfiguration()) { app, _ in
+                continuation.resume(returning: app != nil)
+            }
         }
     }
 

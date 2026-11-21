@@ -11,8 +11,10 @@ Ensemble is a native Mac app, with an iPhone remote, for coding with Claude, GPT
 **[Download Ensemble for Mac](https://github.com/coquetteluke/ensemble/releases)** (Apple silicon, macOS 26 or later). No Xcode needed.
 
 1. On the Releases page, download `Ensemble-<version>.dmg` and `SHA256SUMS`.
-2. Open the disk image and double-click **Install Ensemble**. The installer copies Ensemble to Applications, helps you set up the engine, and opens the app.
+2. Open the disk image and double-click **Install Ensemble**. The installer copies Ensemble to Applications, downloads the engine for you, and opens the app. You do not need Homebrew or Xcode.
 3. The [install guide](docs/INSTALL.md) has every step with pictures.
+
+Prefer to let your AI assistant do it? The guide has [a prompt you can paste](docs/INSTALL.md#let-your-ai-assistant-install-it), and `scripts/install-ensemble.sh` installs everything from the terminal with no window.
 
 macOS warns the first time you open the installer, because it is not notarized (that needs a paid Apple Developer account). The warning means Apple has not checked it, not that it is harmful. The guide [explains it and shows how to open the installer](docs/INSTALL.md#first-launch-the-macos-warning).
 
@@ -40,7 +42,7 @@ Ensemble is not affiliated with Anthropic, OpenAI, xAI, Google or OpenCode. Its 
 To use the download, see [Download](#download) above. To build it yourself:
 
 - macOS 26 or later, Xcode 27 to build
-- [OpenCode](https://opencode.ai) 2.3 or later: `brew install opencode`
+- [OpenCode](https://opencode.ai) 2.3 or later: `brew install opencode` (the installer and the app can also download it for you)
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen) to generate the Xcode project: `brew install xcodegen`
 - API keys for the providers you want to use
 - For the iPhone remote: iOS 26 and [Tailscale](https://tailscale.com) on both devices

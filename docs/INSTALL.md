@@ -6,14 +6,14 @@ Short version:
 
 1. Download `Ensemble-<version>.dmg`, open it, and double-click **Install Ensemble**.
 2. macOS blocks the installer the first time. Go to System Settings, Privacy & Security, and press **Open Anyway**. [Why, and the exact steps](#first-launch-the-macos-warning).
-3. In the installer, press **Install**. It copies Ensemble to Applications, shows the command for the engine (`brew install opencode`), and opens Ensemble.
+3. In the installer, press **Install**, then **Install the engine**. It copies Ensemble to Applications, downloads the engine for you, and opens Ensemble. You do not need Homebrew or anything else.
 4. In Ensemble, open Settings, Accounts, and sign in or add an API key.
 
 ## What you need
 
 - A Mac with Apple silicon (M1 or newer). There is no Intel build.
 - macOS 26 or later.
-- [Homebrew](https://brew.sh), to install the engine. If you do not have it, the installer shows you the command.
+- An internet connection during the install, for the engine (about 110 MB).
 - An account or API key for at least one model provider.
 
 ## 1. Download and check
@@ -108,27 +108,42 @@ Press **Install**. The installer:
 
 Ensemble is the window. The agents are run by [OpenCode](https://opencode.ai), a free, open-source program that Ensemble starts and talks to in the background. OpenCode is not inside the download. If it is not on your Mac, the installer shows this next:
 
-![The installer on its second step, Set up the engine. Step 1, Install Homebrew, and step 2, Install OpenCode, each show a command with a Copy button. Below are the buttons Open Terminal, Set up later and Check again](install/06-installer-engine.png)
+![The installer on its second step, Set up the engine. It explains that it downloads OpenCode from OpenCode's own releases, with the buttons Set up later and Install the engine](install/06-installer-engine.png)
 
-1. Press **Open Terminal**.
-2. If the window lists **Install Homebrew**, press **Copy** next to it, paste the command into Terminal and press Return. It asks for your Mac password and takes a few minutes. If you already have Homebrew, this step is not shown.
-3. Press **Copy** next to **Install OpenCode**, paste, press Return:
+Press **Install the engine**. Nothing is downloaded before you press it. The installer then:
 
-   ```bash
-   brew install opencode
-   ```
+1. Downloads OpenCode's own Mac build from OpenCode's releases on GitHub.
+2. Checks it twice: against the SHA-256 that OpenCode publishes, and that it is signed by OpenCode's Apple developer certificate. A file that fails either check is thrown away.
+3. Puts it in `~/.opencode/bin`, the same folder OpenCode's own installer uses. No password is needed.
 
-The installer looks for OpenCode every few seconds and moves on by itself when the install finishes. **Check again** looks at once. **Set up later** skips this: Ensemble shows the same commands when you open it.
+You do not need Homebrew. If you already use it, the window also shows `brew install opencode`, which works just as well. **Set up later** skips the engine: Ensemble offers the same button when you open it.
 
-The installer never downloads or runs anything on its own. You run both commands yourself.
-
-Ensemble needs OpenCode 2.3.0 or newer. If yours is older, Ensemble says so and shows `brew upgrade opencode`.
+Ensemble needs OpenCode 2.3.0 or newer.
 
 ### Done
 
 ![The installer on its last step: a green tick, Ensemble is installed, and the buttons Show in Finder and Open Ensemble](install/07-installer-done.png)
 
 Press **Open Ensemble**. You can now eject the Ensemble disk and delete the download.
+
+## Let your AI assistant install it
+
+If you use an AI assistant that can run commands on your Mac (Claude Code, Codex, Gemini CLI and the like), you can hand it the whole job. Paste this:
+
+```text
+Install the Ensemble Mac app for me from https://github.com/coquetteluke/ensemble, using its terminal installer, not the graphical one.
+
+1. Download https://raw.githubusercontent.com/coquetteluke/ensemble/main/scripts/install-ensemble.sh into a temporary folder and read it before you run it. It should only do this: download the newest Ensemble release, check it against the published SHA-256, copy Ensemble to my Applications folder, install the OpenCode engine into ~/.opencode/bin if it is missing, and open Ensemble.
+2. Run it with: bash install-ensemble.sh
+3. Do not use sudo, do not ask me for my password, and do not change any security setting. If the script asks for any of those, stop and tell me.
+4. When it finishes, tell me the version it installed and the lines it printed. If a step failed, show me the exact error and do not try another way of installing it.
+```
+
+What that does, so you know what you are agreeing to:
+
+- It runs [`scripts/install-ensemble.sh`](../scripts/install-ensemble.sh) from this repository. You can also run it yourself in Terminal.
+- The script downloads the same disk image as above, checks its SHA-256, and runs the installer inside it without opening its window. The result is the same as pressing Install, Install the engine and Open Ensemble.
+- There is no macOS warning on this path. Files fetched by a command line tool do not get the "downloaded from the internet" mark that a browser adds, so Gatekeeper is not involved. The SHA-256 check is what stands in for it, which is why the prompt tells the assistant to read the script first.
 
 ## 4. Sign in to your models
 
@@ -154,9 +169,9 @@ There is no automatic update. To update:
 2. Open it and run **Install Ensemble**. macOS shows the warning again for every new download, so repeat [Open it anyway](#open-it-anyway).
 3. Press **Install and replace**. If Ensemble is open, the installer quits it first.
 
-Your sessions, settings and sign-ins stay. If you paired an iPhone, macOS asks for your password again before the new copy can read the pairing code from your keychain. That is because each build has a different signature.
+Your sessions, settings and sign-ins stay. An update does not ask for your keychain password: every release is signed with the same project certificate, so macOS sees the new copy as the same app. (The one exception is moving on from 0.1.0, which was signed differently. macOS asks once, and you can choose Always Allow.)
 
-To update the engine: `brew upgrade opencode`.
+To update the engine: `~/.opencode/bin/opencode upgrade`, or `brew upgrade opencode` if you installed it with Homebrew.
 
 ## Uninstalling
 
@@ -174,7 +189,7 @@ To update the engine: `brew upgrade opencode`.
 3. If you paired an iPhone, open **Keychain Access**, search for `com.coquetteluke.ensemble`, and delete what it finds.
 4. Folders you worked in may hold a `.ensemble` folder (session worktrees). Delete it if you do not need those branches.
 
-OpenCode is a separate program with its own data, and other tools may use it. To remove it as well: `brew uninstall opencode`.
+OpenCode is a separate program with its own data, and other tools may use it. To remove it as well: `~/.opencode/bin/opencode uninstall` (it keeps your session data), or `brew uninstall opencode` if you installed it with Homebrew.
 
 ## iPhone remote
 
@@ -186,8 +201,6 @@ The iPhone app is not part of this download. Without a paid Apple Developer acco
 - **"Install Ensemble is damaged and can't be opened."** The download is incomplete or was changed. Delete it, download again, and run the SHA-256 check.
 - **"The copy did not pass its check."** The installer found that its copy of Ensemble was changed or cut short, and installed nothing. Download it again.
 - **"You do not have permission to change that folder."** Ask someone with an administrator account on this Mac to run the installer.
-- **Ensemble shows "Install the engine".** OpenCode is not installed yet. The screen has the same commands as the installer and carries on by itself:
-
-  ![The Ensemble window on first launch without the engine. Title: Install the engine, with the install commands, Open Terminal and Check again](install/09-engine-in-app.png)
-
+- **The engine download fails.** The installer says why. "Did not match the checksum" or "is not signed by OpenCode" means the file was changed or cut short on the way: press Try again. No connection: connect and press Try again, or press Set up later and use the Install the engine button in Ensemble.
+- **Ensemble shows "Install the engine".** OpenCode is not installed yet. Press the button there. It does the same as the installer.
 - **"The engine did not start."** Run `opencode service status` in Terminal and read what it says, then press Try again in Ensemble.

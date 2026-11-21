@@ -110,16 +110,19 @@ enum SnapshotRenderer {
             }
         }
 
-        // First launch without the engine: Homebrew missing, Homebrew installed part way through, Homebrew already there.
-        let setups: [(String, EngineSetup, Bool)] = [
-            ("engine-setup-no-homebrew", EngineSetup(homebrewInstalled: false, openCodeInstalled: false), true),
-            ("engine-setup-homebrew-done", EngineSetup(homebrewInstalled: true, openCodeInstalled: false), true),
-            ("engine-setup", EngineSetup(homebrewInstalled: true, openCodeInstalled: false), false),
+        // First launch without the engine: ready to install (with and without Homebrew), downloading, and a failure.
+        let noHomebrew = EngineSetup(homebrewInstalled: false, openCodeInstalled: false)
+        let withHomebrew = EngineSetup(homebrewInstalled: true, openCodeInstalled: false)
+        let setups: [(String, EngineSetup, EngineSetupView.Install)] = [
+            ("engine-setup", noHomebrew, .idle),
+            ("engine-setup-homebrew", withHomebrew, .idle),
+            ("engine-setup-downloading", noHomebrew, .working(.downloading(fraction: 0.43))),
+            ("engine-setup-failed", noHomebrew, .failed(EngineInstaller.InstallError.wrongChecksum.localizedDescription)),
         ]
-        for (name, setup, startedWithoutHomebrew) in setups {
+        for (name, setup, install) in setups {
             for scheme in [ColorScheme.dark, .light] {
                 save("\(name)-\(scheme == .dark ? "dark" : "light")", width: 980, height: 620, scheme: scheme) {
-                    EngineSetupView(retry: {}, fixedSetup: setup, includeHomebrew: startedWithoutHomebrew)
+                    EngineSetupView(retry: {}, fixedSetup: setup, install: install)
                 }
             }
         }

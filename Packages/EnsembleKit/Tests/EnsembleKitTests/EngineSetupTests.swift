@@ -46,25 +46,11 @@ import Testing
         #expect(!EngineSetup.detect(engineSearchPaths: [directory.path], homebrewDirectories: []).openCodeInstalled)
     }
 
-    @Test func listsHomebrewOnlyWhenItWasMissing() {
-        let missing = EngineSetup(homebrewInstalled: false, openCodeInstalled: false)
-        #expect(missing.steps(includeHomebrew: true).map(\.kind) == [.homebrew, .openCode])
-        #expect(missing.steps(includeHomebrew: true).map(\.done) == [false, false])
-        #expect(missing.steps(includeHomebrew: false).map(\.kind) == [.openCode])
-    }
-
-    @Test func keepsTheHomebrewStepTickedOnceItIsInstalled() {
-        let halfway = EngineSetup(homebrewInstalled: true, openCodeInstalled: false)
-        let steps = halfway.steps(includeHomebrew: true)
-        #expect(steps.map(\.kind) == [.homebrew, .openCode])
-        #expect(steps.map(\.done) == [true, false])
-    }
-
-    @Test func commandsAreTheOfficialOnes() {
+    @Test func looksWhereOpenCodesOwnInstallerPutsIt() {
+        // `EngineInstaller` installs into ~/.opencode/bin, so the search has to include it.
+        #expect(EngineSetup.engineSearchPaths().contains(EngineInstaller.defaultDestination().path))
+        #expect(EngineManager.defaultSearchPaths() == EngineSetup.engineSearchPaths())
         #expect(EngineSetup.openCodeCommand == "brew install opencode")
-        #expect(EngineSetup.homebrewCommand.contains("https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"))
-        #expect(EngineSetup(homebrewInstalled: false, openCodeInstalled: false).steps(includeHomebrew: true).map(\.command)
-                == [EngineSetup.homebrewCommand, EngineSetup.openCodeCommand])
     }
 
     /// Check again and the automatic check can land together. Two checks at once must start the service once.
