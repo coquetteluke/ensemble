@@ -204,6 +204,17 @@ final class SearchCenter {
         }
     }
 
+    /// Scrolls the open transcript to a message and flashes it (the outline's rows), like opening a search result.
+    func jump(to itemID: String, in sessionID: String) {
+        focusToken &+= 1
+        let token = focusToken
+        transcriptFocus = TranscriptFocus(sessionID: sessionID, itemID: itemID, token: token)
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            if self?.transcriptFocus?.token == token { self?.transcriptFocus = nil }
+        }
+    }
+
     /// Scrolls the transcript to a message without opening a result (snapshots).
     func debugFocus(sessionID: String, itemID: String) {
         focusToken &+= 1

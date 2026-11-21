@@ -76,7 +76,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | Under the agent's reply: copy, fork from here, pin as chapter, read aloud, time | Partly | 2 | Copy and Second opinion; no fork, chapter, read aloud or time |
 | Folded runs of tool calls, a live working row | Has | | |
 | **Next-step box** when a turn ends: a short recap of what changed, one question, one or two buttons (reply, commit, open a pull request, verify) | Partly | 3 | Built in this pass from the transcript: recap, the closing question, Yes, No and Review changes. The agent does not write the recap, and there are no commit or pull request buttons on the card |
-| **Chapters**: named dividers in a long transcript and a floating list to jump between them | Missing | 2 | |
+| **Chapters**: named dividers in a long transcript and a floating list to jump between them | Partly | 3 | Built in this pass as a jump list of your messages in the title row, with pins as chapters. No dividers in the transcript and no pin button on a message yet |
 | Task list pinned under the newest message, one step in progress | In progress | 1 | A first version is on this branch |
 | Pictures inside messages | In progress | 2 | |
 | Cards that offer a separate session: start, do it here | Has | | |
@@ -273,16 +273,16 @@ Counting only gaps nobody else is building.
 
 | # | Gap | Rank | Can it be built now |
 |---|---|---|---|
-| 1 | Next-step box at the end of a turn | 1 | Yes |
-| 2 | Title-bar session menu, click the title to rename | 1 | Yes |
+| 1 | Next-step box at the end of a turn | 1 | Built, worked out from the transcript |
+| 2 | Title-bar session menu, click the title to rename | 1 | Built |
 | 3 | Side panel with tabs and a "+" | 1 | Yes |
-| 4 | Chapters and a list to jump between them | 2 | Yes |
+| 4 | Chapters and a list to jump between them | 2 | Built as a jump list with pinned chapters |
 | 5 | Sidebar: your own sections, sort direction, saved collapse, archived view, fuller row menu | 2 | After the sidebar session lands |
 | 6 | Message box: "+" menu, @ files, bring back the last message | 2 | After the pictures session lands |
-| 7 | Search: needs you, working, recent and actions before you type | 2 | Yes |
-| 8 | Context: tokens left before compacting, a Compact button; Background tasks with a Finished group | 2 | Yes |
+| 7 | Search: needs you, working, recent and actions before you type | 2 | Built |
+| 8 | Context: tokens left before compacting, a Compact button; Background tasks with a Finished group | 2 | Built |
 | 9 | Scheduled: ready-made tasks, search and sort, monthly, one-time | 2 | Yes |
-| 10 | Keys for next and previous session; check for updates and About | 2 | Yes |
+| 10 | Keys for next and previous session; check for updates and About | 2 | Keys built; updates and About not yet |
 | 11 | Files pane with a tree and search | 2 | Yes |
 | 12 | Agent reply actions: fork from here, read aloud, time | 2 | After the pictures session lands |
 | 13 | Settings: notifications by kind, storage, branch prefix, quiet-session archiving, reply style | 3 | After the font session lands |
@@ -302,3 +302,6 @@ Details in `docs/PROGRESS.md`.
 - Next-step card under a finished turn (gap 1).
 - Context card: room left before compacting and a Compact button. Background list: a Finished group (gap 8).
 - Search start screen (gap 7) and keys for next and previous session (half of gap 10).
+- Jump list of your messages with pinned chapters (gap 4).
+
+Not clicked through in a running window: the owner's own Ensemble was open during the work, so each piece stands on its tests, both builds and its rendered snapshot.

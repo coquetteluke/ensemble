@@ -150,6 +150,13 @@ final class WindowState {
         set { if let host { host.renameRequestToken = newValue } else { renameRequestTokenValue = newValue } }
     }
 
+    private var outlineRequestTokenValue = 0
+    /// Bumped to open the title row's outline (the palette's Jump to a message).
+    var outlineRequestToken: Int {
+        get { host?.outlineRequestToken ?? outlineRequestTokenValue }
+        set { if let host { host.outlineRequestToken = newValue } else { outlineRequestTokenValue = newValue } }
+    }
+
     private var requestedMenuValue: ComposerMenu?
     /// A composer menu a slash command asked to open (the composer opens it and clears this).
     var requestedMenu: ComposerMenu? {

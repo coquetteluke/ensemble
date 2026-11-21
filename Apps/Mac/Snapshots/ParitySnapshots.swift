@@ -72,6 +72,19 @@ enum ParitySnapshots {
             save("next-step-\(tone)\(suffix)", width: 760, height: nil, scheme: scheme) {
                 NextStepSnapshot()
             }
+            // The outline: your messages in a session, with two pinned as chapters.
+            save("outline-\(tone)\(suffix)", width: 468, height: nil, scheme: scheme) {
+                VStack(alignment: .leading, spacing: 18) {
+                    SnapshotPopoverCard {
+                        SessionOutlineList(entries: Self.outlineEntries, now: Self.now, onJump: { _ in }, onPin: { _ in })
+                    }
+                    SnapshotPopoverCard {
+                        SessionOutlineList(entries: Self.outlineEntries, now: Self.now, initiallyChaptersOnly: true,
+                                           onJump: { _ in }, onPin: { _ in })
+                    }
+                }
+                .padding(24)
+            }
             // Search before anything is typed: what needs you, what is working, recent sessions, actions.
             save("search-start-\(tone)\(suffix)", width: SearchPanel.width + 48, height: nil, scheme: scheme) {
                 SearchPanel(search: startSearch, store: store, window: window)
@@ -106,6 +119,25 @@ enum ParitySnapshots {
 
 extension ParitySnapshots {
     static let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    /// A session's outline: six turns, two of them pinned as chapters.
+    static var outlineEntries: [OutlineEntry] {
+        let turns: [(String, Double, Int)] = [
+            ("Build the context panel like the reference: environment, context, outputs, connectors", 190, 4),
+            ("The bar should size each part by the limit, not by what is used", 164, 2),
+            ("Run the tests", 150, 0),
+            ("Now the Outputs list, with file icons and the added and removed counts", 96, 3),
+            ("/compact", 41, 0),
+            ("Show connector status and an Authenticate button", 6, 1),
+        ]
+        let items: [TranscriptItem] = turns.enumerated().flatMap { index, turn -> [TranscriptItem] in
+            let edits: [TranscriptItem] = (0..<turn.2).map {
+                .tool(ToolCallInfo(id: "t\(index)-\($0)", name: "edit", title: "File\($0).swift", status: .succeeded))
+            }
+            return [.user(id: "u\(index)", text: turn.0, date: now.addingTimeInterval(-turn.1 * 60))] + edits
+        }
+        return TranscriptOutline.entries(items, pinned: ["u0", "u3"])
+    }
 
     /// Three rows that ran and ended: a subagent, a command and a task.
     static var finishedHistory: BackgroundHistory {

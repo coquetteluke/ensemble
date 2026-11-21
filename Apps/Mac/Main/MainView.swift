@@ -154,6 +154,11 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: .ensembleShowReview)) { _ in
             if !window.reviewOpen { window.openSidePane(.review) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .ensembleJumpToMessage)) { note in
+            guard let sessionID = note.userInfo?["sessionID"] as? String, let itemID = note.userInfo?["itemID"] as? String,
+                  sessionID == store.selectedSessionID else { return }
+            search.jump(to: itemID, in: sessionID)
+        }
         .claudeImport(store: store)
         .alert("Something went wrong", isPresented: errorShown, presenting: store.lastError) { _ in
             Button("OK") { store.lastError = nil }
@@ -676,6 +681,7 @@ struct CenterHeader: View {
                     .disabled(disabled)
                     .help(disabled ? "Needs at least 2 available models" : "Add agents and continue in a room")
                 }
+                SessionOutlineButton(session: session, window: window)
                 // Room for the window's toolbar button when no pane is open on the right.
                 TranscriptViewModeMenu()
                     .padding(.trailing, window.showContextPanel ? theme.z(12) : MainView.toolbarButtonsWidth)

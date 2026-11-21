@@ -91,7 +91,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
     case compactConversation, revealFolder
     case switchModel, switchMode, modeAsk, modeAcceptEdits, modeAuto, modePlan, modeBypass, changeEffort, toggleFastMode, sideQuestion, focusComposer
     case allowOnce, alwaysAllow, reject
-    case nextTranscriptView, viewNormal, viewThinking, viewVerbose, copyTranscriptMarkdown
+    case nextTranscriptView, viewNormal, viewThinking, viewVerbose, copyTranscriptMarkdown, jumpToMessage
     case toggleSidebar, toggleContextPanel, toggleBrowser, closeFileViewer, zoomIn, zoomOut, actualSize
     case openInSplit, closePane, nextPane, previousPane, equalizePanes, closeSplit
     case toggleTerminal, newTerminalTab
@@ -142,6 +142,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .viewThinking: "Transcript view: Thinking"
         case .viewVerbose: "Transcript view: Verbose"
         case .copyTranscriptMarkdown: "Copy transcript as Markdown"
+        case .jumpToMessage: "Jump to a message"
         case .toggleSidebar: "Show or hide the sidebar"
         case .toggleContextPanel: "Show or hide the context panel"
         case .toggleBrowser: "Show or hide the browser"
@@ -172,7 +173,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass, .changeEffort, .toggleFastMode, .sideQuestion,
              .focusComposer: .composer
         case .allowOnce, .alwaysAllow, .reject: .permissions
-        case .nextTranscriptView, .viewNormal, .viewThinking, .viewVerbose, .copyTranscriptMarkdown: .transcript
+        case .nextTranscriptView, .viewNormal, .viewThinking, .viewVerbose, .copyTranscriptMarkdown, .jumpToMessage: .transcript
         case .toggleSidebar, .toggleContextPanel, .toggleBrowser, .closeFileViewer, .zoomIn, .zoomOut, .actualSize,
              .appearanceDark, .appearanceLight, .appearanceSystem: .view
         case .openInSplit, .closePane, .nextPane, .previousPane, .equalizePanes, .closeSplit: .split
@@ -222,6 +223,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .viewThinking: TranscriptViewMode.thinking.symbol
         case .viewVerbose: TranscriptViewMode.verbose.symbol
         case .copyTranscriptMarkdown: "doc.on.clipboard"
+        case .jumpToMessage: "list.bullet.indent"
         case .toggleSidebar: "sidebar.left"
         case .toggleContextPanel: "sidebar.right"
         case .toggleBrowser: "globe"
@@ -303,6 +305,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .sideQuestion: ["btw", "aside"]
         case .nextTranscriptView, .viewNormal, .viewThinking, .viewVerbose: ["detail", "tools", "thinking", "verbose"]
         case .copyTranscriptMarkdown: ["export", "markdown", "copy", "clipboard", "share", "transcript"]
+        case .jumpToMessage: ["outline", "chapters", "contents", "navigate", "turns", "pin"]
         case .toggleSidebar: ["sessions list"]
         case .toggleContextPanel: ["context", "usage", "connectors"]
         case .toggleBrowser: ["web", "page", "preview", "dev server", "localhost", "launch.json", "console"]
@@ -426,7 +429,7 @@ enum CommandRegistry {
             return store != nil && (context.window.route == .session || context.window.route == .room || context.window.route == .hub)
         case .newRoom: return context.search.rooms != nil
         case .sendMessage, .switchModel, .switchMode, .modeAsk, .modeAcceptEdits, .modeAuto, .modePlan, .modeBypass, .focusComposer,
-             .renameSession, .archiveSession, .revealFolder, .compactConversation, .sideQuestion:
+             .renameSession, .archiveSession, .revealFolder, .compactConversation, .sideQuestion, .jumpToMessage:
             return session != nil
         case .stopAgent: return session?.isWorking ?? false
         case .forkSession: return session != nil && (store?.supportsHistory ?? false)
@@ -527,6 +530,7 @@ enum CommandRegistry {
         case .viewVerbose: UserDefaults.standard.set(TranscriptViewMode.verbose.rawValue, forKey: TranscriptViewMode.storageKey)
         case .copyTranscriptMarkdown:
             NotificationCenter.default.post(name: .ensembleCopyTranscriptMarkdown, object: nil)
+        case .jumpToMessage: window.outlineRequestToken &+= 1
         case .toggleSidebar: window.toggleSidebar()
         case .toggleContextPanel: window.toggleContextPanel()
         case .toggleBrowser: window.toggleBrowser()
