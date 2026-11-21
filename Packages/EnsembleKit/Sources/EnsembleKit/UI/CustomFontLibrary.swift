@@ -2,15 +2,17 @@ import CoreText
 import Foundation
 import UniformTypeIdentifiers
 
-/// Font files the owner added on this device ("Add Font" in Settings).
+/// Font files the owner added ("Add Font" in Settings), on this device or on the paired one.
 ///
 /// A file is checked, copied into the app's own Application Support folder and registered for this process.
-/// The fonts stay on the device they were added on: they are not part of the repository or of a build, and
-/// nothing about them is sent over the remote protocol. The folder is left out of device backups.
+/// The files are not part of the repository or of a build. They travel only between the owner's own paired
+/// Mac and iPhone, over the encrypted remote connection (`FontSync`). The folder is left out of device backups.
 public struct CustomFontLibrary: Sendable {
     /// Largest font file that is accepted. Text families are well under this; it keeps a wrong file out.
     public static let maxFileSize = 25 * 1024 * 1024
     public static let fileExtensions = ["ttf", "otf"]
+    /// Most files the folder may hold, so a paired device cannot fill the disk with fonts.
+    public static let maxFiles = 120
     /// The same two kinds, for the file picker.
     public static var contentTypes: [UTType] {
         fileExtensions.compactMap { UTType(filenameExtension: $0, conformingTo: .font) }
@@ -33,6 +35,9 @@ public struct CustomFontLibrary: Sendable {
     public struct Family: Identifiable, Hashable, Sendable {
         public let name: String
         public let files: [URL]
+        /// When the newest of its files was copied in. A removal on the other device that is older than this
+        /// does not take the family away again.
+        public let addedAt: Date
         public var id: String { name }
     }
 
@@ -43,6 +48,7 @@ public struct CustomFontLibrary: Sendable {
         case notAFont(file: String)
         case alreadyListed(family: String)
         case notSaved(file: String)
+        case tooMany
 
         public var errorDescription: String? {
             switch self {
@@ -52,6 +58,7 @@ public struct CustomFontLibrary: Sendable {
             case .notAFont(let file): "\(file) is not a font that can be used."
             case .alreadyListed(let family): "\(family) is already in the list."
             case .notSaved(let file): "\(file) could not be saved."
+            case .tooMany: "There are already \(CustomFontLibrary.maxFiles) added font files. Remove a font first."
             }
         }
     }
@@ -66,7 +73,10 @@ public struct CustomFontLibrary: Sendable {
             byFamily[family, default: []].append(file)
         }
         return byFamily
-            .map { Family(name: $0.key, files: $0.value.sorted { $0.lastPathComponent < $1.lastPathComponent }) }
+            .map { name, files in
+                Family(name: name, files: files.sorted { $0.lastPathComponent < $1.lastPathComponent },
+                       addedAt: files.compactMap(Self.creationDate).max() ?? .distantPast)
+            }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
@@ -92,11 +102,14 @@ public struct CustomFontLibrary: Sendable {
         guard let family = Self.familyName(of: found), let faceName = Self.faceName(of: found) else {
             throw ImportError.notAFont(file: fileName)
         }
-        guard !ChatFont.builtInFamilies.contains(family) else { throw ImportError.alreadyListed(family: family) }
+        guard !AppFont.builtInFamilies.contains(family) else { throw ImportError.alreadyListed(family: family) }
 
         // Named after the face inside the file, never after the name it arrived with, so adding the same face
         // again replaces the earlier copy and a file name cannot point outside the folder.
         let destination = folder.appendingPathComponent(Self.safeFileName(faceName) + "." + fileExtension)
+        if !FileManager.default.fileExists(atPath: destination.path), fileCount() >= Self.maxFiles {
+            throw ImportError.tooMany
+        }
         do {
             try prepareFolder()
             if FileManager.default.fileExists(atPath: destination.path) {
@@ -136,6 +149,15 @@ public struct CustomFontLibrary: Sendable {
         values.isExcludedFromBackup = true
         var folder = folder
         try? folder.setResourceValues(values)
+    }
+
+    private func fileCount() -> Int {
+        ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
+            .count { Self.fileExtensions.contains(($0 as NSString).pathExtension.lowercased()) }
+    }
+
+    private static func creationDate(_ file: URL) -> Date? {
+        try? file.resourceValues(forKeys: [.creationDateKey]).creationDate
     }
 
     private static func descriptors(at file: URL) -> [CTFontDescriptor] {

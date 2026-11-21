@@ -2,7 +2,7 @@ import EnsembleKit
 import SwiftUI
 import UIKit
 
-/// Mac pairing details, connection paths, alerts, the chat font, demo toggle, and unpairing.
+/// Mac pairing details, connection paths, alerts, fonts, demo toggle, and unpairing.
 struct SettingsView: View {
     let client: RemoteClient
     var showStatusInToolbar = true
@@ -78,8 +78,8 @@ struct SettingsView: View {
                     .remoteCard()
                 }
 
-                SettingsSection(title: "Chat font") {
-                    ChatFontSettingsRow()
+                SettingsSection(title: "Fonts") {
+                    FontSettingsRows(syncsWithMac: !client.isInProcess)
                 }
 
                 SettingsActionsSection(

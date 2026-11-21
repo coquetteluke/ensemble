@@ -67,6 +67,8 @@ public final class RemoteClient {
     public private(set) var availableModels: [RemoteModelOption] = []
     public private(set) var recentFolders: [String] = []
     public private(set) var usage: RemoteUsageSummary?
+    /// Goes up each time the Mac says its fonts changed. `FontSyncClient` starts a sync round on every step.
+    public private(set) var fontSettingsPushes = 0
     public private(set) var openSessionID: String?
     public private(set) var openTranscript: RemoteTranscript?
     /// Room decisions this phone answered, until the Mac's update replaces them.
@@ -839,8 +841,11 @@ public final class RemoteClient {
             if let i = sessions.firstIndex(where: { $0.id == s.id }) { sessions[i] = s } else { sessions.insert(s, at: 0) }
         case .roomCreated(let r):
             if let i = rooms.firstIndex(where: { $0.id == r.id }) { rooms[i] = r } else { rooms.insert(r, at: 0) }
-        case .sessionDiff, .sessionDetails:
+        case .sessionDiff, .sessionDetails, .fontChunk:
             break
+        case .fontSettings:
+            // Sent unasked when the fonts changed on the Mac; as a reply it goes to the caller below.
+            if frame.replyTo == nil { fontSettingsPushes += 1 }
         case .challenge, .welcome, .ack, .error:
             break
         }
@@ -1000,6 +1005,30 @@ public final class RemoteClient {
     /// Archives or unarchives a solo session on the Mac.
     public func archive(sessionID: String, archived: Bool = true) async throws {
         try await request(.archiveSession(RemoteArchiveSession(sessionID: sessionID, archived: archived)))
+    }
+
+    // MARK: Fonts (`FontSyncTransport`)
+
+    /// Sends this iPhone's fonts; the Mac merges them and answers with its own. Throws `RemoteError`
+    /// (`.unknownMessage` from an older Mac).
+    public func syncFonts(_ mine: RemoteFontSettings) async throws -> RemoteFontSettings {
+        let reply = try await request(.fontSync(mine))
+        guard case .fontSettings(let theirs) = reply else {
+            throw RemoteError(.failed, "Unexpected response from Mac when syncing fonts")
+        }
+        return theirs
+    }
+
+    public func fontChunk(_ request: RemoteFontFileRequest) async throws -> RemoteFontChunk {
+        let reply = try await self.request(.fontFile(request))
+        guard case .fontChunk(let chunk) = reply else {
+            throw RemoteError(.failed, "Unexpected response from Mac when fetching a font")
+        }
+        return chunk
+    }
+
+    public func uploadFont(_ chunk: RemoteFontChunk) async throws {
+        try await request(.fontUpload(chunk))
     }
 
     /// Display name for a `(providerID, modelID)` pair using `availableModels`.

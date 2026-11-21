@@ -7,51 +7,55 @@ import Testing
 import AppKit
 #endif
 
-@Suite struct ChatFontTests {
-    @Test func theDefaultIsEnsembleSerif4() {
-        #expect(ChatFont.standard == ChatFont.serif4)
-        #expect(ChatFont.standard.id == "ensemble-serif-4")
-        #expect(ChatFont.standard.source == .bundled(family: "Ensemble Serif 4"))
-        #expect(EnsembleFonts.message == "Ensemble Serif 4")
+@Suite struct AppFontTests {
+    @Test func theDefaultChatFontIsEnsembleSerif() {
+        #expect(AppFont.standard == AppFont.ensembleSerif)
+        #expect(AppFont.standard.id == "ensemble-serif")
+        #expect(AppFont.standard.source == .bundled(family: "Ensemble Serif"))
+        #expect(EnsembleFonts.message == "Ensemble Serif")
         #expect(Theme.dark.chatFont == .standard)
         #expect(Theme.light.chatFont == .standard)
+        // Everything else stays Inter until another interface font is chosen.
+        #expect(FontRole.chat.standard == .ensembleSerif)
+        #expect(FontRole.interface.standard == .inter)
+        #expect(Theme.dark.interfaceFont == .inter)
     }
 
     @Test func builtInFontsHaveStableUniqueIDs() {
-        let ids = ChatFont.builtIn.map(\.id)
+        let ids = AppFont.builtIn.map(\.id)
         #expect(Set(ids).count == ids.count)
-        #expect(ids.first == "ensemble-serif-4")
-        // The font used before the chooser is still offered, and so are the choices that need no file.
-        for id in ["ensemble-serif", "system-serif", "system-sans", "inter"] {
+        #expect(ids.first == "ensemble-serif")
+        // Source Serif 4 is offered under its own name, and so are the choices that need no file.
+        for id in ["source-serif-4", "system-serif", "system-sans", "inter"] {
             #expect(ids.contains(id))
         }
-        #expect(!ids.contains { $0.hasPrefix(ChatFont.customIDPrefix) })
+        #expect(!ids.contains { $0.hasPrefix(AppFont.customIDPrefix) })
     }
 
     @Test func bundledAndSystemFontsAreAvailable() {
-        let available = Set(ChatFont.availableBuiltIn.map(\.id))
-        for font in [ChatFont.serif4, .ensembleSerif, .newYork, .sanFrancisco, .inter] {
+        let available = Set(AppFont.availableBuiltIn.map(\.id))
+        for font in [AppFont.ensembleSerif, .sourceSerif4, .newYork, .sanFrancisco, .inter] {
             #expect(font.isAvailable)
             #expect(available.contains(font.id))
         }
-        #expect(!ChatFont.custom(family: "Ensemble Test Not Installed").isAvailable)
+        #expect(!AppFont.custom(family: "Ensemble Test Not Installed").isAvailable)
         #expect(!EnsembleFonts.hasFamily("Ensemble Test Not Installed"))
     }
 
     @Test func detailSaysWhereAFontComesFrom() {
-        #expect(ChatFont.serif4.detail == "Built from Source Serif 4")
-        #expect(ChatFont.ensembleSerif.detail == "Built from Roboto Serif")
-        #expect(ChatFont.newYork.detail == "System serif")
-        #expect(ChatFont.sanFrancisco.detail == "System sans")
-        #expect(ChatFont.custom(family: "Any").detail == "Added from a file")
-        #expect(ChatFont.custom(family: "Any").isCustom)
-        #expect(!ChatFont.serif4.isCustom)
+        #expect(AppFont.ensembleSerif.detail == "Built from Roboto Serif")
+        #expect(AppFont.sourceSerif4.detail == "By Adobe")
+        #expect(AppFont.newYork.detail == "System serif")
+        #expect(AppFont.sanFrancisco.detail == "System sans")
+        #expect(AppFont.custom(family: "Any").detail == "Added from a file")
+        #expect(AppFont.custom(family: "Any").isCustom)
+        #expect(!AppFont.ensembleSerif.isCustom)
     }
 
-    @Test func themeTakesSpacingFromTheChatFont() {
+    @Test func themeTakesSpacingFromTheAppFont() {
         var theme = Theme.dark
         theme.scale = 1.5
-        var font = ChatFont.ensembleSerif
+        var font = AppFont.ensembleSerif
         font.lineSpacingRatio = 0.5
         font.trackingRatio = 0.01
         theme.chatFont = font
@@ -61,17 +65,16 @@ import AppKit
 
     /// Lines sit about 1.6 times the type size apart, whatever line height a font asks for itself.
     @Test func lineSpacingFollowsTheFontsOwnLineHeight() {
-        // The bundled serifs keep the spacing they were tuned with.
-        #expect(ChatFont.serif4.lineSpacingRatio == 0.36)
-        #expect(ChatFont.ensembleSerif.lineSpacingRatio == 0.36)
+        // Ensemble Serif keeps the spacing it was tuned with.
+        #expect(AppFont.ensembleSerif.lineSpacingRatio == 0.36)
         // Ensemble Serif asks for 1.171 of its own, so as an added font it would get 1.6 - 1.171.
-        #expect(abs(ChatFont.lineSpacingRatio(forFamily: EnsembleFonts.serif) - 0.429) < 0.005)
-        // A tall font is not squeezed and a short one is not spread without limit.
-        #expect(abs(ChatFont.lineSpacingRatio(forFamily: EnsembleFonts.serif4) - 0.229) < 0.005)
-        for font in ChatFont.builtIn {
+        #expect(abs(AppFont.lineSpacingRatio(forFamily: EnsembleFonts.serif) - 0.429) < 0.005)
+        // Source Serif 4 gets what its own line height leaves to 1.6.
+        #expect(AppFont.sourceSerif4.lineSpacingRatio == AppFont.lineSpacingRatio(forFamily: EnsembleFonts.sourceSerif))
+        for font in AppFont.builtIn {
             #expect((0.2...0.5).contains(font.lineSpacingRatio))
         }
-        #expect((0.2...0.5).contains(ChatFont.custom(family: "Ensemble Test Not Installed").lineSpacingRatio))
+        #expect((0.2...0.5).contains(AppFont.custom(family: "Ensemble Test Not Installed").lineSpacingRatio))
     }
 
     @Test func fileNamesAreMadeSafe() {
@@ -82,40 +85,51 @@ import AppKit
     }
 }
 
-@Suite @MainActor struct ChatFontStoreTests {
-    @Test func startsOnTheDefaultAndRemembersAChoice() throws {
-        let settings = SavedChatFont()
+@Suite @MainActor struct FontStoreTests {
+    @Test func startsOnTheDefaultsAndRemembersAChoiceForEachRole() throws {
+        let settings = SavedFonts()
 
         let store = settings.store()
-        #expect(store.current == .standard)
-        #expect(store.choices == ChatFont.availableBuiltIn)
+        #expect(store.chat == .ensembleSerif)
+        #expect(store.interface == .inter)
+        #expect(store.font(for: .chat) == .ensembleSerif && store.font(for: .interface) == .inter)
+        #expect(store.choices == AppFont.availableBuiltIn)
         #expect(store.customFamilies.isEmpty)
 
-        store.select(.ensembleSerif)
-        #expect(store.current == .ensembleSerif)
-        #expect(settings.id == "ensemble-serif")
+        store.select(.sourceSerif4)
+        #expect(store.chat == .sourceSerif4)
+        #expect(store.interface == .inter)
+        #expect(settings.ledger?.chat.id == "source-serif-4")
 
-        // A new store on the same settings (the next launch) starts on the saved font.
-        #expect(settings.store().current == .ensembleSerif)
-        // Another device has its own settings and stays on the default.
-        #expect(ChatFontStore.temporary().current == .standard)
+        store.select(.sanFrancisco, for: .interface)
+        #expect(store.interface == .sanFrancisco)
+        #expect(store.chat == .sourceSerif4)
+        #expect(settings.ledger?.interface.id == "system-sans")
+
+        // A new store on the same settings (the next launch) starts on the saved fonts.
+        let relaunched = settings.store()
+        #expect(relaunched.chat == .sourceSerif4)
+        #expect(relaunched.interface == .sanFrancisco)
+        // A device that has saved nothing is on the defaults.
+        #expect(FontStore.temporary().chat == .standard)
+        #expect(FontStore.temporary().interface == .inter)
     }
 
     @Test func aSavedFontThatIsMissingFallsBackToTheDefault() throws {
-        let settings = SavedChatFont()
         let folder = TestFont.temporaryFolder()
         defer { try? FileManager.default.removeItem(at: folder) }
 
         for saved in ["custom:Ensemble Test Gone", "a-font-from-a-newer-version", ""] {
-            settings.id = saved
+            let settings = SavedFonts(SavedFonts.ledger(chat: saved, interface: saved))
             let store = settings.store(library: CustomFontLibrary(folder: folder))
-            #expect(store.current == .standard)
+            #expect(store.chat == .ensembleSerif)
+            #expect(store.interface == .inter)
             #expect(!store.choices.contains { $0.id == saved })
         }
     }
 
     @Test func addsAFamilyFromSeveralFilesAndRemovesIt() throws {
-        let settings = SavedChatFont()
+        let settings = SavedFonts()
         let folder = TestFont.temporaryFolder()
         let downloads = TestFont.temporaryFolder()
         defer {
@@ -134,9 +148,9 @@ import AppKit
         #expect(problems.isEmpty)
 
         // Listed once, under the family name, after the built-in fonts.
-        let added = ChatFont.custom(family: family)
+        let added = AppFont.custom(family: family)
         #expect(store.customFamilies.map(\.name) == [family])
-        #expect(store.choices == ChatFont.availableBuiltIn + [added])
+        #expect(store.choices == AppFont.availableBuiltIn + [added])
         #expect(EnsembleFonts.hasFamily(family))
         // Copied into the library's own folder, named after the faces inside the files.
         let stored = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
@@ -152,29 +166,35 @@ import AppKit
         #expect(CTFontCopyPostScriptName(slanted) as String == "\(compact)-Italic")
 
         // Adding does not change the chosen font. Choosing it is saved.
-        #expect(store.current == .standard)
+        #expect(store.chat == .standard)
         store.select(added)
-        #expect(store.current == added)
-        #expect(settings.id == "custom:\(family)")
+        #expect(store.chat == added)
+        #expect(settings.ledger?.chat.id == "custom:\(family)")
+        // It can be the interface font too.
+        store.select(added, for: .interface)
+        #expect(store.interface == added)
 
         // Adding the same files again replaces the copies.
         #expect(store.add([regular, italic]).isEmpty)
         #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).count == 2)
-        #expect(store.current == added)
+        #expect(store.chat == added)
 
         // The next launch finds the family in the folder and starts on it.
         let relaunched = settings.store(library: library)
-        #expect(relaunched.current == added)
+        #expect(relaunched.chat == added)
 
         // Removing it deletes the files, and agent text goes back to the default.
         store.remove(added)
-        #expect(store.current == .standard)
+        #expect(store.chat == .standard)
         #expect(store.customFamilies.isEmpty)
-        #expect(store.choices == ChatFont.availableBuiltIn)
+        #expect(store.choices == AppFont.availableBuiltIn)
         #expect(try FileManager.default.contentsOfDirectory(atPath: folder.path).isEmpty)
         #expect(!EnsembleFonts.hasFamily(family))
-        #expect(settings.id == nil)
-        #expect(settings.store(library: library).current == .standard)
+        #expect(store.interface == .inter)
+        #expect(settings.ledger?.chat.id == "ensemble-serif")
+        #expect(settings.ledger?.interface.id == "inter")
+        #expect(settings.ledger?.removed[family] != nil)
+        #expect(settings.store(library: library).chat == .standard)
     }
 
     @Test func removingAnAddedFontThatIsNotChosenKeepsTheChoice() throws {
@@ -185,19 +205,19 @@ import AppKit
             try? FileManager.default.removeItem(at: downloads)
         }
         let family = TestFont.uniqueFamily()
-        let store = ChatFontStore(saved: nil, library: CustomFontLibrary(folder: folder))
+        let store = FontStore(saved: nil, library: CustomFontLibrary(folder: folder))
         #expect(store.add([try TestFont.write(family: family, to: downloads)]).isEmpty)
         store.select(.inter)
         store.remove(.custom(family: family))
-        #expect(store.current == .inter)
+        #expect(store.chat == .inter)
         // A built-in font cannot be removed.
         store.remove(.inter)
         #expect(store.choices.contains(.inter))
-        #expect(store.current == .inter)
+        #expect(store.chat == .inter)
     }
 
     @Test func aFontDeletedBehindTheStoreFallsBackOnTheNextLaunch() throws {
-        let settings = SavedChatFont()
+        let settings = SavedFonts()
         let folder = TestFont.temporaryFolder()
         let downloads = TestFont.temporaryFolder()
         defer {
@@ -216,7 +236,7 @@ import AppKit
             try FileManager.default.removeItem(at: file)
         }
         let relaunched = settings.store(library: library)
-        #expect(relaunched.current == .standard)
+        #expect(relaunched.chat == .standard)
         #expect(relaunched.customFamilies.isEmpty)
     }
 
@@ -261,14 +281,14 @@ import AppKit
 
         // Nothing was copied, and the store reports one line per refused file.
         #expect(!FileManager.default.fileExists(atPath: folder.path))
-        let store = ChatFontStore(saved: nil, library: library)
+        let store = FontStore(saved: nil, library: library)
         let problems = store.add([wrongType, notAFont, large])
         #expect(problems == [
             "Sample.woff2 is not a .ttf or .otf file.",
             "Notes.ttf is not a font that can be used.",
             "Large.ttf is larger than 25 MB.",
         ])
-        #expect(store.choices == ChatFont.availableBuiltIn)
+        #expect(store.choices == AppFont.availableBuiltIn)
     }
 
     @Test func oneBadFileDoesNotStopTheOthers() throws {
@@ -283,7 +303,7 @@ import AppKit
         let bad = downloads.appendingPathComponent("Broken.otf")
         try Data(repeating: 7, count: 4096).write(to: bad)
 
-        let store = ChatFontStore(saved: nil, library: CustomFontLibrary(folder: folder))
+        let store = FontStore(saved: nil, library: CustomFontLibrary(folder: folder))
         #expect(store.add([bad, good]) == ["Broken.otf is not a font that can be used."])
         #expect(store.customFamilies.map(\.name) == [family])
         store.remove(.custom(family: family))
@@ -291,32 +311,76 @@ import AppKit
 
     #if canImport(AppKit)
     /// Two views that are already open are both handed the new font as soon as the choice changes, with no
-    /// restart and nothing done to the views themselves. No other test reads `ChatFontStore.shared`.
+    /// restart and nothing done to the views themselves. No other test reads `FontStore.shared`.
     @Test func openWindowsFollowTheChoiceAtOnce() async throws {
         _ = NSApplication.shared
-        let store = ChatFontStore.temporary()
-        ChatFontStore.shared = store
-        let seen = SeenChatFonts()
+        let store = FontStore.temporary()
+        FontStore.shared = store
+        let seen = SeenFonts()
         let windows = (0..<2).map { index in
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 60), styleMask: [.borderless],
                                   backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: ChatFontProbe(index: index, seen: seen).ensembleTheme())
+            window.contentView = NSHostingView(rootView: FontProbe(index: index, seen: seen).ensembleTheme())
             window.contentView?.layoutSubtreeIfNeeded()
             return window
         }
         defer { windows.forEach { $0.close() } }
-        #expect(seen.fonts == [0: "ensemble-serif-4", 1: "ensemble-serif-4"])
+        #expect(seen.fonts == [0: "ensemble-serif inter", 1: "ensemble-serif inter"])
 
-        for font in [ChatFont.ensembleSerif, .newYork, .standard] {
-            store.select(font)
+        let steps: [(AppFont, FontRole, String)] = [
+            (.sourceSerif4, .chat, "source-serif-4 inter"),
+            (.sanFrancisco, .interface, "source-serif-4 system-sans"),
+            (.newYork, .chat, "system-serif system-sans"),
+            (.inter, .interface, "system-serif inter"),
+        ]
+        for (font, role, expected) in steps {
+            store.select(font, for: role)
             // SwiftUI redraws on the next turn of the run loop: wait for it, two seconds at most.
-            for _ in 0..<100 where seen.fonts != [0: font.id, 1: font.id] {
+            for _ in 0..<100 where seen.fonts != [0: expected, 1: expected] {
                 try await Task.sleep(for: .milliseconds(20))
                 windows.forEach { $0.contentView?.layoutSubtreeIfNeeded() }
             }
-            #expect(seen.fonts == [0: font.id, 1: font.id])
+            #expect(seen.fonts == [0: expected, 1: expected])
         }
+    }
+
+    /// Interface text drawn through the theme uses the chosen interface font, and code keeps the fixed-width one.
+    @Test func interfaceTextIsDrawnInTheChosenInterfaceFont() throws {
+        _ = NSApplication.shared
+
+        func facesDrawn(_ font: AppFont) throws -> String {
+            var theme = Theme.dark
+            theme.interfaceFont = font
+            let view = VStack {
+                Text("Session Hub").font(theme.font(size: 13))
+                Text("Allow once").font(theme.font(size: 13, weight: .semibold))
+                Text("npm test").font(theme.font(size: 12, design: .monospaced))
+            }
+            .frame(width: 300)
+            let pdf = NSMutableData()
+            ImageRenderer(content: view).render { size, draw in
+                var page = CGRect(origin: .zero, size: size)
+                guard let consumer = CGDataConsumer(data: pdf as CFMutableData),
+                      let context = CGContext(consumer: consumer, mediaBox: &page, nil) else { return }
+                context.beginPDFPage(nil)
+                draw(context)
+                context.endPDFPage()
+                context.closePDF()
+            }
+            return try #require(String(data: pdf as Data, encoding: .isoLatin1))
+        }
+
+        let standard = try facesDrawn(.inter)
+        #expect(standard.contains("Inter"))
+        #expect(!standard.contains("EnsembleSerif"))
+        #expect(standard.contains("Mono"))
+
+        let serif = try facesDrawn(.ensembleSerif)
+        #expect(serif.contains("EnsembleSerif-Regular"))
+        #expect(serif.contains("EnsembleSerif-SemiBold"))
+        #expect(!serif.contains("Inter"))
+        #expect(serif.contains("Mono"))
     }
 
     /// Agent text drawn through the theme uses the chosen font's own regular, bold and italic faces.
@@ -324,7 +388,7 @@ import AppKit
         _ = NSApplication.shared
 
         // Drawn into a PDF, which names every font face that was used.
-        func facesDrawn(_ font: ChatFont) throws -> String {
+        func facesDrawn(_ font: AppFont) throws -> String {
             var theme = Theme.dark
             theme.chatFont = font
             let view = MarkdownView("Plain *Italic* **Bold**")
@@ -344,37 +408,39 @@ import AppKit
         }
 
         let standard = try facesDrawn(.standard)
-        #expect(standard.contains("EnsembleSerif4-Regular"))
-        #expect(standard.contains("EnsembleSerif4-Italic"))
-        #expect(standard.contains("EnsembleSerif4-Bold"))
-        #expect(!standard.contains("EnsembleSerif-"))
+        #expect(standard.contains("EnsembleSerif-Regular"))
+        #expect(standard.contains("EnsembleSerif-Italic"))
+        #expect(standard.contains("EnsembleSerif-Bold"))
+        #expect(!standard.contains("SourceSerif4"))
 
-        let roboto = try facesDrawn(.ensembleSerif)
-        #expect(roboto.contains("EnsembleSerif-Regular"))
-        #expect(roboto.contains("EnsembleSerif-Italic"))
-        #expect(roboto.contains("EnsembleSerif-Bold"))
-        #expect(!roboto.contains("EnsembleSerif4-"))
+        let source = try facesDrawn(.sourceSerif4)
+        #expect(source.contains("SourceSerif4Roman-Regular"))
+        #expect(source.contains("SourceSerif4Italic-Italic"))
+        // Source Serif 4 has an optical size axis, so at 14 points the bold is drawn as the upright font at
+        // weight 700 (2BC in hexadecimal) and optical size 14, and the file names it that way.
+        #expect(source.contains("SourceSerif4Roman-Regular_wght2BC0000_opszE0000"))
+        #expect(!source.contains("EnsembleSerif"))
 
         let system = try facesDrawn(.newYork)
-        #expect(!system.contains("EnsembleSerif"))
+        #expect(!system.contains("EnsembleSerif") && !system.contains("SourceSerif4"))
     }
     #endif
 }
 
 #if canImport(AppKit)
-/// The chat font each open probe view was last drawn with.
-@MainActor final class SeenChatFonts {
+/// The chat font and the interface font each open probe view was last drawn with.
+@MainActor final class SeenFonts {
     var fonts: [Int: String] = [:]
 }
 
-/// Stands in for a window's content: it notes the chat font the theme hands it every time it is drawn.
-private struct ChatFontProbe: View {
+/// Stands in for a window's content: it notes the fonts the theme hands it every time it is drawn.
+private struct FontProbe: View {
     let index: Int
-    let seen: SeenChatFonts
+    let seen: SeenFonts
     @Environment(\.theme) private var theme
 
     var body: some View {
-        seen.fonts[index] = theme.chatFont.id
+        seen.fonts[index] = theme.chatFont.id + " " + theme.interfaceFont.id
         return Text("Agent text").font(theme.messageFont(size: 14))
     }
 }

@@ -7,8 +7,10 @@ public struct Theme: Sendable {
     /// Window zoom (1 = 100%). Every font size and metric goes through `font(size:)` and `z(_:)`,
     /// so zooming re-lays out crisp text and controls instead of scaling a bitmap.
     public var scale: CGFloat = 1
-    /// The font agents write in, chosen in Settings (`ChatFontStore`). `.ensembleTheme()` fills it in.
-    public var chatFont: ChatFont = .standard
+    /// The font agents write in, chosen in Settings (`FontStore`). `.ensembleTheme()` fills it in.
+    public var chatFont: AppFont = FontRole.chat.standard
+    /// The font of everything else, chosen the same way.
+    public var interfaceFont: AppFont = FontRole.interface.standard
 
     // Surfaces
     public var sidebar: Color
@@ -152,19 +154,18 @@ public struct Theme: Sendable {
         contextBuffer: Color(hex: 0x8C8A86)
     )
 
-    /// Interface font at `size` points times the zoom: Inter for the default design (see
-    /// `EnsembleFonts`), the system fonts for `.monospaced` (SF Mono) and the other designs.
+    /// Interface font at `size` points times the zoom: the chosen interface font for the default design (Inter
+    /// unless another is chosen), the system fonts for `.monospaced` (SF Mono) and the other designs.
     public func font(size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> Font {
         switch design {
         case .default:
-            EnsembleFonts.register()
-            return .custom(EnsembleFonts.interface, fixedSize: size * scale).weight(weight)
+            return interfaceFont.font(size: size * scale, weight: weight)
         default:
             return .system(size: size * scale, weight: weight, design: design)
         }
     }
 
-    /// Font for what an agent writes: the chosen chat font, at the zoom. See `ChatFont`.
+    /// Font for what an agent writes: the chosen chat font, at the zoom. See `AppFont`.
     public func messageFont(size: CGFloat, weight: Font.Weight = .regular) -> Font {
         chatFont.font(size: size * scale, weight: weight)
     }
@@ -201,23 +202,23 @@ public struct Theme: Sendable {
     }
 }
 
-/// How agent text is set when no chat font has been chosen: `ChatFont.standard` (Ensemble Serif 4, see
+/// How agent text is set when no chat font has been chosen: `AppFont.standard` (Ensemble Serif, see
 /// `EnsembleFonts` and tools/fonts/README.md), at the interface size with normal letter spacing and lines
 /// about 1.6 times the type size apart. Views take the chosen font from `Theme.messageFont` instead.
 public enum MessageType {
-    public static let scale: CGFloat = ChatFont.standard.scale
-    public static let trackingRatio: CGFloat = ChatFont.standard.trackingRatio
-    public static let lineSpacingRatio: CGFloat = ChatFont.standard.lineSpacingRatio
+    public static let scale: CGFloat = AppFont.standard.scale
+    public static let trackingRatio: CGFloat = AppFont.standard.trackingRatio
+    public static let lineSpacingRatio: CGFloat = AppFont.standard.lineSpacingRatio
 
     /// The default chat font at `size` points (already zoomed or scaled for Dynamic Type), not scaled again.
     public static func font(size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        ChatFont.standard.font(size: size, weight: weight)
+        AppFont.standard.font(size: size, weight: weight)
     }
 
     /// The serif size that matches interface text of `size` points.
     public static func size(_ size: CGFloat) -> CGFloat { size * scale }
-    public static func tracking(_ size: CGFloat) -> CGFloat { ChatFont.standard.tracking(size) }
-    public static func lineSpacing(_ size: CGFloat) -> CGFloat { ChatFont.standard.lineSpacing(size) }
+    public static func tracking(_ size: CGFloat) -> CGFloat { AppFont.standard.tracking(size) }
+    public static func lineSpacing(_ size: CGFloat) -> CGFloat { AppFont.standard.lineSpacing(size) }
 }
 
 
@@ -280,17 +281,18 @@ private struct ThemeProvider: ViewModifier {
     func body(content: Content) -> some View {
         var theme = scheme == .dark ? Theme.dark : Theme.light
         theme.scale = zoom
-        // Read here, so every window that uses the theme redraws when the chat font changes.
-        theme.chatFont = ChatFontStore.shared.current
+        // Read here, so every window that uses the theme redraws when a font choice changes.
+        theme.chatFont = FontStore.shared.chat
+        theme.interfaceFont = FontStore.shared.interface
         return content
             .environment(\.theme, theme)
-            // Text that sets no font of its own (form labels, alerts inside the window) uses Inter too.
+            // Text that sets no font of its own (form labels, alerts inside the window) uses the interface font too.
             .font(theme.font(size: 13))
             .tint(scheme == .dark ? Theme.dark.accent : Theme.light.accent)
     }
 }
 
 public extension View {
-    /// Sets `\.theme` from the current colour scheme, `\.zoom` and the chosen chat font.
+    /// Sets `\.theme` from the current colour scheme, `\.zoom` and the chosen fonts.
     func ensembleTheme() -> some View { modifier(ThemeProvider()) }
 }

@@ -1,9 +1,10 @@
 import CoreText
 import SwiftUI
 
-/// A typeface for what agents write: chat replies, plans, questions. Interface text stays Inter.
-/// The choice is made in Settings (`ChatFontStore`) and carried in `Theme.chatFont`.
-public struct ChatFont: Identifiable, Hashable, Sendable {
+/// A typeface that can be chosen in Settings, for what agents write (`FontRole.chat`) or for everything else
+/// (`FontRole.interface`). The choices live in `FontStore` and travel in `Theme.chatFont` and
+/// `Theme.interfaceFont`.
+public struct AppFont: Identifiable, Hashable, Sendable {
     public enum Source: Hashable, Sendable {
         /// Ships inside Ensemble under an open licence (`Resources/Fonts`).
         case bundled(family: String)
@@ -73,49 +74,50 @@ public struct ChatFont: Identifiable, Hashable, Sendable {
     }
 }
 
-public extension ChatFont {
-    static let serif4 = ChatFont(id: "ensemble-serif-4", name: "Ensemble Serif 4",
-                                 source: .bundled(family: EnsembleFonts.serif4), origin: "Built from Source Serif 4")
-    static let ensembleSerif = ChatFont(id: "ensemble-serif", name: "Ensemble Serif",
-                                        source: .bundled(family: EnsembleFonts.serif), origin: "Built from Roboto Serif")
-    static let newYork = ChatFont(id: "system-serif", name: "New York", source: .system(.serif), lineSpacingRatio: 0.4)
+public extension AppFont {
+    static let ensembleSerif = AppFont(id: "ensemble-serif", name: "Ensemble Serif",
+                                       source: .bundled(family: EnsembleFonts.serif), origin: "Built from Roboto Serif")
+    static let sourceSerif4 = AppFont(id: "source-serif-4", name: "Source Serif 4",
+                                      source: .bundled(family: EnsembleFonts.sourceSerif), origin: "By Adobe",
+                                      lineSpacingRatio: lineSpacingRatio(forFamily: EnsembleFonts.sourceSerif))
+    static let newYork = AppFont(id: "system-serif", name: "New York", source: .system(.serif), lineSpacingRatio: 0.4)
     static let charter = installed(id: "charter", family: "Charter")
     static let iowan = installed(id: "iowan-old-style", family: "Iowan Old Style")
     static let georgia = installed(id: "georgia", family: "Georgia")
     static let palatino = installed(id: "palatino", family: "Palatino")
-    static let sanFrancisco = ChatFont(id: "system-sans", name: "San Francisco", source: .system(.default), lineSpacingRatio: 0.4)
-    static let inter = ChatFont(id: "inter", name: "Inter",
-                                source: .bundled(family: EnsembleFonts.interface), origin: "The interface font",
+    static let sanFrancisco = AppFont(id: "system-sans", name: "San Francisco", source: .system(.default), lineSpacingRatio: 0.4)
+    static let inter = AppFont(id: "inter", name: "Inter",
+                                source: .bundled(family: EnsembleFonts.interface), origin: "By Rasmus Andersson",
                                 lineSpacingRatio: 0.38)
     static let avenirNext = installed(id: "avenir-next", family: "Avenir Next")
 
-    /// Used until another font is chosen, and whenever the chosen one is missing.
-    static let standard = serif4
+    /// The default chat font. `FontRole.standard` has the default of each role.
+    static let standard = ensembleSerif
 
     /// The fonts Ensemble offers without adding a file: serifs first, then sans.
-    static let builtIn: [ChatFont] = [
-        serif4, ensembleSerif, newYork, charter, iowan, georgia, palatino,
+    static let builtIn: [AppFont] = [
+        ensembleSerif, sourceSerif4, newYork, charter, iowan, georgia, palatino,
         sanFrancisco, inter, avenirNext,
     ]
 
     /// The built-in fonts this system has. A system font that a platform lacks is left out.
-    static let availableBuiltIn: [ChatFont] = builtIn.filter(\.isAvailable)
+    static let availableBuiltIn: [AppFont] = builtIn.filter(\.isAvailable)
 
     /// A font added from a file, listed under its family name.
-    static func custom(family: String) -> ChatFont {
-        ChatFont(id: customIDPrefix + family, name: family, source: .custom(family: family),
+    static func custom(family: String) -> AppFont {
+        AppFont(id: customIDPrefix + family, name: family, source: .custom(family: family),
                  lineSpacingRatio: lineSpacingRatio(forFamily: family))
     }
 
     /// A font that comes with macOS and iOS, used by its family name.
-    private static func installed(id: String, family: String) -> ChatFont {
-        ChatFont(id: id, name: family, source: .installed(family: family),
+    private static func installed(id: String, family: String) -> AppFont {
+        AppFont(id: id, name: family, source: .installed(family: family),
                  lineSpacingRatio: lineSpacingRatio(forFamily: family))
     }
 
     /// The extra line space that sets lines of `family` about 1.6 times the type size apart. Fonts ask for very
     /// different line heights of their own (Palatino 1.1, Iowan Old Style 1.37), so one fixed amount would
-    /// leave some cramped and others loose. The two bundled serifs keep the spacing they were tuned with.
+    /// leave some cramped and others loose. Ensemble Serif keeps the spacing it was tuned with.
     static func lineSpacingRatio(forFamily family: String) -> CGFloat {
         EnsembleFonts.register()
         let descriptor = CTFontDescriptorCreateWithAttributes([kCTFontFamilyNameAttribute: family] as CFDictionary)
@@ -133,10 +135,4 @@ public extension ChatFont {
         case .system, .custom: nil
         }
     })
-}
-
-/// The line shown in each font in Settings.
-public enum ChatFontSample {
-    /// Markdown: SwiftUI's `Text` draws the bold and the italic in the row's own font.
-    public static let line = "Replies look like this, with **bold** and *italic*."
 }

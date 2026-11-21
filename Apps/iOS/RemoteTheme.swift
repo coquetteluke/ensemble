@@ -48,20 +48,33 @@ enum RemoteTheme {
         EnsembleFonts.register()
     }
 
+    /// Interface text at `size` points, growing with Dynamic Type like `textStyle`: the chosen interface font
+    /// (`FontStore`, Inter unless another is chosen) for the default design, the system fonts for the others.
     static func font(
         size: CGFloat,
         weight: Font.Weight = .regular,
         design: Font.Design = .default,
         relativeTo textStyle: Font.TextStyle = .body
     ) -> Font {
-        switch design {
-        case .default:
-            EnsembleFonts.register()
-            return .custom(EnsembleFonts.interface, size: size, relativeTo: textStyle).weight(weight)
-        default:
-            let scaled = UIFontMetrics(forTextStyle: uiTextStyle(textStyle)).scaledValue(for: size)
-            return .system(size: scaled, weight: weight, design: design)
+        var design = design
+        if design == .default {
+            switch interfaceFont.source {
+            case .bundled(let family), .installed(let family), .custom(let family):
+                EnsembleFonts.register()
+                return .custom(family, size: size, relativeTo: textStyle).weight(weight)
+            case .system(let chosen):
+                design = chosen
+            }
         }
+        let scaled = UIFontMetrics(forTextStyle: uiTextStyle(textStyle)).scaledValue(for: size)
+        return .system(size: scaled, weight: weight, design: design)
+    }
+
+    /// The chosen interface font. Read from the store while a view is being drawn (on the main thread), so that
+    /// view is drawn again when the choice changes; elsewhere from the copy the store keeps.
+    private static var interfaceFont: AppFont {
+        guard Thread.isMainThread else { return CurrentFonts.interface }
+        return MainActor.assumeIsolated { FontStore.shared.interface }
     }
 
     private static func uiTextStyle(_ style: Font.TextStyle) -> UIFont.TextStyle {
@@ -81,9 +94,9 @@ enum RemoteTheme {
         }
     }
 
-    /// The chat font chosen on this iPhone (`ChatFontStore`), for agent text drawn outside `MarkdownView`.
+    /// The chat font chosen on this iPhone (`FontStore`), for agent text drawn outside `MarkdownView`.
     @MainActor static func serifFont(size: CGFloat = 15, weight: Font.Weight = .regular) -> Font {
-        ChatFontStore.shared.current.font(size: size, weight: weight)
+        FontStore.shared.chat.font(size: size, weight: weight)
     }
 }
 
@@ -124,8 +137,9 @@ private struct RemoteThemeProvider: ViewModifier {
 
     func body(content: Content) -> some View {
         var theme = scheme == .dark ? Theme.dark : Theme.light
-        // Read here, so every screen redraws agent text when the chat font changes.
-        theme.chatFont = ChatFontStore.shared.current
+        // Read here, so every screen redraws when a font choice changes.
+        theme.chatFont = FontStore.shared.chat
+        theme.interfaceFont = FontStore.shared.interface
         return content
             .environment(\.theme, theme)
             .tint(RemoteTheme.accent)

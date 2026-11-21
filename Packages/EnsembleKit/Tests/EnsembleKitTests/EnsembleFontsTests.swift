@@ -1,4 +1,5 @@
 import CoreText
+import CryptoKit
 import Foundation
 import SwiftUI
 import Testing
@@ -8,9 +9,8 @@ import AppKit
 #endif
 
 @Suite struct EnsembleFontsTests {
-    /// Both bundled serifs: the default (Ensemble Serif 4, from Source Serif 4) and Ensemble Serif (from Roboto Serif).
+    /// Ensemble Serif (built from Roboto Serif), the default for what agents write.
     @Test(arguments: [
-        ["Ensemble Serif 4", "EnsembleSerif4"],
         ["Ensemble Serif", "EnsembleSerif"],
     ])
     func bundledSerifRegistersAndResolvesFaces(_ names: [String]) throws {
@@ -65,18 +65,62 @@ import AppKit
         #expect(boldItalicVars[wghtTag] == 700)
     }
 
+    /// Source Serif 4: regular, bold, italic and bold italic are the font's own faces, from the right files.
+    @Test func sourceSerifResolvesItsOwnFaces() throws {
+        EnsembleFonts.register()
+        let base = CTFontDescriptorCreateWithAttributes([kCTFontFamilyNameAttribute: EnsembleFonts.sourceSerif] as CFDictionary)
+        let regular = CTFontCreateWithFontDescriptor(base, 16, nil)
+        #expect(CTFontCopyFamilyName(regular) as String == "Source Serif 4")
+        #expect(CTFontCopyPostScriptName(regular) as String == "SourceSerif4Roman-Regular")
+        #expect((CTFontCopyAttribute(regular, kCTFontURLAttribute) as? URL)?.lastPathComponent == "SourceSerif4.ttf")
+
+        let bold = try #require(CTFontCreateCopyWithSymbolicTraits(regular, 16, nil, .traitBold, .traitBold))
+        #expect(CTFontCopyPostScriptName(bold) as String == "SourceSerif4Roman-Bold")
+        let italic = try #require(CTFontCreateCopyWithSymbolicTraits(regular, 16, nil, .traitItalic, .traitItalic))
+        #expect(CTFontCopyPostScriptName(italic) as String == "SourceSerif4Italic-Italic")
+        #expect((CTFontCopyAttribute(italic, kCTFontURLAttribute) as? URL)?.lastPathComponent == "SourceSerif4-Italic.ttf")
+        let both = try #require(
+            CTFontCreateCopyWithSymbolicTraits(regular, 16, nil, [.traitBold, .traitItalic], [.traitBold, .traitItalic])
+        )
+        #expect(CTFontCopyPostScriptName(both) as String == "SourceSerif4Italic-Bold")
+    }
+
+    /// "Source" is a reserved font name: only Adobe's unchanged files may be called Source Serif 4. These are the
+    /// git blob ids of `ofl/sourceserif4` in github.com/google/fonts; a changed file fails here.
+    @Test func sourceSerifFilesAreAdobesOriginals() throws {
+        let folder = try fontsFolder()
+        let expected = [
+            "SourceSerif4.ttf": "40bbb58cb58e893ad0470f0bb291e096c73d3554",
+            "SourceSerif4-Italic.ttf": "ccb969aa6847e1169ff9c8c8bdc28daff6966861",
+        ]
+        for (name, id) in expected {
+            let data = try Data(contentsOf: folder.appendingPathComponent(name))
+            var blob = Data("blob \(data.count)\u{0}".utf8)
+            blob.append(data)
+            let digest = Insecure.SHA1.hash(data: blob).map { String(format: "%02x", $0) }.joined()
+            #expect(digest == id, "\(name) is not the original file")
+        }
+        let licence = try String(contentsOf: folder.appendingPathComponent("SourceSerif4-OFL.txt"), encoding: .utf8)
+        #expect(licence.contains("Reserved Font Name 'Source'"))
+        #expect(licence.contains("SIL OPEN FONT LICENSE Version 1.1"))
+    }
+
     /// A font file in the bundle that is not on the list of open-licence fonts fails the test.
     @Test func onlyTheListedFontFilesAreBundled() throws {
+        let names = try FileManager.default.contentsOfDirectory(atPath: fontsFolder().path).sorted()
+        #expect(names == [
+            "EnsembleSerif-Italic.ttf", "EnsembleSerif-OFL.txt", "EnsembleSerif.ttf",
+            "Inter-OFL.txt", "InterVariable.ttf",
+            "SourceSerif4-Italic.ttf", "SourceSerif4-OFL.txt", "SourceSerif4.ttf",
+        ])
+    }
+
+    /// The bundle's Fonts folder, found through a registered font's file.
+    private func fontsFolder() throws -> URL {
         EnsembleFonts.register()
         let regular = CTFontCreateWithFontDescriptor(
             CTFontDescriptorCreateWithAttributes([kCTFontFamilyNameAttribute: EnsembleFonts.serif] as CFDictionary), 16, nil)
-        let folder = try #require(CTFontCopyAttribute(regular, kCTFontURLAttribute) as? URL).deletingLastPathComponent()
-        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
-        #expect(names == [
-            "EnsembleSerif-Italic.ttf", "EnsembleSerif-OFL.txt", "EnsembleSerif.ttf",
-            "EnsembleSerif4-Italic.ttf", "EnsembleSerif4-OFL.txt", "EnsembleSerif4.ttf",
-            "Inter-OFL.txt", "InterVariable.ttf",
-        ])
+        return try #require(CTFontCopyAttribute(regular, kCTFontURLAttribute) as? URL).deletingLastPathComponent()
     }
 
     #if canImport(AppKit)
@@ -99,10 +143,10 @@ import AppKit
 
         let pdfData = host.dataWithPDF(inside: host.bounds)
         let pdf = try #require(String(data: pdfData, encoding: .isoLatin1))
-        #expect(pdf.contains("EnsembleSerif4-Regular"))
-        #expect(pdf.contains("EnsembleSerif4-Italic"))
-        #expect(pdf.contains("EnsembleSerif4-Bold"))
-        #expect(pdf.contains("EnsembleSerif4-BoldItalic"))
+        #expect(pdf.contains("EnsembleSerif-Regular"))
+        #expect(pdf.contains("EnsembleSerif-Italic"))
+        #expect(pdf.contains("EnsembleSerif-Bold"))
+        #expect(pdf.contains("EnsembleSerif-BoldItalic"))
     }
     #endif
 }

@@ -43,6 +43,14 @@ public protocol RemoteHost: AnyObject, Sendable {
     func requestSecondOpinion(_ request: RemoteSecondOpinionRequest) async throws
     /// Archives or unarchives a solo session.
     func archiveSession(sessionID: String, archived: Bool) async throws
+    /// Takes over what is newer in the iPhone's fonts and returns the Mac's (`FontSyncHost.sync`).
+    func syncFonts(_ phone: RemoteFontSettings) async throws -> RemoteFontSettings
+    /// One piece of an added font file on the Mac. Must only read files of the font library.
+    func fontChunk(_ request: RemoteFontFileRequest) async throws -> RemoteFontChunk
+    /// One piece of an added font file from the iPhone. Must check the finished file like one added by hand.
+    func receiveFontChunk(_ chunk: RemoteFontChunk) async throws
+    /// The Mac's fonts after every change. The server sends them to the iPhones that sync fonts.
+    func fontSettingsUpdates() async -> AsyncStream<RemoteFontSettings>
 }
 
 public extension RemoteHost {
@@ -84,6 +92,22 @@ public extension RemoteHost {
 
     func archiveSession(sessionID: String, archived: Bool) async throws {
         throw RemoteError(.unknownMessage, "This Mac cannot archive sessions from the iPhone.")
+    }
+
+    func syncFonts(_ phone: RemoteFontSettings) async throws -> RemoteFontSettings {
+        throw RemoteError(.unknownMessage, "This Mac cannot sync fonts with the iPhone.")
+    }
+
+    func fontChunk(_ request: RemoteFontFileRequest) async throws -> RemoteFontChunk {
+        throw RemoteError(.unknownMessage, "This Mac cannot sync fonts with the iPhone.")
+    }
+
+    func receiveFontChunk(_ chunk: RemoteFontChunk) async throws {
+        throw RemoteError(.unknownMessage, "This Mac cannot sync fonts with the iPhone.")
+    }
+
+    func fontSettingsUpdates() async -> AsyncStream<RemoteFontSettings> {
+        AsyncStream { $0.finish() }
     }
 }
 

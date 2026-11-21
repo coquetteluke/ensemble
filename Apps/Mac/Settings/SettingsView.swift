@@ -207,7 +207,7 @@ struct GeneralSettingsView: View {
                     Text(mode.label).tag(mode.rawValue)
                 }
             }
-            ChatFontSettingsSection()
+            FontSettingsSection()
             SafetyCheckSettingsSection(store: store)
             TrustedFoldersSection()
             WorktreesSettingsSection(store: store)

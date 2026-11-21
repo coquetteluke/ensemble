@@ -1,40 +1,58 @@
 import EnsembleKit
 import SwiftUI
 
-/// The Settings row for the chat font: the chosen font's name and a sample line set in it. Tapping it opens
-/// the list of fonts. The choice is this iPhone's own (`ChatFontStore`); the Mac keeps its own.
-struct ChatFontSettingsRow: View {
-    var store: ChatFontStore = .shared
-    @State private var showFonts = false
+/// The Settings rows for fonts: one for the chat font (what agents write) and one for the interface font
+/// (everything else). Each shows the chosen font's name and a sample line set in it, and opens the list of
+/// fonts. Choices and added fonts sync with the paired Mac (`FontSync`); the newer choice wins on both.
+struct FontSettingsRows: View {
+    var store: FontStore = .shared
+    /// False in the demo, where there is no Mac to sync with.
+    var syncsWithMac = true
+    @State private var editing: FontRole?
 
     var body: some View {
-        Button {
-            showFonts = true
-        } label: {
-            HStack(spacing: 12) {
-                ChatFontLabel(font: store.current)
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(RemoteTheme.tertiaryText)
+        VStack(spacing: 0) {
+            ForEach(FontRole.allCases) { role in
+                if role != FontRole.allCases.first {
+                    Rectangle().fill(RemoteTheme.separator).frame(height: 1)
+                }
+                Button {
+                    editing = role
+                } label: {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(role.title)
+                                .font(RemoteTheme.font(size: 12.5, weight: .medium, relativeTo: .caption))
+                                .foregroundStyle(RemoteTheme.tertiaryText)
+                            FontLabel(font: store.font(for: role), role: role)
+                        }
+                        Spacer(minLength: 8)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(RemoteTheme.tertiaryText)
+                    }
+                    .frame(minHeight: RemoteTheme.minTapTarget)
+                    .padding(.horizontal, RemoteTheme.cardPadding)
+                    .padding(.vertical, 10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(role.title), \(store.font(for: role).name)")
+                .accessibilityHint("Shows the fonts you can choose")
             }
-            .frame(minHeight: RemoteTheme.minTapTarget)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .remoteCard()
-        .accessibilityLabel("Chat font, \(store.current.name)")
-        .accessibilityHint("Shows the fonts you can choose")
-        .sheet(isPresented: $showFonts) {
-            ChatFontSheet(store: store)
+        .remoteCard(padding: 0)
+        .sheet(item: $editing) { role in
+            FontSheet(store: store, role: role, syncsWithMac: syncsWithMac)
                 .remoteThemeEnvironment()
         }
     }
 }
 
-/// A font's name and the sample line, both set in that font, following Dynamic Type.
-private struct ChatFontLabel: View {
-    let font: ChatFont
+/// A font's name and the sample line of a role, both set in that font, following Dynamic Type.
+private struct FontLabel: View {
+    let font: AppFont
+    let role: FontRole
     @ScaledMetric(relativeTo: .body) private var nameSize: CGFloat = 17
     @ScaledMetric(relativeTo: .footnote) private var sampleSize: CGFloat = 14
 
@@ -43,7 +61,7 @@ private struct ChatFontLabel: View {
             Text(font.name)
                 .font(font.font(size: nameSize))
                 .foregroundStyle(RemoteTheme.primaryText)
-            Text(LocalizedStringKey(ChatFontSample.line))
+            Text(LocalizedStringKey(role.sample))
                 .font(font.font(size: sampleSize))
                 .foregroundStyle(RemoteTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -52,10 +70,13 @@ private struct ChatFontLabel: View {
     }
 }
 
-/// Every font that can be chosen, with "Add Font" for .ttf and .otf files from Files or AirDrop. Added fonts
-/// are copied into this app's own storage on this iPhone and can be removed here.
-struct ChatFontSheet: View {
-    let store: ChatFontStore
+/// Every font that can be chosen for the chat or the interface, with "Add Font" for .ttf and .otf files from
+/// Files or AirDrop. Added fonts are copied into this app's own storage, sent to the paired Mac, and can be
+/// removed here.
+struct FontSheet: View {
+    let store: FontStore
+    @State var role: FontRole
+    var syncsWithMac = true
     @Environment(\.dismiss) private var dismiss
     @State private var picking = false
     @State private var problems: [String] = []
@@ -64,15 +85,23 @@ struct ChatFontSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    Picker("Font for", selection: $role) {
+                        ForEach(FontRole.allCases) { role in
+                            Text(role.title).tag(role)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
                     VStack(spacing: 0) {
                         ForEach(Array(store.choices.enumerated()), id: \.element.id) { index, font in
                             if index > 0 {
                                 Rectangle().fill(RemoteTheme.separator).frame(height: 1)
                             }
-                            ChatFontChoiceRow(
+                            FontChoiceRow(
                                 font: font,
-                                selected: font.id == store.current.id,
-                                select: { store.select(font) },
+                                role: role,
+                                selected: font.id == store.font(for: role).id,
+                                select: { store.select(font, for: role) },
                                 remove: font.isCustom ? { store.remove(font) } : nil
                             )
                         }
@@ -94,7 +123,7 @@ struct ChatFontSheet: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    Text("Used for what agents write: replies, plans and questions. Add Font takes .ttf and .otf files, several at once for a family's regular, bold and italic. Added fonts are kept on this iPhone only.")
+                    Text(footer)
                         .font(RemoteTheme.font(size: 12.5, relativeTo: .caption))
                         .foregroundStyle(RemoteTheme.tertiaryText)
                         .fixedSize(horizontal: false, vertical: true)
@@ -107,7 +136,7 @@ struct ChatFontSheet: View {
                 .frame(maxWidth: .infinity)
             }
             .remoteScreen()
-            .navigationTitle("Chat font")
+            .navigationTitle("Fonts")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -122,11 +151,21 @@ struct ChatFontSheet: View {
             }
         }
     }
+
+    private var footer: String {
+        let roles = "The chat font is used for what agents write: replies, plans and questions. The interface font is used for everything else. Code stays in the system's fixed-width font."
+        let adding = "Add Font takes .ttf and .otf files, several at once for a family's regular, bold and italic."
+        let sync = syncsWithMac
+            ? "Your choices and the fonts you add sync with your paired Mac while the two are connected."
+            : "In the demo there is no Mac to sync with."
+        return [roles, adding, sync].joined(separator: " ")
+    }
 }
 
-/// One font in the list: tap to choose it. An added font has a Remove button.
-private struct ChatFontChoiceRow: View {
-    let font: ChatFont
+/// One font in the list: tap to choose it for the role. An added font has a Remove button.
+private struct FontChoiceRow: View {
+    let font: AppFont
+    let role: FontRole
     let selected: Bool
     let select: () -> Void
     var remove: (() -> Void)?
@@ -136,7 +175,7 @@ private struct ChatFontChoiceRow: View {
             Button(action: select) {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 5) {
-                        ChatFontLabel(font: font)
+                        FontLabel(font: font, role: role)
                         Text(font.detail)
                             .font(RemoteTheme.font(size: 12, relativeTo: .caption))
                             .foregroundStyle(RemoteTheme.tertiaryText)

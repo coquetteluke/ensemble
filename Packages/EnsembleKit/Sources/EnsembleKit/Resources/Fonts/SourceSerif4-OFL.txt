@@ -1,9 +1,3 @@
-Ensemble Serif 4 is built from Adobe Source Serif 4, made for Ensemble in 2026 (optical size pinned
-to 20, weight axis remapped for dark-mode clarity, true calligraphic italic, and renamed throughout).
-It is licensed under the SIL Open Font License 1.1 below. "Source" is a Reserved Font Name, so the
-modified font has the name "Ensemble Serif 4".
-Build script: tools/fonts/build-ensemble-serif-4.py
-
 Copyright 2014 - 2021 Adobe Systems Incorporated (http://www.adobe.com/), with Reserved Font Name 'Source'.
 Copyright 2014 The Source Serif 4 Project Authors (https://github.com/adobe-fonts/source-serif)
 

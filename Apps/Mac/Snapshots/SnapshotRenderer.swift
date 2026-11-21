@@ -29,8 +29,15 @@ enum SnapshotRenderer {
     static func run(outputDirectory: URL) {
         let zoom = requestedZoom
         _ = NSApplication.shared
-        // Snapshots draw the default chat font, whatever is chosen on this Mac, and never read added fonts.
-        ChatFontStore.shared = .temporary()
+        // Snapshots draw the default fonts, whatever is chosen on this Mac, and never read added fonts.
+        // `--chat-font <id>` and `--interface-font <id>` draw every snapshot in another built-in font.
+        FontStore.shared = .temporary()
+        for role in FontRole.allCases {
+            let arguments = CommandLine.arguments
+            guard let index = arguments.firstIndex(of: "--\(role.rawValue)-font"), index + 1 < arguments.count,
+                  let font = FontStore.shared.choices.first(where: { $0.id == arguments[index + 1] }) else { continue }
+            FontStore.shared.select(font, for: role)
+        }
         do {
             try FileManager.default.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
         } catch {
@@ -289,7 +296,7 @@ enum SnapshotRenderer {
         written += ConstellationSnapshots.render(to: outputDirectory, zoom: zoom)
         written += PlanUsageSnapshots.render(to: outputDirectory, zoom: zoom)
         written += RelaySnapshots.render(to: outputDirectory, zoom: zoom)
-        written += ChatFontSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += FontSnapshots.render(to: outputDirectory, zoom: zoom)
 
         print("Rendered \(written.count) snapshots:")
         for path in written { print(path) }

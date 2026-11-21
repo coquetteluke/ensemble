@@ -117,13 +117,19 @@ enum TestFont {
 }
 
 /// Stands in for the device's settings, so a test writes no settings file.
-@MainActor final class SavedChatFont {
-    var id: String?
+@MainActor final class SavedFonts {
+    var ledger: FontLedger?
 
-    init(_ id: String? = nil) { self.id = id }
+    init(_ ledger: FontLedger? = nil) { self.ledger = ledger }
 
-    /// A store as the app makes it at launch, reading and saving the choice here.
-    func store(library: CustomFontLibrary? = nil) -> ChatFontStore {
-        ChatFontStore(saved: id, save: { [self] in id = $0 }, library: library)
+    /// A store as the app makes it at launch, reading and saving its choices here.
+    func store(library: CustomFontLibrary? = nil) -> FontStore {
+        FontStore(saved: ledger, save: { [self] in ledger = $0 }, library: library)
+    }
+
+    /// A ledger as an earlier launch would have saved it, with these font ids chosen.
+    static func ledger(chat: String = FontRole.chat.standard.id, interface: String = FontRole.interface.standard.id) -> FontLedger {
+        FontLedger(chat: .init(id: chat, changedAt: Date(timeIntervalSince1970: 1_000)),
+                   interface: .init(id: interface, changedAt: Date(timeIntervalSince1970: 1_000)))
     }
 }
