@@ -302,9 +302,12 @@ struct MainView: View {
         case .context:
             ContextPanelView(store: store, session: store.selected, remoteControl: remoteControlBinding)
         case .file(let path, let line):
-            FileViewerPane(link: search.filePreview ?? FileLink(path: path, line: line), base: paneBaseDirectory,
-                           onClose: { window.closeSidePane() }, content: snapshotFileContent)
-                .id(path)
+            FilesPane(link: search.filePreview ?? FileLink(path: path, line: line), base: paneBaseDirectory,
+                      onOpen: { search.openFile(FileLink(path: $0)) }, onClose: { window.closeSidePane() },
+                      snapshotContent: snapshotFileContent)
+        case .files:
+            FilesPane(link: nil, base: paneBaseDirectory, onOpen: { search.openFile(FileLink(path: $0)) },
+                      onClose: { window.closeSidePane() })
         case .review:
             if let snapshotReview {
                 ReviewPane(model: snapshotReview, topInset: 52, onClose: { window.closeSidePane() })

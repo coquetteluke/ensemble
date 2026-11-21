@@ -124,7 +124,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | Context: how many tokens are left before it compacts by itself, and a Compact button | Has | | Built in this pass |
 | Changes: every change of the branch, uncommitted only, or one commit; compare against another branch | Partly | 3 | Whole session, last turn, per agent |
 | Changes: comment on a line, send all comments at once, refresh | Has | | |
-| Files: a tree with a search field beside the viewer | Missing | 2 | The viewer opens from a link only |
+| Files: a tree with a search field beside the viewer | Has | | Built in this pass |
 | Files: edit with auto save | Missing | 3 | Read-only |
 | Files: copy path, show in Finder, open in an editor | Has | | No "attach as context" |
 | Terminal with tabs | Has | | |
@@ -253,7 +253,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | Nothing selected | Partly | 3 | Icon, one line, one button |
 | No scheduled tasks | Has | | Templates sit under the empty state |
 | No changes, nothing running, no search matches | Has | | |
-| Files pane with nothing open | Missing | 3 | There is no files pane to be empty |
+| Files pane with nothing open | Has | | Built in this pass |
 | Engine missing, too old or failed | Has | | With setup steps on the installer branch |
 | A session that fails to load | Partly | 3 | A generic alert |
 | Plan limit reached | Has | | |
@@ -283,7 +283,7 @@ Counting only gaps nobody else is building.
 | 8 | Context: tokens left before compacting, a Compact button; Background tasks with a Finished group | 2 | Built |
 | 9 | Scheduled: ready-made tasks, search and sort, monthly, one-time | 2 | Templates, search and sort built; monthly and one-time not yet |
 | 10 | Keys for next and previous session; check for updates and About | 2 | Keys built; updates and About not yet |
-| 11 | Files pane with a tree and search | 2 | Yes |
+| 11 | Files pane with a tree and search | 2 | Built |
 | 12 | Agent reply actions: fork from here, read aloud, time | 2 | After the pictures session lands |
 | 13 | Settings: notifications by kind, storage, branch prefix, quiet-session archiving, reply style | 3 | After the font session lands |
 | 14 | Usage pace warning | 3 | Built |
@@ -306,5 +306,6 @@ Details in `docs/PROGRESS.md`.
 - Side panel tabs with a "+" and fill the window (gap 3).
 - Scheduled: templates, search and sort (most of gap 9).
 - Plan pace warning under a limit's bar (gap 14).
+- Files tab with the folder's tree and search (gap 11).
 
 Not clicked through in a running window: the owner's own Ensemble was open during the work, so each piece stands on its tests, both builds and its rendered snapshot.

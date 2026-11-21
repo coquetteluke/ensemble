@@ -18,8 +18,10 @@ enum Route: Hashable {
 enum SidePane: Hashable {
     /// The context panel for a session; a room shows its own panel (agents, pieces, rounds).
     case context
-    /// A file, scrolled to a line when given.
+    /// A file, scrolled to a line when given, with the folder's tree beside it (`FilesPane`).
     case file(path: String, line: Int?)
+    /// The Files tab with no file open yet: the folder's tree alone.
+    case files
     /// The review pane (changes of the session or room).
     case review
     /// The browser (`BrowserPane`), with the session's dev servers.
@@ -31,7 +33,7 @@ enum SidePane: Hashable {
     var width: CGFloat {
         switch self {
         case .context: 303
-        case .file: FileViewerPane.width
+        case .file, .files: FilesPane.width
         case .review: 560
         case .browser: BrowserPane.width
         case .terminal: TerminalPane.width
@@ -45,7 +47,7 @@ enum SidePane: Hashable {
         var title: String {
             switch self {
             case .review: "Changes"
-            case .file: "File"
+            case .file: "Files"
             case .browser: "Browser"
             case .terminal: "Terminal"
             }
@@ -54,7 +56,7 @@ enum SidePane: Hashable {
         var symbol: String {
             switch self {
             case .review: "plus.forwardslash.minus"
-            case .file: "doc.text"
+            case .file: "folder"
             case .browser: "globe"
             case .terminal: "terminal"
             }
@@ -64,7 +66,7 @@ enum SidePane: Hashable {
     var kind: Kind? {
         switch self {
         case .context: nil
-        case .file: .file
+        case .file, .files: .file
         case .review: .review
         case .browser: .browser
         case .terminal: .terminal

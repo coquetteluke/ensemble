@@ -90,6 +90,16 @@ enum ParitySnapshots {
                     MainView(store: store, window: tabbed, remoteControlOverride: true, zoomOverride: zoom)
                 }
             }
+            // The Files tab before a file is open: the folder's tree with its search field.
+            do {
+                let files = WindowState()
+                files.showSidebar = true
+                files.openSidePane(.review)
+                files.openSidePane(.files)
+                save("files-tab-\(tone)\(suffix)", width: 1440, height: 900, scheme: scheme, grows: false) {
+                    MainView(store: store, window: files, remoteControlOverride: true, zoomOverride: zoom)
+                }
+            }
             // The outline: your messages in a session, with two pinned as chapters.
             save("outline-\(tone)\(suffix)", width: 468, height: nil, scheme: scheme) {
                 VStack(alignment: .leading, spacing: 18) {

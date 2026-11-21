@@ -44,9 +44,9 @@ struct SidePaneTabStrip: View {
         }
     }
 
-    /// Panes that are not open yet. A file opens from a link in the conversation, so it is never offered here.
+    /// Panes that are not open yet.
     @ViewBuilder private func addMenu(open: [SidePane.Kind]) -> some View {
-        let closed: [SidePane.Kind] = [.review, .browser, .terminal].filter { !open.contains($0) }
+        let closed: [SidePane.Kind] = [.review, .file, .browser, .terminal].filter { !open.contains($0) }
         if !closed.isEmpty {
             if isSnapshot {
                 addLabel
@@ -85,7 +85,7 @@ struct SidePaneTabStrip: View {
         case .review: .review
         case .browser: .browser
         case .terminal: .terminal
-        case .file: .review
+        case .file: .files
         }
     }
 }
