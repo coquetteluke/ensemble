@@ -73,6 +73,11 @@ enum ParitySnapshots {
             save("next-step-\(tone)\(suffix)", width: 760, height: nil, scheme: scheme) {
                 NextStepSnapshot()
             }
+            // Scheduled with no tasks yet: the empty state and the templates to start from.
+            save("scheduled-templates-\(tone)\(suffix)", width: 820, height: nil, scheme: scheme) {
+                ScheduledView(store: store, window: window,
+                              scheduler: TaskScheduler(storage: InMemoryScheduleStorage(), now: { Self.now }), now: Self.now)
+            }
             // The side panel as tabs: Changes, Browser and Terminal open, Terminal in front; then filling the window.
             for (name, fills) in [("side-tabs", false), ("side-tabs-fill", true)] {
                 let tabbed = WindowState()

@@ -154,8 +154,8 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | Feature in the reference app | Ensemble | Rank | Note |
 |---|---|---|---|
 | A Scheduled page with run now, pause, edit, delete and history | Has | | |
-| Search, filter and sort the list | Missing | 3 | |
-| A gallery of ready-made tasks to start from | Missing | 2 | |
+| Search, filter and sort the list | Has | | Built in this pass: search and order |
+| A gallery of ready-made tasks to start from | Has | | Built in this pass: six templates that only read and report |
 | Create a task by describing it in a chat | Missing | 3 | |
 | Hourly, daily, weekdays, weekly | Has | | Plus custom cron |
 | Monthly and one-time | Missing | 3 | |
@@ -251,7 +251,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 |---|---|---|---|
 | No sessions yet | Has | | One line in the sidebar |
 | Nothing selected | Partly | 3 | Icon, one line, one button |
-| No scheduled tasks | Partly | 3 | One line; the reference app adds starting points |
+| No scheduled tasks | Has | | Templates sit under the empty state |
 | No changes, nothing running, no search matches | Has | | |
 | Files pane with nothing open | Missing | 3 | There is no files pane to be empty |
 | Engine missing, too old or failed | Has | | With setup steps on the installer branch |
@@ -281,7 +281,7 @@ Counting only gaps nobody else is building.
 | 6 | Message box: "+" menu, @ files, bring back the last message | 2 | After the pictures session lands |
 | 7 | Search: needs you, working, recent and actions before you type | 2 | Built |
 | 8 | Context: tokens left before compacting, a Compact button; Background tasks with a Finished group | 2 | Built |
-| 9 | Scheduled: ready-made tasks, search and sort, monthly, one-time | 2 | Yes |
+| 9 | Scheduled: ready-made tasks, search and sort, monthly, one-time | 2 | Templates, search and sort built; monthly and one-time not yet |
 | 10 | Keys for next and previous session; check for updates and About | 2 | Keys built; updates and About not yet |
 | 11 | Files pane with a tree and search | 2 | Yes |
 | 12 | Agent reply actions: fork from here, read aloud, time | 2 | After the pictures session lands |
@@ -304,5 +304,6 @@ Details in `docs/PROGRESS.md`.
 - Search start screen (gap 7) and keys for next and previous session (half of gap 10).
 - Jump list of your messages with pinned chapters (gap 4).
 - Side panel tabs with a "+" and fill the window (gap 3).
+- Scheduled: templates, search and sort (most of gap 9).
 
 Not clicked through in a running window: the owner's own Ensemble was open during the work, so each piece stands on its tests, both builds and its rendered snapshot.

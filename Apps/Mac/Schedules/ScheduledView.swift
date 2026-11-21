@@ -14,12 +14,19 @@ struct ScheduledView: View {
     var initiallyExpanded: Set<UUID> = []
     /// Snapshots pass fixed trust lines; the app asks the store.
     var trustLines: [UUID: NewSessionTrustLine]?
+    /// Snapshots preset the search text.
+    var initialQuery = ""
 
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
     @State private var editor: ScheduleEditorRequest?
     @State private var expanded: Set<UUID>?
     @State private var deleting: ScheduledTask?
+    @State private var typedQuery: String?
+    @AppStorage("scheduleSort") private var sortRaw = ScheduleListing.Sort.created.rawValue
+
+    private var query: String { typedQuery ?? initialQuery }
+    private var sort: ScheduleListing.Sort { ScheduleListing.Sort(rawValue: sortRaw) ?? .created }
 
     var body: some View {
         if let scheduler = scheduler ?? ScheduleCenter.shared.scheduler {
@@ -62,7 +69,18 @@ struct ScheduledView: View {
                 if scheduler.tasks.isEmpty {
                     emptyState
                 } else {
-                    ForEach(scheduler.tasks) { task in
+                    let shown = ScheduleListing.sorted(ScheduleListing.filter(scheduler.tasks, query: query), by: sort) {
+                        scheduler.nextRun(for: $0)
+                    }
+                    listTools(shown: shown.count, total: scheduler.tasks.count)
+                    if shown.isEmpty {
+                        Text("No tasks match \u{201C}\(query.trimmingCharacters(in: .whitespaces))\u{201D}")
+                            .font(theme.font(size: 13))
+                            .foregroundStyle(theme.textTertiary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, theme.z(28))
+                    }
+                    ForEach(shown) { task in
                         ScheduleTaskCard(store: store, scheduler: scheduler, task: task, now: now,
                                          trustLine: trustLine(for: task), expanded: expandedBinding(task.id),
                                          onEdit: { editor = ScheduleEditorRequest(task: task, isNew: false) },
@@ -71,6 +89,10 @@ struct ScheduledView: View {
                     }
                 }
                 if !store.schedules.isEmpty { EngineSchedulesSection(schedules: store.schedules) }
+                ScheduleTemplatesSection(templates: ScheduleTemplates.all, enabled: store.isLoaded) { template in
+                    let directory = store.selected?.directory ?? store.projects.first?.directory ?? ""
+                    editor = ScheduleEditorRequest(task: template.task(directory: directory, model: store.defaultModel), isNew: true)
+                }
             }
             .frame(maxWidth: theme.z(760), alignment: .leading)
             .padding(.horizontal, theme.z(28))
@@ -96,6 +118,72 @@ struct ScheduledView: View {
             .buttonStyle(PrimaryButtonStyle())
             .disabled(!store.isLoaded)
         }
+    }
+
+    /// Above the list: a search field over names, prompts and folders, and the order.
+    private func listTools(shown: Int, total: Int) -> some View {
+        HStack(spacing: theme.z(10)) {
+            HStack(spacing: theme.z(7)) {
+                Image(systemName: "magnifyingglass")
+                    .font(theme.font(size: 11.5))
+                    .foregroundStyle(theme.textTertiary)
+                if isSnapshot {
+                    Text(query.isEmpty ? "Search tasks" : query)
+                        .foregroundStyle(query.isEmpty ? theme.textTertiary : theme.textPrimary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    TextField("", text: Binding(get: { query }, set: { typedQuery = $0 }),
+                              prompt: Text("Search tasks").foregroundStyle(theme.textTertiary))
+                        .textFieldStyle(.plain)
+                        .foregroundStyle(theme.textPrimary)
+                        .autocorrectionDisabled()
+                }
+            }
+            .font(theme.font(size: 12.5))
+            .padding(.horizontal, theme.z(9))
+            .frame(height: theme.z(28))
+            .frame(maxWidth: theme.z(260))
+            .background(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).fill(theme.elevated.opacity(0.6)))
+            .overlay(RoundedRectangle(cornerRadius: theme.z(7), style: .continuous).strokeBorder(theme.border))
+            if shown != total {
+                Text("\(shown) of \(total)")
+                    .font(theme.font(size: 12).monospacedDigit())
+                    .foregroundStyle(theme.textTertiary)
+            }
+            Spacer(minLength: theme.z(8))
+            if isSnapshot {
+                sortLabel
+            } else {
+                Menu {
+                    Picker("Sort by", selection: $sortRaw) {
+                        ForEach(ScheduleListing.Sort.allCases) { sort in
+                            Text(sort.label).tag(sort.rawValue)
+                        }
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    sortLabel
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("Order of the list")
+            }
+        }
+    }
+
+    private var sortLabel: some View {
+        HStack(spacing: theme.z(5)) {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(theme.font(size: 10.5))
+            Text(sort.label)
+                .font(theme.font(size: 12))
+        }
+        .foregroundStyle(theme.textSecondary)
+        .padding(.horizontal, theme.z(8))
+        .frame(height: theme.z(26))
+        .contentShape(Rectangle())
     }
 
     private var emptyState: some View {
@@ -187,5 +275,84 @@ private struct EngineSchedulesSection: View {
                 .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(theme.elevated.opacity(0.6)))
             }
         }
+    }
+}
+
+/// Ready-made tasks under the list. Picking one opens the editor filled in; nothing is saved until Save.
+struct ScheduleTemplatesSection: View {
+    let templates: [ScheduleTemplate]
+    let enabled: Bool
+    let onPick: (ScheduleTemplate) -> Void
+    @Environment(\.theme) private var theme
+
+    private var columns: [GridItem] {
+        [GridItem(.flexible(), spacing: theme.z(10), alignment: .top), GridItem(.flexible(), spacing: theme.z(10), alignment: .top)]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: theme.z(8)) {
+            Text("Start from a template")
+                .font(theme.font(size: 12, weight: .semibold))
+                .foregroundStyle(theme.textSecondary)
+                .padding(.top, theme.z(14))
+            LazyVGrid(columns: columns, alignment: .leading, spacing: theme.z(10)) {
+                ForEach(templates) { template in
+                    ScheduleTemplateCard(template: template) { onPick(template) }
+                        .disabled(!enabled)
+                }
+            }
+        }
+    }
+}
+
+/// One template: symbol, name, what it does, and when it runs.
+private struct ScheduleTemplateCard: View {
+    let template: ScheduleTemplate
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: theme.z(11)) {
+                Image(systemName: template.symbol)
+                    .font(theme.font(size: 13))
+                    .foregroundStyle(theme.textSecondary)
+                    .frame(width: theme.z(30), height: theme.z(30))
+                    .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(theme.elevated))
+                VStack(alignment: .leading, spacing: theme.z(3)) {
+                    Text(template.name)
+                        .font(theme.font(size: 13, weight: .medium))
+                        .foregroundStyle(theme.textPrimary)
+                        .lineLimit(1)
+                    Text(template.summary)
+                        .font(theme.font(size: 12))
+                        .foregroundStyle(theme.textSecondary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: theme.z(5)) {
+                        Image(systemName: "clock")
+                            .font(theme.font(size: 10.5))
+                        Text(template.trigger.summary())
+                            .font(theme.font(size: 11.5))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(theme.textTertiary)
+                    .padding(.top, theme.z(1))
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(theme.z(11))
+            // One height for every card, so the grid's rows line up even when a summary wraps.
+            .frame(maxWidth: .infinity, minHeight: theme.z(84), alignment: .topLeading)
+            .background(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).fill(hovering ? theme.elevated.opacity(0.7) : theme.elevated.opacity(0.35)))
+            .overlay(RoundedRectangle(cornerRadius: theme.z(10), style: .continuous).strokeBorder(theme.border))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Open a new task with this filled in")
+        .accessibilityLabel("\(template.name). \(template.summary)")
     }
 }
