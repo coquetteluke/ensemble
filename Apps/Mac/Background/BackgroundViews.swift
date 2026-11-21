@@ -56,6 +56,10 @@ struct BackgroundToolbarButton: View {
                 try? await Task.sleep(for: Self.pollInterval)
             }
         }
+        // A row that stops being reported has finished: keep it for the list's Finished group.
+        .onChange(of: store.backgroundItems.filter(\.isRunning).map(\.id), initial: true) {
+            if !isSnapshot { BackgroundHistoryCenter.shared.sync(store) }
+        }
         .onAppear {
             guard !isSnapshot, wake == nil else { return }
             let store = store
@@ -81,11 +85,13 @@ struct BackgroundToolbarButton: View {
     }
 }
 
-/// The popover's content: one group per session with running work, then the scheduled runs.
+/// The popover's content: one group per session with running work, then the scheduled runs, then what finished.
 struct BackgroundListView: View {
     let store: SessionStore
     var roomTitles: [String: String] = [:]
     var now: Date?
+    /// Snapshots pass their own finished rows; the app shows `BackgroundHistoryCenter.shared`.
+    var history: BackgroundHistory?
     let onOpen: (String) -> Void
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
@@ -93,6 +99,7 @@ struct BackgroundListView: View {
     var body: some View {
         let groups = store.backgroundWork(roomTitles: roomTitles)
         let running = groups.filter { !$0.isScheduled }.reduce(0) { $0 + $1.items.count }
+        let finished = (history ?? BackgroundHistoryCenter.shared.history).finished
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: theme.z(8)) {
                 Text("Background")
@@ -109,7 +116,7 @@ struct BackgroundListView: View {
             .padding(.horizontal, theme.z(14))
             .frame(height: theme.z(38))
             HLine(color: theme.border)
-            if groups.isEmpty {
+            if groups.isEmpty && finished.isEmpty {
                 Text("Nothing is running in the background")
                     .font(theme.font(size: 13))
                     .foregroundStyle(theme.textTertiary)
@@ -127,6 +134,11 @@ struct BackgroundListView: View {
                         }
                         ForEach(groups) { group in
                             BackgroundGroupView(store: store, group: group, now: now, onOpen: onOpen)
+                        }
+                        if !finished.isEmpty {
+                            BackgroundFinishedSection(store: store, finished: finished, onOpen: onOpen) {
+                                BackgroundHistoryCenter.shared.clearFinished()
+                            }
                         }
                     }
                     .padding(.vertical, theme.z(6))

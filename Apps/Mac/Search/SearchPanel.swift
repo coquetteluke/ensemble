@@ -9,11 +9,21 @@ struct SearchPanel: View {
     let window: WindowState
     @Environment(\.theme) private var theme
     @Environment(\.isSnapshot) private var isSnapshot
+    /// Snapshots inject their own; the app uses `AttentionCenter.shared`.
+    @Environment(AttentionCenter.self) private var injectedAttention: AttentionCenter?
     @State private var contentHeight: CGFloat = 0
 
     static let width: CGFloat = 660
 
+    /// The sessions as the sidebar sees them (status and marks), for the start screen's groups. A snapshot without
+    /// its own attention centre uses empty marks, never the user's saved ones.
+    private var sidebarEntries: [SidebarEntry] {
+        if let injectedAttention { return store.sidebarEntries(marks: injectedAttention.marks) }
+        return store.sidebarEntries(marks: isSnapshot ? SessionAttentionMarks(fileURL: nil) : AttentionCenter.shared.marks)
+    }
+
     var body: some View {
+        let entries = sidebarEntries
         OverlayCard(width: Self.width) {
             VStack(spacing: 0) {
                 OverlayField(symbol: "magnifyingglass", placeholder: "Search sessions and messages", text: $search.query)
@@ -25,6 +35,7 @@ struct SearchPanel: View {
             }
         }
         .onChange(of: search.indexer?.generation) { search.refresh() }
+        .onChange(of: entries, initial: true) { search.updateStart(entries) }
     }
 
     // MARK: Filters
@@ -60,7 +71,7 @@ struct SearchPanel: View {
 
     @ViewBuilder private var results: some View {
         let rows = search.rows
-        if search.results.isEmpty {
+        if !search.showsStart && search.results.isEmpty {
             emptyState
                 .frame(maxWidth: .infinity)
                 .frame(height: theme.z(150))
@@ -89,9 +100,41 @@ struct SearchPanel: View {
     @ViewBuilder private func resultRows(_ rows: [SearchCenter.Row]) -> some View {
         let selectedID = rows.indices.contains(search.selection) ? rows[search.selection].id : nil
         let isEmptyQuery = TranscriptSearchQuery(search.query).isEmpty
-        if isEmptyQuery {
-            sectionLabel("Recent sessions")
+        if search.showsStart {
+            startRows(selectedID: selectedID)
+        } else {
+            if isEmptyQuery {
+                sectionLabel("Recent sessions")
+            }
+            foundRows(selectedID: selectedID)
         }
+    }
+
+    /// Before anything is typed: what needs you, what is working, recent sessions, then actions.
+    @ViewBuilder private func startRows(selectedID: String?) -> some View {
+        ForEach(search.start.sections) { section in
+            sectionLabel(section.title)
+            ForEach(section.entries) { entry in
+                let row = SearchCenter.Row(sessionID: entry.id, itemID: nil)
+                StartSessionRow(entry: entry, selected: selectedID == row.id)
+                    .id(row.id)
+                    .onTapGesture { search.open(row, window: window) }
+            }
+        }
+        let actions = search.startActionRows
+        if !actions.isEmpty {
+            sectionLabel("Actions")
+            ForEach(actions) { row in
+                if let command = row.command {
+                    StartActionRow(command: command, selected: selectedID == row.id)
+                        .id(row.id)
+                        .onTapGesture { search.open(row, window: window) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func foundRows(selectedID: String?) -> some View {
         ForEach(search.results) { result in
             let header = SearchCenter.Row(sessionID: result.id, itemID: nil)
             SessionResultRow(result: result, selected: selectedID == header.id)
@@ -276,5 +319,106 @@ private struct MatchResultRow: View {
         case .error: "Error"
         case .board: "Board message"
         }
+    }
+}
+
+/// A session on the start screen: its state as a mark, the title, then folder and age.
+private struct StartSessionRow: View {
+    let entry: SidebarEntry
+    let selected: Bool
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: theme.z(10)) {
+            mark
+                .frame(width: theme.z(18))
+            Text(entry.title)
+                .font(theme.font(size: 13.5, weight: .medium))
+                .foregroundStyle(theme.textPrimary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: theme.z(12))
+            Text("\(Format.folderName(entry.directory)) \u{00B7} \(age)")
+                .font(theme.font(size: 11.5))
+                .foregroundStyle(theme.textTertiary)
+                .lineLimit(1)
+                .help(Format.abbreviatedPath(entry.directory))
+        }
+        .padding(.horizontal, theme.z(10))
+        .frame(height: theme.z(34))
+        .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(selected ? theme.raisedSelection : (hovering ? theme.raisedHover : .clear)))
+        .padding(.horizontal, theme.z(8))
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(entry.title), \(stateLabel)")
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+    }
+
+    @ViewBuilder private var mark: some View {
+        switch entry.status {
+        case .needsYou:
+            Image(systemName: "hand.raised.fill").font(theme.font(size: 11.5)).foregroundStyle(theme.warning)
+        case .failed:
+            Image(systemName: "exclamationmark.circle.fill").font(theme.font(size: 12)).foregroundStyle(theme.danger)
+        case .running:
+            Spinner(size: 11)
+        case .unread:
+            Circle().fill(theme.accent).frame(width: theme.z(7), height: theme.z(7))
+        case .completed:
+            Image(systemName: "checkmark").font(theme.font(size: 11, weight: .semibold)).foregroundStyle(theme.textTertiary)
+        case .idle:
+            Image(systemName: "bubble.left").font(theme.font(size: 12.5)).foregroundStyle(theme.textTertiary)
+        }
+    }
+
+    private var stateLabel: String {
+        switch entry.status {
+        case .needsYou: "needs you"
+        case .failed: "failed"
+        case .running: "working"
+        case .unread: "unread"
+        case .completed: "completed"
+        case .idle: "idle"
+        }
+    }
+
+    private var age: String {
+        let relative = Format.relative(entry.updated)
+        return relative == "now" ? "now" : relative + " ago"
+    }
+}
+
+/// An action on the start screen: symbol, title and its shortcut.
+private struct StartActionRow: View {
+    let command: AppCommandID
+    let selected: Bool
+    @Environment(\.theme) private var theme
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: theme.z(10)) {
+            Image(systemName: command.symbol)
+                .font(theme.font(size: 12.5))
+                .foregroundStyle(theme.textSecondary)
+                .frame(width: theme.z(18))
+            Text(command.title)
+                .font(theme.font(size: 13.5))
+                .foregroundStyle(theme.textPrimary)
+                .lineLimit(1)
+            Spacer(minLength: theme.z(12))
+            if let shortcut = command.shortcut {
+                KeyCaps(shortcut.caps)
+            }
+        }
+        .padding(.horizontal, theme.z(10))
+        .frame(height: theme.z(34))
+        .background(RoundedRectangle(cornerRadius: theme.z(8), style: .continuous).fill(selected ? theme.raisedSelection : (hovering ? theme.raisedHover : .clear)))
+        .padding(.horizontal, theme.z(8))
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 }

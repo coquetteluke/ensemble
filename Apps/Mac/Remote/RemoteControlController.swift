@@ -116,9 +116,7 @@ final class RemoteControlController {
                          relayURL: String = RelayDefaults.url,
                          relayStatus: RelayHostStatus = .connected,
                          needsRescanNotice: Bool = false) -> RemoteControlController {
-        let suiteName = "ensemble.remote.snapshot.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName) ?? .standard
-        defaults.removePersistentDomain(forName: suiteName)
+        let defaults = InMemoryDefaults()
         defaults.set(relayEnabled, forKey: Keys.relayEnabled)
         defaults.set(relayURL, forKey: Keys.relayURL)
         let tokenStore = InMemoryRemoteTokenStore(token: "preview-token")

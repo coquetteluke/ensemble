@@ -59,14 +59,28 @@ struct MainView: View {
                         .transition(.move(edge: .leading))
                     VLine()
                 }
-                CenterColumn(store: store, window: window, rooms: rooms)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // A side panel that fills the window covers the conversation until it is put back.
+                if !sidePaneFillsWindow {
+                    CenterColumn(store: store, window: window, rooms: rooms)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 if showsSidePane {
-                    VLine()
+                    let width = sidePaneFillsWindow
+                        ? proxy.size.width - (window.showSidebar ? theme.z(Self.sidebarWidth) + 1 : 0)
+                        : sidePaneWidth(windowWidth: proxy.size.width)
+                    if !sidePaneFillsWindow { VLine() }
                     sidePane
-                        .frame(width: sidePaneWidth(windowWidth: proxy.size.width))
+                        .frame(width: width)
                         .frame(maxHeight: proxy.size.height, alignment: .top)
                         .clipped()
+                        .overlay(alignment: .topLeading) {
+                            if window.sidePane != .context {
+                                // The band above the pane: tabs on the left, the window's toolbar buttons on the right.
+                                SidePaneTabStrip(window: window)
+                                    .padding(.leading, sidePaneFillsWindow && !window.showSidebar ? (FullScreenState.shared.isOn ? 36 : 110) : 0)
+                                    .frame(width: max(0, width - Self.toolbarButtonsWidth), alignment: .leading)
+                            }
+                        }
                         .transition(.move(edge: .trailing))
                 }
             }
@@ -151,6 +165,14 @@ struct MainView: View {
         .onReceive(NotificationCenter.default.publisher(for: .ensembleFindInCurrentView)) { _ in
             window.findRequestToken &+= 1
         }
+        .onReceive(NotificationCenter.default.publisher(for: .ensembleShowReview)) { _ in
+            if !window.reviewOpen { window.openSidePane(.review) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ensembleJumpToMessage)) { note in
+            guard let sessionID = note.userInfo?["sessionID"] as? String, let itemID = note.userInfo?["itemID"] as? String,
+                  sessionID == store.selectedSessionID else { return }
+            search.jump(to: itemID, in: sessionID)
+        }
         .claudeImport(store: store)
         .alert("Something went wrong", isPresented: errorShown, presenting: store.lastError) { _ in
             Button("OK") { store.lastError = nil }
@@ -185,6 +207,11 @@ struct MainView: View {
                 if window.route == .session, store.selected != nil { window.composerFocusToken &+= 1 }
             }
             .appShortcut(.focusComposer)
+            // Control-Tab steps through sessions like tabs in a browser; the menu items carry the bracket keys.
+            Button("Next session") { window.openNeighbourSession(1, store: store) }
+                .keyboardShortcut(.tab, modifiers: .control)
+            Button("Previous session") { window.openNeighbourSession(-1, store: store) }
+                .keyboardShortcut(.tab, modifiers: [.control, .shift])
         }
         .opacity(0)
         .frame(width: 0, height: 0)
@@ -257,6 +284,11 @@ struct MainView: View {
         return reason + " Trusting \(folder) also trusts the folders inside it. You can remove it in Settings, General."
     }
 
+    /// True while a side panel tab (not the context panel) fills the window.
+    private var sidePaneFillsWindow: Bool {
+        window.sidePaneMaximized && showsSidePane && window.sidePane != .context
+    }
+
     /// The right-hand pane: always for a session; elsewhere only a file or review pane (a room shows its own panel
     /// in place of the context panel).
     private var showsSidePane: Bool {
@@ -270,9 +302,12 @@ struct MainView: View {
         case .context:
             ContextPanelView(store: store, session: store.selected, remoteControl: remoteControlBinding)
         case .file(let path, let line):
-            FileViewerPane(link: search.filePreview ?? FileLink(path: path, line: line), base: paneBaseDirectory,
-                           onClose: { window.closeSidePane() }, content: snapshotFileContent)
-                .id(path)
+            FilesPane(link: search.filePreview ?? FileLink(path: path, line: line), base: paneBaseDirectory,
+                      onOpen: { search.openFile(FileLink(path: $0)) }, onClose: { window.closeSidePane() },
+                      snapshotContent: snapshotFileContent)
+        case .files:
+            FilesPane(link: nil, base: paneBaseDirectory, onOpen: { search.openFile(FileLink(path: $0)) },
+                      onClose: { window.closeSidePane() })
         case .review:
             if let snapshotReview {
                 ReviewPane(model: snapshotReview, topInset: 52, onClose: { window.closeSidePane() })
@@ -630,10 +665,7 @@ struct CenterHeader: View {
                             .font(theme.font(size: 10))
                             .foregroundStyle(theme.accent)
                     }
-                    Text(session.title)
-                        .font(theme.font(size: 13, weight: .semibold))
-                        .foregroundStyle(theme.textPrimary)
-                        .lineLimit(1)
+                    SessionTitleControl(store: store, session: session, window: window)
                     Text(Format.abbreviatedPath(session.directory))
                         .font(theme.font(size: 12))
                         .foregroundStyle(theme.textTertiary)
@@ -671,6 +703,7 @@ struct CenterHeader: View {
                     .disabled(disabled)
                     .help(disabled ? "Needs at least 2 available models" : "Add agents and continue in a room")
                 }
+                SessionOutlineButton(session: session, window: window)
                 // Room for the window's toolbar button when no pane is open on the right.
                 TranscriptViewModeMenu()
                     .padding(.trailing, window.showContextPanel ? theme.z(12) : MainView.toolbarButtonsWidth)

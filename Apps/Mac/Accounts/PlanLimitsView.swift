@@ -92,6 +92,14 @@ struct PlanLimitRow: View {
                     .font(theme.font(size: 11))
                     .foregroundStyle(theme.textTertiary)
             }
+            // Only when the limit would be used up before it resets, at the rate so far in this window.
+            if let pace = PlanPace.project(windowName: row.name, utilization: row.utilization, resetsAt: row.resetsAt, now: now) {
+                Text("At this pace it runs out \(Self.resetText(pace.runsOutAt, now: now, prefix: "")), "
+                     + "\(PlanPace.durationText(pace.shortBy)) before the reset")
+                    .font(theme.font(size: 11))
+                    .foregroundStyle(theme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

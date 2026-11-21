@@ -18,8 +18,10 @@ enum Route: Hashable {
 enum SidePane: Hashable {
     /// The context panel for a session; a room shows its own panel (agents, pieces, rounds).
     case context
-    /// A file, scrolled to a line when given.
+    /// A file, scrolled to a line when given, with the folder's tree beside it (`FilesPane`).
     case file(path: String, line: Int?)
+    /// The Files tab with no file open yet: the folder's tree alone.
+    case files
     /// The review pane (changes of the session or room).
     case review
     /// The browser (`BrowserPane`), with the session's dev servers.
@@ -31,10 +33,43 @@ enum SidePane: Hashable {
     var width: CGFloat {
         switch self {
         case .context: 303
-        case .file: FileViewerPane.width
+        case .file, .files: FilesPane.width
         case .review: 560
         case .browser: BrowserPane.width
         case .terminal: TerminalPane.width
+        }
+    }
+
+    /// A pane's tab in the side panel. The context panel is not a tab: it is what shows when no tab is in front.
+    enum Kind: String, Hashable, CaseIterable, Sendable {
+        case review, file, browser, terminal
+
+        var title: String {
+            switch self {
+            case .review: "Changes"
+            case .file: "Files"
+            case .browser: "Browser"
+            case .terminal: "Terminal"
+            }
+        }
+
+        var symbol: String {
+            switch self {
+            case .review: "plus.forwardslash.minus"
+            case .file: "folder"
+            case .browser: "globe"
+            case .terminal: "terminal"
+            }
+        }
+    }
+
+    var kind: Kind? {
+        switch self {
+        case .context: nil
+        case .file, .files: .file
+        case .review: .review
+        case .browser: .browser
+        case .terminal: .terminal
         }
     }
 }
@@ -84,7 +119,32 @@ final class WindowState {
     /// What the right-hand pane shows (`showContextPanel` says whether it is open). It follows the focused split pane.
     var sidePane: SidePane {
         get { host?.sidePane ?? sidePaneValue }
-        set { if let host { host.sidePane = newValue } else { sidePaneValue = newValue } }
+        set {
+            if let host {
+                host.sidePane = newValue
+                return
+            }
+            sidePaneValue = newValue
+            // Every pane shown becomes a tab of the side panel, whoever set it.
+            if let kind = newValue.kind {
+                paneTabsValue.open(kind)
+                paneContents[kind] = newValue
+            }
+        }
+    }
+
+    private var paneTabsValue = PaneTabs<SidePane.Kind>()
+    /// What each open tab shows (the file tab remembers its file and line).
+    @ObservationIgnored private var paneContents: [SidePane.Kind: SidePane] = [:]
+    /// The side panel's tabs: the panes opened in this window, in the order they were opened. They stay open while
+    /// another tab, or the context panel, is in front.
+    var paneTabs: PaneTabs<SidePane.Kind> { host?.paneTabs ?? paneTabsValue }
+
+    private var sidePaneMaximizedValue = false
+    /// The side panel fills the window, covering the conversation, until it is restored or its last tab closes.
+    var sidePaneMaximized: Bool {
+        get { host?.sidePaneMaximized ?? sidePaneMaximizedValue }
+        set { if let host { host.sidePaneMaximized = newValue } else { sidePaneMaximizedValue = newValue } }
     }
 
     /// Whether the context panel was open before a file or review pane replaced it.
@@ -141,6 +201,20 @@ final class WindowState {
     var findRequestToken: Int {
         get { activePane?.findRequestToken ?? findRequestTokenValue }
         set { if let pane = activePane { pane.findRequestToken = newValue } else { findRequestTokenValue = newValue } }
+    }
+
+    private var renameRequestTokenValue = 0
+    /// Bumped to start renaming the session on screen in the title row (the palette's Rename session).
+    var renameRequestToken: Int {
+        get { host?.renameRequestToken ?? renameRequestTokenValue }
+        set { if let host { host.renameRequestToken = newValue } else { renameRequestTokenValue = newValue } }
+    }
+
+    private var outlineRequestTokenValue = 0
+    /// Bumped to open the title row's outline (the palette's Jump to a message).
+    var outlineRequestToken: Int {
+        get { host?.outlineRequestToken ?? outlineRequestTokenValue }
+        set { if let host { host.outlineRequestToken = newValue } else { outlineRequestTokenValue = newValue } }
     }
 
     private var requestedMenuValue: ComposerMenu?
@@ -204,6 +278,7 @@ final class WindowState {
     func toggleContextPanel() {
         if let host { return host.toggleContextPanel() }
         withAnimation(.easeOut(duration: 0.18)) {
+            sidePaneMaximized = false
             if showContextPanel && sidePane != .context {
                 sidePane = .context
             } else {
@@ -254,14 +329,47 @@ final class WindowState {
         }
     }
 
-    /// Closes a file or review pane: the context panel comes back if it was open before.
+    /// Closes the tab in front of the side panel. Another open tab comes forward; after the last one the context
+    /// panel comes back if it was open before.
     func closeSidePane() {
         if let host { return host.closeSidePane() }
         guard sidePane != .context else { return }
+        if let kind = sidePane.kind {
+            paneContents[kind] = nil
+            if let next = paneTabsValue.close(kind), let pane = paneContents[next] {
+                withAnimation(.easeOut(duration: 0.18)) { sidePane = pane }
+                return
+            }
+        }
         withAnimation(.easeOut(duration: 0.18)) {
+            sidePaneMaximized = false
             sidePane = .context
             showContextPanel = contextWasOpen
         }
+    }
+
+    /// Brings an open tab of the side panel forward.
+    func selectPaneTab(_ kind: SidePane.Kind) {
+        if let host { return host.selectPaneTab(kind) }
+        guard paneTabsValue.contains(kind), let pane = paneContents[kind] else { return }
+        openSidePane(pane)
+    }
+
+    /// Closes one tab of the side panel, in front or not.
+    func closePaneTab(_ kind: SidePane.Kind) {
+        if let host { return host.closePaneTab(kind) }
+        if showContextPanel, sidePane.kind == kind {
+            closeSidePane()
+            return
+        }
+        paneTabsValue.close(kind)
+        paneContents[kind] = nil
+    }
+
+    /// Lets the side panel fill the window, or puts it back beside the conversation.
+    func toggleSidePaneMaximized() {
+        guard showContextPanel, sidePane != .context else { return }
+        withAnimation(.easeOut(duration: 0.18)) { sidePaneMaximized.toggle() }
     }
 
     func toggleSidebar() {
@@ -298,6 +406,15 @@ final class WindowState {
         let order = AttentionCenter.shared.sidebarOrder(store: store)
         guard number >= 1, number <= order.count else { return }
         open(order[number - 1].id, store: store)
+    }
+
+    /// Opens the session after (step 1) or before (step -1) the selected one in sidebar order, wrapping at the ends
+    /// (Shift-Command-] and Shift-Command-[, Control-Tab and Control-Shift-Tab). In split view it shows in the
+    /// focused pane, like Command-1 to 9.
+    func openNeighbourSession(_ step: Int, store: SessionStore) {
+        let order = AttentionCenter.shared.sidebarOrder(store: store).map(\.id)
+        guard let next = SessionCycling.neighbour(of: store.selectedSessionID, in: order, step: step) else { return }
+        open(next, store: store)
     }
 
     func draft(for sessionID: String) -> String { drafts[sessionID] ?? "" }

@@ -26,7 +26,7 @@ import Testing
     }
 
     func setting() -> GitHubAutoArchiveSetting {
-        GitHubAutoArchiveSetting(defaults: UserDefaults(suiteName: "ensemble-github-tests-\(UUID().uuidString)")!)
+        GitHubAutoArchiveSetting(defaults: InMemoryDefaults())
     }
 
     // MARK: The whole flow

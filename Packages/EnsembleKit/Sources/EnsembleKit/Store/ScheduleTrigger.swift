@@ -37,11 +37,13 @@ public enum ScheduleTrigger: Hashable, Sendable {
     case weekdays(hour: Int, minute: Int)
     /// The chosen days at a time.
     case weekly(days: Set<ScheduleWeekday>, hour: Int, minute: Int)
+    /// One day of every month (1 to 28, so no month is skipped) at a time.
+    case monthly(day: Int, hour: Int, minute: Int)
     /// A five-field cron expression.
     case custom(cron: String)
 
     public enum Kind: String, CaseIterable, Codable, Hashable, Sendable {
-        case hourly, daily, weekdays, weekly, custom
+        case hourly, daily, weekdays, weekly, monthly, custom
 
         public var label: String {
             switch self {
@@ -49,6 +51,7 @@ public enum ScheduleTrigger: Hashable, Sendable {
             case .daily: "Daily"
             case .weekdays: "Weekdays"
             case .weekly: "Weekly"
+            case .monthly: "Monthly"
             case .custom: "Custom"
             }
         }
@@ -62,6 +65,7 @@ public enum ScheduleTrigger: Hashable, Sendable {
         case .daily: .daily
         case .weekdays: .weekdays
         case .weekly: .weekly
+        case .monthly: .monthly
         case .custom: .custom
         }
     }
@@ -69,7 +73,8 @@ public enum ScheduleTrigger: Hashable, Sendable {
     /// The time of day, for the kinds that have one.
     public var timeOfDay: (hour: Int, minute: Int)? {
         switch self {
-        case .daily(let hour, let minute), .weekdays(let hour, let minute), .weekly(_, let hour, let minute): (hour, minute)
+        case .daily(let hour, let minute), .weekdays(let hour, let minute), .weekly(_, let hour, let minute),
+             .monthly(_, let hour, let minute): (hour, minute)
         case .hourly, .custom: nil
         }
     }
@@ -85,13 +90,19 @@ public enum ScheduleTrigger: Hashable, Sendable {
             "\(minute) \(hour) * * 1-5"
         case .weekly(let days, let hour, let minute):
             "\(minute) \(hour) * * \(days.isEmpty ? "*" : days.sorted().map { String($0.rawValue) }.joined(separator: ","))"
+        case .monthly(let day, let hour, let minute):
+            "\(minute) \(hour) \(day) * *"
         case .custom(let cron):
             cron.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
 
+    /// Days of the month a monthly task may run on. Every month has them, so a task never skips a month.
+    public static let monthlyDays = 1...28
+
     public func expression() throws -> CronExpression {
         if case .weekly(let days, _, _) = self, days.isEmpty { throw ScheduleTriggerError.noDays }
+        if case .monthly(let day, _, _) = self, !Self.monthlyDays.contains(day) { throw ScheduleTriggerError.badDay }
         if let time = timeOfDay, !(0...23).contains(time.hour) || !(0...59).contains(time.minute) {
             throw ScheduleTriggerError.badTime
         }
@@ -137,9 +148,24 @@ public enum ScheduleTrigger: Hashable, Sendable {
             if ordered.count == 1, let day = ordered.first { return "Every \(day.name(calendar)) at " + time }
             if ordered.isEmpty { return "No days chosen" }
             return Self.list(ordered.map { $0.shortName(calendar) }) + " at " + time
+        case .monthly(let day, let hour, let minute):
+            return "Monthly on the \(Self.ordinal(day)) at " + Self.time(hour: hour, minute: minute, calendar: calendar)
         case .custom(let cron):
             return "Cron " + cron.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+    }
+
+    /// "1st", "2nd", "23rd".
+    public static func ordinal(_ day: Int) -> String {
+        let suffix: String
+        switch (day % 100, day % 10) {
+        case (11...13, _): suffix = "th"
+        case (_, 1): suffix = "st"
+        case (_, 2): suffix = "nd"
+        case (_, 3): suffix = "rd"
+        default: suffix = "th"
+        }
+        return "\(day)\(suffix)"
     }
 
     /// "9:00 AM" or "09:00", as the calendar's locale writes times.
@@ -180,6 +206,11 @@ public enum ScheduleTrigger: Hashable, Sendable {
             if case .weekly = self { return self }
             let today = ScheduleWeekday(rawValue: calendar.component(.weekday, from: Date()) - 1) ?? .monday
             return .weekly(days: [today], hour: time.hour, minute: time.minute)
+        case .monthly:
+            if case .monthly = self { return self }
+            let today = calendar.component(.day, from: Date())
+            return .monthly(day: min(max(today, Self.monthlyDays.lowerBound), Self.monthlyDays.upperBound),
+                            hour: time.hour, minute: time.minute)
         case .custom:
             if case .custom = self { return self }
             return .custom(cron: cronText)
@@ -195,17 +226,19 @@ public enum ScheduleTrigger: Hashable, Sendable {
 public enum ScheduleTriggerError: Error, Equatable, Sendable, LocalizedError {
     case noDays
     case badTime
+    case badDay
 
     public var errorDescription: String? {
         switch self {
         case .noDays: "Choose at least one day."
         case .badTime: "Choose a time between 00:00 and 23:59."
+        case .badDay: "Choose a day from 1 to 28, so the task runs every month."
         }
     }
 }
 
 extension ScheduleTrigger: Codable {
-    private enum CodingKeys: String, CodingKey { case kind, hour, minute, days, cron }
+    private enum CodingKeys: String, CodingKey { case kind, hour, minute, days, day, cron }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -219,6 +252,8 @@ extension ScheduleTrigger: Codable {
         case .weekly:
             let days = try container.decodeIfPresent([ScheduleWeekday].self, forKey: .days) ?? []
             self = .weekly(days: Set(days), hour: hour, minute: minute)
+        case .monthly:
+            self = .monthly(day: try container.decodeIfPresent(Int.self, forKey: .day) ?? 1, hour: hour, minute: minute)
         case .custom:
             self = .custom(cron: try container.decodeIfPresent(String.self, forKey: .cron) ?? "")
         }
@@ -235,6 +270,10 @@ extension ScheduleTrigger: Codable {
             try container.encode(minute, forKey: .minute)
         case .weekly(let days, let hour, let minute):
             try container.encode(days.sorted(), forKey: .days)
+            try container.encode(hour, forKey: .hour)
+            try container.encode(minute, forKey: .minute)
+        case .monthly(let day, let hour, let minute):
+            try container.encode(day, forKey: .day)
             try container.encode(hour, forKey: .hour)
             try container.encode(minute, forKey: .minute)
         case .custom(let cron):

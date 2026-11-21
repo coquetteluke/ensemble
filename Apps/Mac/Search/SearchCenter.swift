@@ -10,11 +10,13 @@ final class SearchCenter {
         case search, palette, shortcuts
     }
 
-    /// One selectable line of the search results: a session, or one of its matched messages.
+    /// One selectable line of the search results: a session, or one of its matched messages. On the start screen
+    /// (nothing typed) a row can also be an action such as New session; `sessionID` is empty then.
     struct Row: Identifiable, Hashable {
         let sessionID: String
         let itemID: String?
-        var id: String { sessionID + "|" + (itemID ?? "") }
+        var command: AppCommandID? = nil
+        var id: String { command.map { "command|" + $0.rawValue } ?? sessionID + "|" + (itemID ?? "") }
     }
 
     var overlay: Overlay?
@@ -26,6 +28,29 @@ final class SearchCenter {
     /// True once a search for the current text has finished.
     private(set) var hasSearched = false
     var selection = 0
+
+    // Start screen
+    /// What the overlay lists before anything is typed: sessions that need you, working ones and recent ones
+    /// (`SearchPanel` keeps it current), followed by `startActions`.
+    private(set) var start = SearchStart()
+    /// Actions offered under the sessions on the start screen.
+    static let startActions: [AppCommandID] = [.newSession, .newRoom, .openHub, .openScheduled, .commandPalette]
+
+    /// True while the overlay shows the start screen instead of results: nothing typed and every session in scope.
+    var showsStart: Bool { TranscriptSearchQuery(query).isEmpty && filter == .all && !start.sections.isEmpty }
+
+    /// The start screen's action rows; New room only while rooms exist.
+    var startActionRows: [Row] {
+        Self.startActions.filter { $0 != .newRoom || rooms != nil }.map { Row(sessionID: "", itemID: nil, command: $0) }
+    }
+
+    /// Takes the sessions as the sidebar sees them and rebuilds the start screen's groups.
+    func updateStart(_ entries: [SidebarEntry]) {
+        let rebuilt = SearchStart.build(entries)
+        guard rebuilt != start else { return }
+        start = rebuilt
+        if showsStart { selection = min(selection, max(0, rows.count - 1)) }
+    }
 
     // Palette
     var paletteQuery = "" { didSet { paletteSelection = 0 } }
@@ -104,9 +129,13 @@ final class SearchCenter {
 
     // MARK: Search
 
-    /// Every selectable row in order: each session, then its matched messages.
+    /// Every selectable row in order: each session, then its matched messages. On the start screen: the sessions
+    /// of each group, then the actions.
     var rows: [Row] {
-        results.flatMap { result in
+        if showsStart {
+            return start.entries.map { Row(sessionID: $0.id, itemID: nil) } + startActionRows
+        }
+        return results.flatMap { result in
             [Row(sessionID: result.id, itemID: nil)] + result.matches.map { Row(sessionID: result.id, itemID: $0.itemID) }
         }
     }
@@ -156,6 +185,11 @@ final class SearchCenter {
     /// Opens the session; a message row (or a session with matches) scrolls to that message.
     func open(_ row: Row, window: WindowState) {
         guard let store else { return }
+        if let command = row.command {
+            close()
+            CommandRegistry.run(command, CommandContext(store: store, window: window, search: self))
+            return
+        }
         let result = results.first { $0.id == row.sessionID }
         let itemID = row.itemID ?? result?.matches.first?.itemID
         close()
@@ -164,6 +198,17 @@ final class SearchCenter {
         focusToken &+= 1
         let token = focusToken
         transcriptFocus = TranscriptFocus(sessionID: row.sessionID, itemID: itemID, token: token)
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            if self?.transcriptFocus?.token == token { self?.transcriptFocus = nil }
+        }
+    }
+
+    /// Scrolls the open transcript to a message and flashes it (the outline's rows), like opening a search result.
+    func jump(to itemID: String, in sessionID: String) {
+        focusToken &+= 1
+        let token = focusToken
+        transcriptFocus = TranscriptFocus(sessionID: sessionID, itemID: itemID, token: token)
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(12))
             if self?.transcriptFocus?.token == token { self?.transcriptFocus = nil }

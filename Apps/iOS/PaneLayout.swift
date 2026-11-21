@@ -14,6 +14,15 @@ struct PanePlan: Equatable {
         case laptop(creaseY: CGFloat)
     }
 
+    /// The shape without its crease position: tells a new layout from a crease that only moved a little.
+    var kind: Int {
+        switch shape {
+        case .row: 0
+        case .book: 1
+        case .laptop: 2
+        }
+    }
+
     /// What sits under the message box in the laptop shape.
     enum Deck: Equatable { case none, sidebar, details }
 
@@ -119,5 +128,15 @@ struct DetailsToggleButton: View {
                 .contentShape(Rectangle())
         }
         .accessibilityLabel(controls.detailsShown ? "Hide details" : "Show details")
+    }
+}
+
+/// How the panes move when the phone folds or unfolds.
+enum PaneMotion {
+    /// The curve and length of the slide. The panes are real views moved with an offset, so any animation works
+    /// here without costing a layout pass per frame.
+    static var fold: Animation {
+        // TODO(human): choose how the fold feels. This default is a calm glide with no bounce.
+        .smooth(duration: 0.5)
     }
 }

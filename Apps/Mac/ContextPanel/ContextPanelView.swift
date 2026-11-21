@@ -158,6 +158,16 @@ struct ContextPanelView: View {
                     disclosureRow(group)
                 }
             }
+
+            if let session, let line = breakdown.compactingLine {
+                ContextCompactRow(line: line,
+                                  canCompact: store.engineHasCommand("compact", sessionID: session.id),
+                                  working: session.isWorking) {
+                    let id = session.id
+                    Task { await store.runCommand("compact", arguments: "", in: id) }
+                }
+                .padding(.top, theme.z(10))
+            }
         }
         .padding(.top, theme.z(8))
         .padding(.bottom, theme.z(14))
@@ -683,5 +693,35 @@ struct FileDiffPopover: View {
         }
         .frame(width: theme.z(520))
         .background(theme.codeBackground)
+    }
+}
+
+/// Foot of the Context card: how much room is left before the engine compacts the conversation by itself, and a
+/// button that compacts it now (the engine's own compact command; hidden when the engine has none).
+struct ContextCompactRow: View {
+    let line: String
+    let canCompact: Bool
+    /// The agent is working: compacting waits for the turn to end.
+    let working: Bool
+    let compact: () -> Void
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        HStack(spacing: theme.z(8)) {
+            Text(line)
+                .font(theme.font(size: 12))
+                .monospacedDigit()
+                .foregroundStyle(theme.textTertiary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.85)
+            Spacer(minLength: theme.z(6))
+            if canCompact {
+                Button("Compact", action: compact)
+                    .buttonStyle(SecondaryButtonStyle())
+                    .controlSize(.small)
+                    .disabled(working)
+                    .help(working ? "Compacting waits until the agent stops" : "Summarize the conversation so far to free up context")
+            }
+        }
     }
 }

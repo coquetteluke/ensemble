@@ -169,6 +169,12 @@ struct EnsembleApp: App {
         (AppearanceSetting(rawValue: appearance) ?? .dark).colorScheme
     }
 
+    /// The running engine's version for the About window; nil while it is starting or missing.
+    private var engineVersionText: String? {
+        if case .running(let version, _) = app.status, version != "preview" { return version }
+        return nil
+    }
+
     var body: some Scene {
         Window("Ensemble", id: "main") {
             Group {
@@ -194,7 +200,17 @@ struct EnsembleApp: App {
         .commands {
             EnsembleCommands(app: app, window: window)
             FindingCommands(search: search, hasStore: app.store != nil)
+            UpdateCommands()
         }
+
+        Window("About Ensemble", id: "about") {
+            AboutView(engineVersion: engineVersionText)
+                .ensembleTheme()
+                .environment(\.zoom, 1)
+                .preferredColorScheme(colorScheme)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
 
         Window("Pair iPhone", id: "pair-iphone") {
             Group {
@@ -297,6 +313,13 @@ struct EnsembleCommands: Commands {
                 .keyboardShortcut(.escape, modifiers: [])
                 .disabled(window.route != .session || !(app.store?.selected?.isWorking ?? false))
             Divider()
+            Button("Next Session") { if let store = app.store { window.openNeighbourSession(1, store: store) } }
+                .appShortcut(.nextSession)
+                .disabled((app.store?.sessions.count ?? 0) < 2)
+            Button("Previous Session") { if let store = app.store { window.openNeighbourSession(-1, store: store) } }
+                .appShortcut(.previousSession)
+                .disabled((app.store?.sessions.count ?? 0) < 2)
+            Divider()
 
             let order = app.store.map { AttentionCenter.shared.sidebarOrder(store: $0) } ?? []
             ForEach(1...9, id: \.self) { number in
@@ -320,6 +343,11 @@ struct EnsembleCommands: Commands {
             ReviewMenuCommand(isOpen: window.reviewOpen, isAvailable: reviewAvailable) { window.toggleReview() }
             BrowserMenuCommand(isOpen: window.browserOpen) { window.toggleBrowser() }
             TerminalMenuCommand(isOpen: window.terminalOpen, isAvailable: app.store != nil) { window.toggleTerminal() }
+            Button("Close Side Pane Tab") { window.closeSidePane() }
+                .appShortcut(.closeSidePaneTab)
+                .disabled(!(window.showContextPanel && window.sidePane != .context))
+            Button(window.sidePaneMaximized ? "Put Side Pane Back" : "Fill Window with Side Pane") { window.toggleSidePaneMaximized() }
+                .disabled(!(window.showContextPanel && window.sidePane != .context))
             Divider()
             // Command-= also zooms in (handled by WindowState.installZoomShortcut).
             Button("Zoom In") { window.zoomIn() }

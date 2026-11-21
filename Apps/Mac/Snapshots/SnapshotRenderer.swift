@@ -36,6 +36,13 @@ enum SnapshotRenderer {
             return
         }
 
+        // `--only parity` renders just the screens in `ParitySnapshots`, for a quick look while working on them.
+        if let index = CommandLine.arguments.firstIndex(of: "--only"), index + 1 < CommandLine.arguments.count,
+           CommandLine.arguments[index + 1] == "parity" {
+            ParitySnapshots.render(to: outputDirectory, zoom: zoom)
+            return
+        }
+
         let store = SessionStore(engine: PreviewEngine())
         store.seed(PreviewData.seed())
         let window = WindowState()
@@ -304,6 +311,7 @@ enum SnapshotRenderer {
         written += ConstellationSnapshots.render(to: outputDirectory, zoom: zoom)
         written += PlanUsageSnapshots.render(to: outputDirectory, zoom: zoom)
         written += RelaySnapshots.render(to: outputDirectory, zoom: zoom)
+        written += ParitySnapshots.render(to: outputDirectory, zoom: zoom)
 
         print("Rendered \(written.count) snapshots:")
         for path in written { print(path) }
