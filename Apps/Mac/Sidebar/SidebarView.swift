@@ -30,6 +30,8 @@ struct SidebarView: View {
     /// The folder header being dragged, and the folder it would land next to.
     @State private var draggingFolder: String?
     @State private var folderDropTarget: String?
+    /// Watches for the end of a folder drag (`beginFolderDrag`).
+    @State private var folderDragWatch: Task<Void, Never>?
 
     private var attention: AttentionCenter { injectedAttention ?? .shared }
     private var grouping: SidebarGrouping { groupingOverride ?? SidebarGrouping(rawValue: groupingRaw) ?? .project }
@@ -126,7 +128,7 @@ struct SidebarView: View {
         .background {
             if !isSnapshot { AttentionWindowReader { attention.registerMainWindow($0) } }
         }
-        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification).receive(on: RunLoop.main)) { _ in
             let stored = AttentionSettings.sidebarFolderOrder
             if stored != savedFolderOrder { savedFolderOrder = stored }
         }
@@ -201,10 +203,7 @@ struct SidebarView: View {
                                        canMoveUp: SidebarFolderOrder.canMove(group.id, by: -1, shown: folders),
                                        canMoveDown: SidebarFolderOrder.canMove(group.id, by: 1, shown: folders),
                                        onMove: { step in moveFolder(group.id, by: step, folders: folders) },
-                                       onDragStart: {
-                                           draggingFolder = group.id
-                                           folderDropTarget = nil
-                                       }) : nil)
+                                       onDragStart: { beginFolderDrag(group.id) }) : nil)
             case .state(let state):
                 SidebarGroupHeader(icon: stateIcon(state), title: group.title, help: nil,
                                    collapsed: collapsed, onToggle: { toggle(group.id) })
@@ -235,6 +234,27 @@ struct SidebarView: View {
                     let after = dropsAfter(group.id, dragged: dragged, folders: folders)
                     saveFolderOrder(SidebarFolderOrder.moving(dragged, to: group.id, after: after, shown: folders, saved: folderOrder))
                 })))
+    }
+
+    /// Remembers which folder is being dragged, and forgets it when the mouse button comes up. A drag that ends
+    /// without a drop (released over the chat, or Escape) tells nobody, and a folder left "being dragged" would make
+    /// the next unrelated drag of some text over the sidebar look like a folder move.
+    private func beginFolderDrag(_ folder: String) {
+        draggingFolder = folder
+        folderDropTarget = nil
+        folderDragWatch?.cancel()
+        folderDragWatch = Task { @MainActor in
+            // The press that started the drag is still down; give it a moment to be seen, then wait for the release.
+            try? await Task.sleep(for: .milliseconds(150))
+            while !Task.isCancelled, NSEvent.pressedMouseButtons & 1 != 0 {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            // A drop on a folder is handled first (`FolderDropDelegate.performDrop`); this clears what is left.
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            draggingFolder = nil
+            folderDropTarget = nil
+        }
     }
 
     /// A folder dragged down lands after the folder it is dropped on; dragged up, before it.

@@ -83,7 +83,7 @@ public enum MessageAttachments {
         files.filter(\.isFileURL).map { url in
             let mediaType = imageMediaTypes[url.pathExtension.lowercased()]
             // A picture pasted or dropped without a file was saved under a made-up name: it has no name to show.
-            let name = url.lastPathComponent.hasPrefix(pastedPrefix) ? nil : url.lastPathComponent
+            let name = displayName(url.lastPathComponent)
             return MessageAttachment(kind: mediaType == nil ? .file : .image, name: name, mediaType: mediaType, path: url.path)
         }
     }
@@ -96,6 +96,17 @@ public enum MessageAttachments {
         if pictures == 1 { parts.append("Picture") } else if pictures > 1 { parts.append("\(pictures) pictures") }
         parts += attachments.filter { $0.kind == .file }.map(\.label)
         return parts.joined(separator: ", ")
+    }
+
+    /// The files of a message's attachments that are still on this Mac, to send them again (Retry, Edit).
+    public static func files(_ attachments: [MessageAttachment]) -> [URL] {
+        attachments.compactMap(\.fileURL).filter { FileManager.default.fileExists(atPath: $0.path) }
+    }
+
+    /// The name to show for a file: nil for a picture saved under a made-up name (pasted or dropped without a file).
+    public static func displayName(_ fileName: String?) -> String? {
+        guard let fileName, !fileName.isEmpty, !fileName.hasPrefix(pastedPrefix) else { return nil }
+        return fileName
     }
 
     /// The table a phone gets: no paths.

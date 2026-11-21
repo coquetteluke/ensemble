@@ -223,7 +223,7 @@ struct ClaudeTranscriptBuilder {
                             upsert(.notice(id: "\(uuid):\(offset)", text: "Interrupted"))
                         } else if syntheticTexts.contains(text) {
                             upsert(.notice(id: "\(uuid):\(offset)", text: text))
-                        } else if attachmentsApart, blocks.count > 1, let paths = Self.attachedFilePaths(text) {
+                        } else if attachmentsApart, let paths = Self.attachedFilePaths(text) {
                             extras += paths.map { .file(path: $0) }
                         } else {
                             spoken.append(text)

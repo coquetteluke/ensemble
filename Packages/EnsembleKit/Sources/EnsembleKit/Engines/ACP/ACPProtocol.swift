@@ -247,8 +247,9 @@ struct ACPUserAttachment: Equatable, Sendable {
         mediaType = block["mimeType"]?.stringValue
             ?? file.flatMap { MessageAttachments.imageMediaTypes[$0.pathExtension.lowercased()] }
         isImage = type == "image" || mediaType?.hasPrefix("image/") == true
-        name = block["name"]?.stringValue ?? file?.lastPathComponent
-        path = file?.path
+        name = MessageAttachments.displayName(block["name"]?.stringValue ?? file?.lastPathComponent)
+        // The file may be gone since the message was sent (deleted, or a pasted picture cleaned out of the cache).
+        path = file.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0.path : nil }
         // Bytes are only kept when there is no file to read them from.
         base64 = path == nil ? block["data"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 } : nil
     }

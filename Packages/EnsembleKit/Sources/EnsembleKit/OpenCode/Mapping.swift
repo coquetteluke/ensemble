@@ -151,27 +151,33 @@ enum TranscriptMapper {
         messages.flatMap { items(from: $0) }
     }
 
-    /// The transcript with each user message's files beside it instead of as "Attached: name" lines.
-    static func attached(from messages: [Wire.Message]) -> AttachedTranscript {
+    /// The transcript with each user message's files beside it instead of as "Attached: name" lines. `savePicture`
+    /// turns a picture's stored bytes (base64 text, media type) into a file and returns its path.
+    static func attached(from messages: [Wire.Message], savePicture: ((String, String?) -> String?)? = nil) -> AttachedTranscript {
         var result = AttachedTranscript()
         for message in messages {
             result.items += items(from: message, attachmentsApart: true)
-            let files = attachments(of: message)
+            let files = attachments(of: message, savePicture: savePicture)
             if !files.isEmpty { result.attachments[message.id] = files }
         }
         return result
     }
 
-    /// A user message's files. A picture is shown from its own file when the message names one on this Mac.
-    static func attachments(of message: Wire.Message) -> [MessageAttachment] {
+    /// A user message's files. A file is shown from its own place on this Mac while it is still there. A picture
+    /// whose file is gone (deleted, or a pasted picture cleaned out of the cache) is saved again from the bytes the
+    /// engine keeps in the message.
+    static func attachments(of message: Wire.Message, savePicture: ((String, String?) -> String?)? = nil) -> [MessageAttachment] {
         guard message.type == "user" else { return [] }
         return (message.files ?? []).enumerated().map { index, file in
             let url = file.source?.uri.flatMap { URL(string: $0) }
             let local = url.flatMap { $0.isFileURL ? $0 : nil }
-            let name = file.name ?? url?.lastPathComponent
-            let mime = file.mime ?? (name as NSString?).flatMap { MessageAttachments.imageMediaTypes[$0.pathExtension.lowercased()] }
-            return MessageAttachment(id: "\(message.id):\(index)", kind: mime?.hasPrefix("image/") == true ? .image : .file,
-                                     name: name, mediaType: mime, path: local?.path)
+            let fileName = file.name ?? url?.lastPathComponent
+            let mime = file.mime ?? (fileName as NSString?).flatMap { MessageAttachments.imageMediaTypes[$0.pathExtension.lowercased()] }
+            let isPicture = mime?.hasPrefix("image/") == true
+            var path = local.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0.path : nil }
+            if path == nil, isPicture, let data = file.data, !data.isEmpty { path = savePicture?(data, mime) }
+            return MessageAttachment(id: "\(message.id):\(index)", kind: isPicture ? .image : .file,
+                                     name: MessageAttachments.displayName(fileName), mediaType: mime, path: path)
         }
     }
 

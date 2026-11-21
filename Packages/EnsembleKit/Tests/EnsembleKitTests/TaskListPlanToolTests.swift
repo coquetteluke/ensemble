@@ -151,6 +151,13 @@ struct TaskListPlanToolTests {
         list = TodoParser.latest(in: items)
         #expect(list == [TodoItem(content: "Read the code", status: .completed, activeForm: "Reading the code"),
                          TodoItem(content: "Run every test", status: .inProgress)])
+        // A fork can number its tasks from 1 again: an update goes to the newest task with that id.
+        let renumbered = [tool("TaskCreate", #"{"subject": "Old one"}"#, output: "Task #1 created successfully: Old one"),
+                          tool("TaskUpdate", #"{"taskId": "1", "status": "completed"}"#),
+                          tool("TaskCreate", #"{"subject": "New one"}"#, output: "Task #1 created successfully: New one"),
+                          tool("TaskUpdate", #"{"taskId": "1", "status": "in_progress"}"#)]
+        #expect(TodoParser.latest(in: renumbered) == [TodoItem(content: "Old one", status: .completed),
+                                                      TodoItem(content: "New one", status: .inProgress)])
         // Without a readable result the tasks are numbered in order.
         let unnumbered = [tool("TaskCreate", #"{"subject": "A"}"#), tool("TaskCreate", #"{"subject": "B"}"#),
                           tool("TaskUpdate", #"{"taskId": "2", "status": "completed"}"#)]
@@ -164,9 +171,14 @@ struct TaskListPlanToolTests {
             let summary = ToolSummary(ToolCallInfo(id: "t", name: name, title: name, status: .succeeded))
             #expect(summary.verb == "Updated the plan" && summary.subject.isEmpty, "\(name)")
         }
-        for name in ["bash", "mcp__notes__wrap_up", "mcp__x__plan_trip", "Task", "TaskStop"] {
+        // Another server's tool of the same name is about something else (an issue tracker's tasks, say).
+        for name in ["bash", "mcp__notes__wrap_up", "mcp__x__plan_trip", "Task", "TaskStop", "wrap_up", "mcp__backlog__task_create",
+                     "mcp__backlog__task_update", "mcp__tracker__update_plan", "mcp__notes__todo", "mcp__ccd_turn__other"] {
             #expect(!TodoParser.isPlanTool(name), "\(name)")
+            #expect(ToolCategory(name) != .plan, "\(name)")
         }
+        let tracker = [tool("mcp__backlog__task_create", #"{"title": "Fix login bug"}"#)]
+        #expect(TodoParser.latest(in: tracker) == nil, "no card from a tracker's tasks")
         #expect(ToolCategory("Task") == .subagent)
         // Only the whole-list todo tools count for the ACP rename (`ACPTranscript`).
         #expect(TodoParser.isTodoTool("todowrite") && !TodoParser.isTodoTool(Self.updatePlan))

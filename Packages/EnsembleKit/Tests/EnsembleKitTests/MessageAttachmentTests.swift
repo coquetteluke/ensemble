@@ -80,10 +80,9 @@ struct MessageAttachmentTests {
         let lines = [
             try Sample.user("u1", parent: nil, content: [["type": "image", "source": ["type": "url", "url": "https://example.test/a.png"]],
                                                          ["type": "text", "text": "see"]]),
-            // Typed text that starts like the file list but is not one, and a lone block that is the whole message.
+            // Typed text that starts like the file list but is not one.
             try Sample.user("u2", parent: "u1", content: [["type": "text", "text": "hi"],
                                                           ["type": "text", "text": ClaudeTranscriptBuilder.attachedFilesPrefix + "\nnot a path"]]),
-            try Sample.user("u3", parent: "u2", content: [["type": "text", "text": ClaudeTranscriptBuilder.attachedFilesPrefix + "\n/tmp/a.txt"]]),
         ].joined(separator: "\n")
         var builder = ClaudeTranscriptBuilder(rootID: "root", directory: "/tmp/proj", finished: true)
         builder.attachmentsApart = true
@@ -91,10 +90,31 @@ struct MessageAttachmentTests {
         #expect(userRows(built.items).map(\.text) == [
             "[image]\n\nsee",
             "hi\n\n" + ClaudeTranscriptBuilder.attachedFilesPrefix + "\nnot a path",
-            ClaudeTranscriptBuilder.attachedFilesPrefix + "\n/tmp/a.txt",
         ])
         #expect(built.attached.isEmpty)
         #expect(ClaudeTranscriptBuilder.attachedFilePaths("Attached files") == nil)
+    }
+
+    /// A file sent with no text is one block in the CLI's transcript: the list Ensemble wrote. It is the file, not
+    /// a message that reads "Attached files (read them with your tools): /Users/...", on the Mac or on the phone.
+    @Test func aMessageThatIsOnlyAFileShowsTheFileAndNoPath() throws {
+        let blocks = try ClaudeCLI.contentBlocks(synthetic: [], text: "", files: [URL(fileURLWithPath: "/Users/me/Desktop/notes.pdf")])
+        #expect(blocks.count == 1, "what Ensemble sends for a file with no text")
+        let content = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(blocks)) as? [[String: Any]])
+        let lines = try Sample.user("u1", parent: nil, content: content)
+        var builder = ClaudeTranscriptBuilder(rootID: "root", directory: "/tmp/proj", finished: true)
+        builder.attachmentsApart = true
+        let built = builder.build(from: ClaudeTranscriptFiles.parse(Data(lines.utf8)).activeChain())
+        #expect(userRows(built.items).map(\.text) == [""])
+        #expect(built.attached["u1"] == [.file(path: "/Users/me/Desktop/notes.pdf")])
+
+        // The phone: a chip and the stand-in words, never the Mac's path.
+        let table = ["u1": MessageAttachments.forFiles([URL(fileURLWithPath: "/Users/me/Desktop/notes.pdf")])]
+        let remote = RemoteTranscript.remoteRows(built.items, attachments: table)
+        let json = String(decoding: try RemoteCoding.encoder().encode(RemoteTranscript(sessionID: "s", title: "T", items: remote.items,
+                                                                                       attachments: remote.attachments)), as: UTF8.self)
+        #expect(!json.contains("/Users/me"))
+        #expect(json.contains("notes.pdf"))
     }
 
     #if os(macOS)
@@ -224,6 +244,19 @@ struct MessageAttachmentTests {
         #expect(!named.contains("/Users/me"))
     }
 
+    @Test func onlyFilesStillOnThisMacAreSentAgain() throws {
+        let folder = try Sample.temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let here = folder.appendingPathComponent("here.png")
+        try Data([1]).write(to: here)
+        let list = [MessageAttachment(kind: .image, path: here.path), MessageAttachment(kind: .image, path: folder.appendingPathComponent("gone.png").path),
+                    MessageAttachment(kind: .image), MessageAttachment(kind: .file, name: "notes.md")]
+        #expect(MessageAttachments.files(list).map(\.path) == [here.path])
+        #expect(MessageAttachments.displayName("pasted-12ab.png") == nil)
+        #expect(MessageAttachments.displayName("shot.png") == "shot.png")
+        #expect(MessageAttachments.displayName("") == nil && MessageAttachments.displayName(nil) == nil)
+    }
+
     @Test func decodingToleratesMissingAndUnknownFields() throws {
         let decoder = JSONDecoder()
         let bare = try decoder.decode(MessageAttachment.self, from: Data("{}".utf8))
@@ -326,20 +359,46 @@ struct MessageAttachmentTests {
     // MARK: OpenCode and ACP
 
     @Test func openCodeMessageFilesBecomeAttachments() throws {
+        let project = try Sample.temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: project) }
+        let hello = project.appendingPathComponent("hello.txt")
+        let shot = project.appendingPathComponent("My Shot.png")
+        try Data("hi".utf8).write(to: hello)
+        try Data(base64Encoded: Sample.pngBase64)!.write(to: shot)
+        let pasted = project.appendingPathComponent("pasted-0a1b2c.png")
         let json = """
         [{"id": "msg_1", "type": "user", "time": {"created": 1763650000000}, "text": "look at this attachment",
-          "files": [{"mime": "text/plain", "name": "hello.txt", "source": {"type": "uri", "uri": "file:///tmp/proj/hello.txt"}},
-                    {"mime": "image/png", "source": {"type": "uri", "uri": "file:///tmp/proj/My%20Shot.png"}},
-                    {"mime": "image/jpeg", "name": "inline.jpg", "source": {"type": "inline"}}]},
+          "files": [{"mime": "text/plain", "name": "hello.txt", "data": "aGk=", "source": {"type": "uri", "uri": "\(hello.absoluteString)"}},
+                    {"mime": "image/png", "data": "\(Sample.pngBase64)", "source": {"type": "uri", "uri": "\(shot.absoluteString)"}},
+                    {"mime": "image/jpeg", "name": "inline.jpg", "data": "\(Sample.pngBase64)", "source": {"type": "inline"}},
+                    {"mime": "image/png", "name": "pasted-0a1b2c.png", "data": "\(Sample.pngBase64)", "source": {"type": "uri", "uri": "\(pasted.absoluteString)"}},
+                    {"mime": "text/plain", "name": "gone.txt", "data": "aGk=", "source": {"type": "uri", "uri": "\(project.appendingPathComponent("gone.txt").absoluteString)"}}]},
          {"id": "msg_2", "type": "user", "time": {"created": 1763650001000}, "text": "plain"}]
         """
         let messages = try JSONDecoder().decode([Wire.Message].self, from: Data(json.utf8))
-        let attached = TranscriptMapper.attached(from: messages)
+        let cache = MessagePictureCache(directory: project.appendingPathComponent("pictures"))
+        var saves = 0
+        let attached = TranscriptMapper.attached(from: messages) { base64, mediaType in
+            saves += 1
+            return cache.store(base64: base64, mediaType: mediaType)?.path
+        }
         #expect(userRows(attached.items).map(\.text) == ["look at this attachment", "plain"])
         let files = try #require(attached.attachments["msg_1"])
-        #expect(files.map(\.kind) == [.file, .image, .image])
-        #expect(files.map(\.name) == ["hello.txt", "My Shot.png", "inline.jpg"])
-        #expect(files.map(\.path) == ["/tmp/proj/hello.txt", "/tmp/proj/My Shot.png", nil])
+        #expect(files.map(\.kind) == [.file, .image, .image, .image, .file])
+        #expect(files.map(\.name) == ["hello.txt", "My Shot.png", "inline.jpg", nil, "gone.txt"], "a made-up pasted name is not shown")
+        // Files still on this Mac are read where they are.
+        #expect(files[0].path == hello.path && files[1].path == shot.path)
+        // A picture with no file, and a pasted picture whose file was cleaned up, come back from the message's own bytes.
+        #expect(saves == 2)
+        for picture in [files[2], files[3]] {
+            let path = try #require(picture.path)
+            #expect(path.hasPrefix(project.appendingPathComponent("pictures").path))
+            #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == Data(base64Encoded: Sample.pngBase64))
+        }
+        // A file that is not a picture and is gone is a chip without a file.
+        #expect(files[4].path == nil)
+        // Without a place to save to, a picture with no file is still listed.
+        #expect(TranscriptMapper.attached(from: messages).attachments["msg_1"]?.map { $0.path == nil } == [false, false, true, true, true])
         #expect(attached.attachments["msg_2"] == nil)
         // The plain transcript still lists the names in the text.
         #expect(userRows(TranscriptMapper.items(from: messages)).first?.text.contains("Attached: hello.txt") == true)
@@ -350,15 +409,28 @@ struct MessageAttachmentTests {
         func chunk(_ kind: String, _ content: JSONValue) -> ACPSessionUpdate? {
             ACPSessionUpdate(["sessionUpdate": .string(kind), "content": content])
         }
+        let project = try Sample.temporaryFolder()
+        defer { try? FileManager.default.removeItem(at: project) }
+        let shot = project.appendingPathComponent("My Shot.jpg")
+        let notes = project.appendingPathComponent("notes.pdf")
+        try Data(base64Encoded: Sample.pngBase64)!.write(to: shot)
+        try Data("pdf".utf8).write(to: notes)
         let picture: JSONValue = ["type": "image", "data": .string(Sample.pngBase64), "mimeType": "image/png"]
-        let onDisk: JSONValue = ["type": "image", "data": .string(Sample.pngBase64), "mimeType": "image/jpeg", "uri": "file:///tmp/proj/My%20Shot.jpg"]
-        let link: JSONValue = ["type": "resource_link", "uri": "file:///tmp/proj/notes.pdf", "name": "notes.pdf"]
+        let onDisk: JSONValue = ["type": "image", "data": .string(Sample.pngBase64), "mimeType": "image/jpeg", "uri": .string(shot.absoluteString)]
+        let link: JSONValue = ["type": "resource_link", "uri": .string(notes.absoluteString), "name": "notes.pdf"]
 
         #expect(chunk("user_message_chunk", picture) == .userAttachment(try #require(ACPUserAttachment(picture)), messageID: nil))
         #expect(ACPUserAttachment(picture)?.base64 == Sample.pngBase64)
-        #expect(ACPUserAttachment(onDisk)?.path == "/tmp/proj/My Shot.jpg")
+        #expect(ACPUserAttachment(onDisk)?.path == shot.path)
         #expect(ACPUserAttachment(onDisk)?.base64 == nil, "a picture with a file is read from the file")
         #expect(ACPUserAttachment(link)?.isImage == false)
+        // The file is gone (deleted, or a pasted picture cleaned out of the cache): the message's own bytes are kept,
+        // and a made-up file name is not shown.
+        let gone: JSONValue = ["type": "image", "data": .string(Sample.pngBase64), "mimeType": "image/png",
+                               "uri": .string(project.appendingPathComponent("pasted-0a1b.png").absoluteString)]
+        #expect(ACPUserAttachment(gone)?.path == nil)
+        #expect(ACPUserAttachment(gone)?.base64 == Sample.pngBase64)
+        #expect(ACPUserAttachment(gone)?.name == nil)
         #expect(ACPUserAttachment(["type": "text", "text": "hi"]) == nil)
         // The agent's own pictures and plain text are unchanged.
         #expect(chunk("agent_message_chunk", picture) == .agentMessage(text: "[image]", messageID: nil))
@@ -376,8 +448,8 @@ struct MessageAttachmentTests {
         let first = try #require(state.attachments[rows[0].id])
         #expect(first.map(\.kind) == [.image, .file])
         #expect(first.map(\.name) == [nil, "notes.pdf"])
-        #expect(first.map(\.path) == [nil, "/tmp/proj/notes.pdf"])
-        #expect(state.attachments[rows[1].id]?.map(\.path) == ["/tmp/proj/My Shot.jpg"])
+        #expect(first.map(\.path) == [nil, notes.path])
+        #expect(state.attachments[rows[1].id]?.map(\.path) == [shot.path])
         #expect(state.unsavedPictures.count == 1)
 
         // The engine saves the bytes once; the row then points at the file and the bytes are dropped.
@@ -388,7 +460,7 @@ struct MessageAttachmentTests {
         let saved = try #require(state.attachments[rows[0].id]?.first?.path)
         #expect(try Data(contentsOf: URL(fileURLWithPath: saved)) == Data(base64Encoded: Sample.pngBase64))
         #expect(state.unsavedPictures.isEmpty)
-        #expect(state.attachments[rows[0].id]?.last?.path == "/tmp/proj/notes.pdf")
+        #expect(state.attachments[rows[0].id]?.last?.path == notes.path)
     }
 
     @Test func filesSentThroughAnACPAgentStayOnTheirRow() {

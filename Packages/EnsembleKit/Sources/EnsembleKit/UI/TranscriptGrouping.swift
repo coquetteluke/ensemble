@@ -188,17 +188,26 @@ public enum TodoParser {
 
     enum Kind { case wholeList, updatePlan, wrapUp, taskCreate, taskUpdate }
 
-    /// MCP tools are named `mcp__<server>__<tool>`; only the tool part decides.
+    /// The MCP server whose tools keep the task list in sessions from the Claude desktop app.
+    static let planServer = "ccd_turn"
+
+    /// An engine's own plan tools go by their bare names. MCP tools are named `mcp__<server>__<tool>`: only the plan
+    /// server's count, because another server's `task_create` or `update_plan` (an issue tracker, say) is about
+    /// something else and nothing would ever finish its steps.
     static func kind(_ name: String) -> Kind? {
         let lower = name.lowercased()
-        let short = lower.range(of: "__", options: .backwards).map { String(lower[$0.upperBound...]) } ?? lower
-        switch short {
+        if lower.hasPrefix("mcp__") {
+            switch lower {
+            case "mcp__\(planServer)__update_plan": return .updatePlan
+            case "mcp__\(planServer)__wrap_up": return .wrapUp
+            default: return nil
+            }
+        }
+        switch lower {
         case "todowrite", "todo_write", "todo": return .wholeList
         case "update_plan", "updateplan": return .updatePlan
         case "taskcreate", "task_create": return .taskCreate
         case "taskupdate", "task_update": return .taskUpdate
-        // Only the plan tool's own partner: another server's `wrap_up` says nothing about this list.
-        case "wrap_up": return lower.contains("ccd_turn") ? .wrapUp : nil
         default: return nil
         }
     }
@@ -285,7 +294,8 @@ public enum TodoParser {
                 started = true
             case .taskUpdate:
                 guard let id = TodoParser.identifier(input["taskId"] ?? input["task_id"] ?? input["id"]),
-                      let index = ids.firstIndex(of: id) else { return }
+                      // The newest task with this id: a forked session can number its tasks from 1 again.
+                      let index = ids.lastIndex(of: id) else { return }
                 let raw = (input["status"] as? String)?.lowercased()
                 if raw == "deleted" {
                     items.remove(at: index)

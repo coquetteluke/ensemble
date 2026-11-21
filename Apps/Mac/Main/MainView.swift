@@ -392,9 +392,12 @@ struct MainView: View {
                 store.beginRewind(sessionID, messageID: messageID)
             },
             edit: { messageID in
+                // The message's pictures and files go back into the message box with its text.
+                let files = MessageAttachments.files(store.session(sessionID)?.attachments[messageID] ?? [])
                 Task {
                     if let text = await store.editMessage(sessionID, messageID: messageID) {
                         paneWindow.drafts[sessionID] = text
+                        if !files.isEmpty { paneWindow.attachments[sessionID, default: []].append(contentsOf: files) }
                         paneWindow.composerFocusToken &+= 1
                     }
                 }

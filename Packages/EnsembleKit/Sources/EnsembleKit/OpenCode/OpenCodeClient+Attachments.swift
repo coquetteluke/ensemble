@@ -6,6 +6,9 @@ extension OpenCodeClient: EngineMessageAttachments {
     public func attachedTranscript(_ sessionID: String) async throws -> AttachedTranscript {
         async let boundary = try? stagedRevertMessageID(sessionID)
         let all = try await messages(sessionID)
-        return TranscriptMapper.attached(from: Self.hidingStagedRevert(all, boundary: await boundary ?? nil))
+        let cache = MessagePictureCache(directory: pictureCacheDirectory)
+        return TranscriptMapper.attached(from: Self.hidingStagedRevert(all, boundary: await boundary ?? nil)) { base64, mediaType in
+            cache.store(base64: base64, mediaType: mediaType)?.path
+        }
     }
 }

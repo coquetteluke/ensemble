@@ -121,6 +121,8 @@ enum Wire {
         let mime: String?
         let name: String?
         let source: Source?
+        /// The file's bytes as base64 text. Only used for a picture whose own file is no longer on this Mac.
+        let data: String?
     }
 
     struct ToolContent: Decodable, Hashable {
