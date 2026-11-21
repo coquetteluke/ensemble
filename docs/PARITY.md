@@ -177,7 +177,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | A command palette | Has | | The reference app has none |
 | Keys for the diff, browser and terminal panes, the mode, model and effort menus, the side question, view modes | Partly | 3 | All but the effort menu have a key; some keys differ |
 | Numbers pick an item in any open menu | Partly | 3 | Model picker only |
-| Menu bar: check for updates, show logs, make a diagnostic report | Missing | 3 | |
+| Menu bar: check for updates, show logs, make a diagnostic report | Partly | 4 | Check for updates was built in this pass |
 
 ## 8. Settings
 
@@ -194,7 +194,7 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 | Archive quiet sessions after N days | Missing | 3 | |
 | Connect new sessions to the phone by default | Partly | 4 | One Remote Control switch for the Mac |
 | Reply style for new sessions (plain, concise, explanatory, teaching) | Missing | 3 | |
-| Release channel, check for updates, About with the version | Missing | 3 | Matters now that there is an installer |
+| Release channel, check for updates, About with the version | Partly | 4 | About and a manual check were built in this pass; no channel choice, and it opens the download page instead of installing |
 | Your own instructions for every session; view and edit memory | Missing | 3 | Customizations shows the files and opens them elsewhere |
 | Break reminders and quiet hours | Missing | 4 | |
 | Accounts and keys | Has | | Many more providers than the reference app |
@@ -282,7 +282,7 @@ Counting only gaps nobody else is building.
 | 7 | Search: needs you, working, recent and actions before you type | 2 | Built |
 | 8 | Context: tokens left before compacting, a Compact button; Background tasks with a Finished group | 2 | Built |
 | 9 | Scheduled: ready-made tasks, search and sort, monthly, one-time | 2 | Templates, search and sort built; monthly and one-time not yet |
-| 10 | Keys for next and previous session; check for updates and About | 2 | Keys built; updates and About not yet |
+| 10 | Keys for next and previous session; check for updates and About | 2 | Built |
 | 11 | Files pane with a tree and search | 2 | Built |
 | 12 | Agent reply actions: fork from here, read aloud, time | 2 | After the pictures session lands |
 | 13 | Settings: notifications by kind, storage, branch prefix, quiet-session archiving, reply style | 3 | After the font session lands |
@@ -307,5 +307,6 @@ Details in `docs/PROGRESS.md`.
 - Scheduled: templates, search and sort (most of gap 9).
 - Plan pace warning under a limit's bar (gap 14).
 - Files tab with the folder's tree and search (gap 11).
+- About window and a manual check for updates (rest of gap 10).
 
 Not clicked through in a running window: the owner's own Ensemble was open during the work, so each piece stands on its tests, both builds and its rendered snapshot.

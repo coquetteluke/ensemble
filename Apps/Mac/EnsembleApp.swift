@@ -169,6 +169,12 @@ struct EnsembleApp: App {
         (AppearanceSetting(rawValue: appearance) ?? .dark).colorScheme
     }
 
+    /// The running engine's version for the About window; nil while it is starting or missing.
+    private var engineVersionText: String? {
+        if case .running(let version, _) = app.status, version != "preview" { return version }
+        return nil
+    }
+
     var body: some Scene {
         Window("Ensemble", id: "main") {
             Group {
@@ -194,7 +200,17 @@ struct EnsembleApp: App {
         .commands {
             EnsembleCommands(app: app, window: window)
             FindingCommands(search: search, hasStore: app.store != nil)
+            UpdateCommands()
         }
+
+        Window("About Ensemble", id: "about") {
+            AboutView(engineVersion: engineVersionText)
+                .ensembleTheme()
+                .environment(\.zoom, 1)
+                .preferredColorScheme(colorScheme)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
 
         Window("Pair iPhone", id: "pair-iphone") {
             Group {

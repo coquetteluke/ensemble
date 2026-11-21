@@ -90,6 +90,16 @@ enum ParitySnapshots {
                     MainView(store: store, window: tabbed, remoteControlOverride: true, zoomOverride: zoom)
                 }
             }
+            // The About window: before a check, with a newer version, and when the check fails.
+            save("about-\(tone)\(suffix)", width: AboutView.size.width * 3 + 48, height: AboutView.size.height + 32, scheme: scheme) {
+                HStack(spacing: 16) {
+                    AboutView(updates: UpdateCenter(state: .upToDate), engineVersion: "2.3.0")
+                    AboutView(updates: UpdateCenter(state: .available(AppRelease(
+                        tag: "v0.2.0", page: URL(string: AppUpdates.pagePrefix + "tag/v0.2.0")!))), engineVersion: "2.3.0")
+                    AboutView(updates: UpdateCenter(state: .failed("The release list is busy right now. Try again in a few minutes.")))
+                }
+                .padding(16)
+            }
             // The Files tab before a file is open: the folder's tree with its search field.
             do {
                 let files = WindowState()
