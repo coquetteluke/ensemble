@@ -20,6 +20,8 @@ enum RemoteTab: String, Hashable {
 @MainActor @Observable
 final class RemoteAppModel {
     private(set) var client: RemoteClient?
+    @ObservationIgnored private var fontSync: FontSyncClient?
+    @ObservationIgnored private var fontSyncTask: Task<Void, Never>?
     private(set) var isDemo = false
     private let store = RemotePairingStore()
     /// Local notifications for what needs you, from the live connection.
@@ -119,6 +121,7 @@ final class RemoteAppModel {
     func unpair() {
         client?.stop()
         client = nil
+        followFonts(nil)
         isDemo = false
         resetNavigation()
         try? store.delete()
@@ -141,6 +144,7 @@ final class RemoteAppModel {
         configure(demo)
         demo.start()
         client = demo
+        followFonts(nil)
         isDemo = true
     }
 
@@ -230,7 +234,19 @@ final class RemoteAppModel {
         configure(c)
         c.start()
         client = c
+        followFonts(c)
         if RemoteNotifier.enabled { Task { await RemoteNotifier.requestAuthorization() } }
+    }
+
+    /// Keeps the font choices and the added fonts in step with the paired Mac (`FontSync`). Not in the demo.
+    private func followFonts(_ client: RemoteClient?) {
+        fontSyncTask?.cancel()
+        fontSyncTask = nil
+        fontSync = nil
+        guard let client, !client.isInProcess else { return }
+        let sync = FontSyncClient(transport: client)
+        fontSync = sync
+        fontSyncTask = sync.follow(client)
     }
 
     private static func deviceID() -> String {

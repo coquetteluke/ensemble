@@ -8,7 +8,7 @@ let package = Package(
         .library(name: "EnsembleKit", targets: ["EnsembleKit"]),
     ],
     targets: [
-        // Fonts: Inter and Ensemble Serif, SIL Open Font License 1.1 (licence texts next to the font files).
+        // Fonts: Inter, Ensemble Serif and Source Serif 4, SIL Open Font License 1.1 (licence texts next to the font files).
         .target(name: "EnsembleKit", resources: [.copy("Resources/Fonts")]),
         .testTarget(
             name: "EnsembleKitTests",

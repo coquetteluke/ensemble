@@ -93,6 +93,7 @@ public struct PrimaryButtonStyle: ButtonStyle {
         var body: some View {
             configuration.label
                 .font(theme.font(size: 12.5, weight: .medium))
+                .lineLimit(1)
                 // A disabled button dims its label as well as its fill, so it does not read as ready to press.
                 .foregroundStyle(theme.onAccent.opacity(isEnabled ? 1 : 0.55))
                 .padding(.horizontal, theme.z(12))
@@ -129,6 +130,7 @@ public struct SecondaryButtonStyle: ButtonStyle {
         var body: some View {
             configuration.label
                 .font(theme.font(size: 12.5, weight: .medium))
+                .lineLimit(1)
                 .foregroundStyle(foreground ?? theme.textPrimary)
                 .padding(.horizontal, theme.z(12))
                 .frame(height: theme.z(28))

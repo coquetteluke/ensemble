@@ -904,6 +904,27 @@ final class MacRemoteHost: RemoteHost {
         broadcast(.transcriptUpdated(transcript: remoteTranscript(for: s)))
     }
 
+    // MARK: Fonts
+
+    /// Merges the iPhone's font choices and added fonts with this Mac's (`FontSync`).
+    private let fonts = FontSyncHost()
+
+    func syncFonts(_ phone: RemoteFontSettings) async throws -> RemoteFontSettings {
+        fonts.sync(phone)
+    }
+
+    func fontChunk(_ request: RemoteFontFileRequest) async throws -> RemoteFontChunk {
+        try fonts.chunk(request)
+    }
+
+    func receiveFontChunk(_ chunk: RemoteFontChunk) async throws {
+        try fonts.receive(chunk)
+    }
+
+    func fontSettingsUpdates() async -> AsyncStream<RemoteFontSettings> {
+        fonts.updates()
+    }
+
     func archiveSession(sessionID: String, archived: Bool) async throws {
         if remoteRoom(sessionID: sessionID) != nil {
             throw RemoteError(.badRequest, "Rooms cannot be archived from the iPhone.")

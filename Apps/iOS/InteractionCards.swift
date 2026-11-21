@@ -3,9 +3,11 @@ import SwiftUI
 
 /// Adaptive theme wrapper for EnsembleKit's shared interactive cards on the phone.
 enum PhoneCardTheme {
-    static func theme(for scheme: ColorScheme) -> Theme {
+    @MainActor static func theme(for scheme: ColorScheme) -> Theme {
         var base = scheme == .dark ? Theme.dark : Theme.light
         base.scale = 1.08
+        base.chatFont = FontStore.shared.chat
+        base.interfaceFont = FontStore.shared.interface
         return base
     }
 }

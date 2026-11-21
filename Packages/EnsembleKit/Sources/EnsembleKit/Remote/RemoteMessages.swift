@@ -157,6 +157,14 @@ public enum RemoteClientMessage: Hashable, Sendable {
     case secondOpinion(RemoteSecondOpinionRequest)
     /// Reply: `.ack`. Archives or unarchives a solo session.
     case archiveSession(RemoteArchiveSession)
+    /// Reply: `.fontSettings`. Sends the iPhone's font choices and added fonts; the Mac takes over what is newer
+    /// and answers with its own (`FontSync`). Added after protocol 4 shipped: a Mac without it answers
+    /// `unknownMessage`, and the fonts on the iPhone stay as they are.
+    case fontSync(RemoteFontSettings)
+    /// Reply: `.fontChunk`. One piece of an added font file on the Mac.
+    case fontFile(RemoteFontFileRequest)
+    /// Reply: `.ack`. One piece of an added font file from the iPhone, in order from offset 0.
+    case fontUpload(RemoteFontChunk)
 
     public var typeName: String {
         switch self {
@@ -181,6 +189,9 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .sessionDetails: "sessionDetails"
         case .secondOpinion: "secondOpinion"
         case .archiveSession: "archiveSession"
+        case .fontSync: "fontSync"
+        case .fontFile: "fontFile"
+        case .fontUpload: "fontUpload"
         }
     }
 
@@ -204,6 +215,9 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .createRoom(let p): try c.encode(p, forKey: .data)
         case .secondOpinion(let p): try c.encode(p, forKey: .data)
         case .archiveSession(let p): try c.encode(p, forKey: .data)
+        case .fontSync(let p): try c.encode(p, forKey: .data)
+        case .fontFile(let p): try c.encode(p, forKey: .data)
+        case .fontUpload(let p): try c.encode(p, forKey: .data)
         }
     }
 
@@ -231,6 +245,9 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case "sessionDetails": return .sessionDetails(sessionID: try c.decode(RemoteSessionRef.self, forKey: .data).sessionID)
         case "secondOpinion": return .secondOpinion(try c.decode(RemoteSecondOpinionRequest.self, forKey: .data))
         case "archiveSession": return .archiveSession(try c.decode(RemoteArchiveSession.self, forKey: .data))
+        case "fontSync": return .fontSync(try c.decode(RemoteFontSettings.self, forKey: .data))
+        case "fontFile": return .fontFile(try c.decode(RemoteFontFileRequest.self, forKey: .data))
+        case "fontUpload": return .fontUpload(try c.decode(RemoteFontChunk.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)
         }
     }
@@ -291,6 +308,11 @@ public enum RemoteServerMessage: Hashable, Sendable {
     case roomCreated(RemoteRoom)
     case sessionDiff(RemoteSessionDiff)
     case sessionDetails(RemoteSessionDetails)
+    /// The Mac's font choices and added fonts: the reply to `.fontSync`, and sent unasked (no `re`) to iPhones that
+    /// sync fonts whenever they change on the Mac. An iPhone that does not know it skips the frame.
+    case fontSettings(RemoteFontSettings)
+    /// The reply to `.fontFile`.
+    case fontChunk(RemoteFontChunk)
     /// The request in `re` was carried out.
     case ack
     case error(RemoteError)
@@ -309,6 +331,8 @@ public enum RemoteServerMessage: Hashable, Sendable {
         case .roomCreated: "roomCreated"
         case .sessionDiff: "sessionDiff"
         case .sessionDetails: "sessionDetails"
+        case .fontSettings: "fontSettings"
+        case .fontChunk: "fontChunk"
         case .ack: "ack"
         case .error: "error"
         }
@@ -329,6 +353,8 @@ public enum RemoteServerMessage: Hashable, Sendable {
         case .roomCreated(let p): try c.encode(p, forKey: .data)
         case .sessionDiff(let p): try c.encode(p, forKey: .data)
         case .sessionDetails(let p): try c.encode(p, forKey: .data)
+        case .fontSettings(let p): try c.encode(p, forKey: .data)
+        case .fontChunk(let p): try c.encode(p, forKey: .data)
         case .ack: break
         case .error(let p): try c.encode(p, forKey: .data)
         }
@@ -349,6 +375,8 @@ public enum RemoteServerMessage: Hashable, Sendable {
         case "roomCreated": return .roomCreated(try c.decode(RemoteRoom.self, forKey: .data))
         case "sessionDiff": return .sessionDiff(try c.decode(RemoteSessionDiff.self, forKey: .data))
         case "sessionDetails": return .sessionDetails(try c.decode(RemoteSessionDetails.self, forKey: .data))
+        case "fontSettings": return .fontSettings(try c.decode(RemoteFontSettings.self, forKey: .data))
+        case "fontChunk": return .fontChunk(try c.decode(RemoteFontChunk.self, forKey: .data))
         case "ack": return .ack
         case "error": return .error(try c.decode(RemoteError.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)

@@ -65,6 +65,13 @@ public enum RemoteDispatcher {
             case .archiveSession(let req):
                 try await host.archiveSession(sessionID: req.sessionID, archived: req.archived)
                 return .ack
+            case .fontSync(let phone):
+                return .fontSettings(try await host.syncFonts(phone))
+            case .fontFile(let request):
+                return .fontChunk(try await host.fontChunk(request))
+            case .fontUpload(let chunk):
+                try await host.receiveFontChunk(chunk)
+                return .ack
             }
         } catch let error as RemoteError {
             return .error(error)

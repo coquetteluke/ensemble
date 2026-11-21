@@ -125,6 +125,8 @@ public actor RemoteServer {
         var deviceID = ""
         var deviceName = ""
         var openSessions: Set<String> = []
+        /// True once this phone has asked to sync fonts; only such phones are sent the Mac's font changes.
+        var syncsFonts = false
         var lastSeen: Date
         /// The relay identity a relayed phone came through or dialed (normalised).
         var relayChannelHost: String?
@@ -142,6 +144,7 @@ public actor RemoteServer {
     private var nextPeerID = 1
     private var limiter = RemoteHelloLimiter()
     private var updatesTask: Task<Void, Never>?
+    private var fontUpdatesTask: Task<Void, Never>?
     private var heartbeatTask: Task<Void, Never>?
     private var statusContinuations: [UUID: AsyncStream<Status>.Continuation] = [:]
     /// Relay identities phones may name, normalised, with how many relay hosts registered each.
@@ -166,6 +169,7 @@ public actor RemoteServer {
         running = true
         failures = [:]
         startUpdates()
+        startFontUpdates()
         startHeartbeat()
         await openListeners(config.bindAddresses)
         if listeners.isEmpty {
@@ -182,6 +186,8 @@ public actor RemoteServer {
         running = false
         updatesTask?.cancel()
         updatesTask = nil
+        fontUpdatesTask?.cancel()
+        fontUpdatesTask = nil
         heartbeatTask?.cancel()
         heartbeatTask = nil
         for l in listeners.values {
@@ -715,6 +721,8 @@ public actor RemoteServer {
             peers[id]?.openSessions.insert(sessionID)
         case (.closeSession(let sessionID), _):
             peers[id]?.openSessions.remove(sessionID)
+        case (.fontSync, .fontSettings):
+            peers[id]?.syncsFonts = true
         default:
             break
         }
@@ -785,6 +793,25 @@ public actor RemoteServer {
                 guard let self else { return }
                 await self.broadcast(update)
             }
+        }
+    }
+
+    private func startFontUpdates() {
+        let host = self.host
+        fontUpdatesTask = Task { [weak self] in
+            let stream = await host.fontSettingsUpdates()
+            for await settings in stream {
+                guard let self else { return }
+                await self.broadcast(settings)
+            }
+        }
+    }
+
+    /// Sends the Mac's fonts to every paired phone that syncs fonts.
+    private func broadcast(_ settings: RemoteFontSettings) {
+        guard let data = try? encoder.encode(RemoteServerFrame(.fontSettings(settings))) else { return }
+        for (id, p) in peers where p.authenticated && p.syncsFonts {
+            sendEncoded(data, to: id)
         }
     }
 
