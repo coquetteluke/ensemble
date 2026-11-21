@@ -92,7 +92,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
     case switchModel, switchMode, modeAsk, modeAcceptEdits, modeAuto, modePlan, modeBypass, changeEffort, toggleFastMode, sideQuestion, focusComposer
     case allowOnce, alwaysAllow, reject
     case nextTranscriptView, viewNormal, viewThinking, viewVerbose, copyTranscriptMarkdown, jumpToMessage
-    case toggleSidebar, toggleContextPanel, toggleBrowser, closeFileViewer, zoomIn, zoomOut, actualSize
+    case toggleSidebar, toggleContextPanel, toggleBrowser, closeFileViewer, closeSidePaneTab, fillWindowWithSidePane, zoomIn, zoomOut, actualSize
     case openInSplit, closePane, nextPane, previousPane, equalizePanes, closeSplit
     case toggleTerminal, newTerminalTab
     case appearanceDark, appearanceLight, appearanceSystem
@@ -147,6 +147,8 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .toggleContextPanel: "Show or hide the context panel"
         case .toggleBrowser: "Show or hide the browser"
         case .closeFileViewer: "Close the file viewer"
+        case .closeSidePaneTab: "Close the side pane tab"
+        case .fillWindowWithSidePane: "Fill the window with the side pane"
         case .zoomIn: "Zoom in"
         case .zoomOut: "Zoom out"
         case .actualSize: "Actual size"
@@ -174,7 +176,8 @@ enum AppCommandID: String, CaseIterable, Identifiable {
              .focusComposer: .composer
         case .allowOnce, .alwaysAllow, .reject: .permissions
         case .nextTranscriptView, .viewNormal, .viewThinking, .viewVerbose, .copyTranscriptMarkdown, .jumpToMessage: .transcript
-        case .toggleSidebar, .toggleContextPanel, .toggleBrowser, .closeFileViewer, .zoomIn, .zoomOut, .actualSize,
+        case .toggleSidebar, .toggleContextPanel, .toggleBrowser, .closeFileViewer, .closeSidePaneTab, .fillWindowWithSidePane, .zoomIn, .zoomOut,
+             .actualSize,
              .appearanceDark, .appearanceLight, .appearanceSystem: .view
         case .openInSplit, .closePane, .nextPane, .previousPane, .equalizePanes, .closeSplit: .split
         case .toggleTerminal, .newTerminalTab: .terminal
@@ -228,6 +231,8 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .toggleContextPanel: "sidebar.right"
         case .toggleBrowser: "globe"
         case .closeFileViewer: "xmark.rectangle"
+        case .closeSidePaneTab: "xmark.square"
+        case .fillWindowWithSidePane: "arrow.up.left.and.arrow.down.right"
         case .zoomIn: "plus.magnifyingglass"
         case .zoomOut: "minus.magnifyingglass"
         case .actualSize: "1.magnifyingglass"
@@ -271,6 +276,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .toggleSidebar: AppShortcut("s", [.command, .control])
         case .toggleContextPanel: AppShortcut("i", [.command, .option])
         case .toggleBrowser: AppShortcut("b", [.command, .option])
+        case .closeSidePaneTab: AppShortcut("\\")
         case .zoomIn: AppShortcut("+")
         case .zoomOut: AppShortcut("-")
         case .actualSize: AppShortcut("0")
@@ -309,6 +315,7 @@ enum AppCommandID: String, CaseIterable, Identifiable {
         case .toggleSidebar: ["sessions list"]
         case .toggleContextPanel: ["context", "usage", "connectors"]
         case .toggleBrowser: ["web", "page", "preview", "dev server", "localhost", "launch.json", "console"]
+        case .closeSidePaneTab, .fillWindowWithSidePane: ["panel", "tab", "changes", "terminal", "browser", "maximize", "full width"]
         case .zoomIn, .zoomOut, .actualSize: ["text size", "font size", "scale"]
         case .appearanceDark, .appearanceLight, .appearanceSystem: ["theme", "dark mode", "light mode"]
         case .openInSplit: ["split view", "side by side", "beside", "pane"]
@@ -415,6 +422,7 @@ enum CommandRegistry {
         case .toggleBrowser: context.window.browserOpen ? "Hide browser" : "Show browser"
         case .toggleTerminal: context.window.terminalOpen ? "Hide terminal" : "Show terminal"
         case .toggleFastMode: (context.store?.selected?.fastMode ?? false) ? "Turn fast mode off" : "Turn fast mode on"
+        case .fillWindowWithSidePane: context.window.sidePaneMaximized ? "Put the side pane back beside the conversation" : id.title
         default: id.title
         }
     }
@@ -440,6 +448,7 @@ enum CommandRegistry {
         case .allowOnce, .reject: return Self.visiblePrompt(context) != nil
         case .alwaysAllow: return false
         case .closeFileViewer: return context.search.filePreview != nil
+        case .closeSidePaneTab, .fillWindowWithSidePane: return context.window.showContextPanel && context.window.sidePane != .context
         case .openHub, .openScheduled: return store != nil
         case .promoteToRoom:
             guard let store, let session, !session.isSubagent,
@@ -535,6 +544,8 @@ enum CommandRegistry {
         case .toggleContextPanel: window.toggleContextPanel()
         case .toggleBrowser: window.toggleBrowser()
         case .closeFileViewer: search.closeFile()
+        case .closeSidePaneTab: window.closeSidePane()
+        case .fillWindowWithSidePane: window.toggleSidePaneMaximized()
         case .zoomIn: window.zoomIn()
         case .zoomOut: window.zoomOut()
         case .actualSize: window.resetZoom()

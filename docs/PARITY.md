@@ -116,8 +116,8 @@ Rank is how soon the owner would notice the gap: **1** every session, **2** most
 
 | Feature in the reference app | Ensemble | Rank | Note |
 |---|---|---|---|
-| One side panel with tabs and a "+" that opens Changes, Files, Background tasks, Terminal, Browser or Plan; tabs stay open together | Partly | 1 | One pane at a time, picked from title-bar buttons |
-| Make a pane fill the window; shrink it to a small floating view; move it to its own window | Missing | 3 | |
+| One side panel with tabs and a "+" that opens Changes, Files, Background tasks, Terminal, Browser or Plan; tabs stay open together | Partly | 3 | Built in this pass for Changes, a file, Browser and Terminal. No Background tasks, Plan or files-tree tab |
+| Make a pane fill the window; shrink it to a small floating view; move it to its own window | Partly | 3 | Fill the window was built in this pass |
 | Drag the edge between chat and panel | Missing | 3 | Width follows the window |
 | Session details beside the chat: where it runs, changes, context | Has | | |
 | Context: percent, used and limit, coloured bar, a row per kind, groups that open | Has | | |
@@ -275,7 +275,7 @@ Counting only gaps nobody else is building.
 |---|---|---|---|
 | 1 | Next-step box at the end of a turn | 1 | Built, worked out from the transcript |
 | 2 | Title-bar session menu, click the title to rename | 1 | Built |
-| 3 | Side panel with tabs and a "+" | 1 | Yes |
+| 3 | Side panel with tabs and a "+" | 1 | Built for Changes, a file, Browser and Terminal, with fill the window |
 | 4 | Chapters and a list to jump between them | 2 | Built as a jump list with pinned chapters |
 | 5 | Sidebar: your own sections, sort direction, saved collapse, archived view, fuller row menu | 2 | After the sidebar session lands |
 | 6 | Message box: "+" menu, @ files, bring back the last message | 2 | After the pictures session lands |
@@ -303,5 +303,6 @@ Details in `docs/PROGRESS.md`.
 - Context card: room left before compacting and a Compact button. Background list: a Finished group (gap 8).
 - Search start screen (gap 7) and keys for next and previous session (half of gap 10).
 - Jump list of your messages with pinned chapters (gap 4).
+- Side panel tabs with a "+" and fill the window (gap 3).
 
 Not clicked through in a running window: the owner's own Ensemble was open during the work, so each piece stands on its tests, both builds and its rendered snapshot.

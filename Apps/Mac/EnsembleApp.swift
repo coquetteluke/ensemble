@@ -323,6 +323,11 @@ struct EnsembleCommands: Commands {
             ReviewMenuCommand(isOpen: window.reviewOpen, isAvailable: reviewAvailable) { window.toggleReview() }
             BrowserMenuCommand(isOpen: window.browserOpen) { window.toggleBrowser() }
             TerminalMenuCommand(isOpen: window.terminalOpen, isAvailable: app.store != nil) { window.toggleTerminal() }
+            Button("Close Side Pane Tab") { window.closeSidePane() }
+                .appShortcut(.closeSidePaneTab)
+                .disabled(!(window.showContextPanel && window.sidePane != .context))
+            Button(window.sidePaneMaximized ? "Put Side Pane Back" : "Fill Window with Side Pane") { window.toggleSidePaneMaximized() }
+                .disabled(!(window.showContextPanel && window.sidePane != .context))
             Divider()
             // Command-= also zooms in (handled by WindowState.installZoomShortcut).
             Button("Zoom In") { window.zoomIn() }

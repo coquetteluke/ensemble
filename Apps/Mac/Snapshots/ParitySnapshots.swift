@@ -36,9 +36,10 @@ enum ParitySnapshots {
         var written: [String] = []
 
         func save<V: View>(_ name: String, width baseWidth: CGFloat, height baseHeight: CGFloat?, scheme: ColorScheme,
-                           @ViewBuilder _ view: () -> V) {
-            let width = baseWidth * zoom
-            let height = baseHeight.map { $0 * zoom }
+                           grows: Bool = true, @ViewBuilder _ view: () -> V) {
+            // Whole windows keep their size and zoom their content; single views grow with the zoom.
+            let width = grows ? baseWidth * zoom : baseWidth
+            let height = grows ? baseHeight.map { $0 * zoom } : baseHeight
             let content = ParitySnapshotCanvas(width: width, height: height) { view() }
                 .ensembleTheme()
                 .environment(\.colorScheme, scheme)
@@ -71,6 +72,18 @@ enum ParitySnapshots {
             // The card under a finished turn, in its three shapes.
             save("next-step-\(tone)\(suffix)", width: 760, height: nil, scheme: scheme) {
                 NextStepSnapshot()
+            }
+            // The side panel as tabs: Changes, Browser and Terminal open, Terminal in front; then filling the window.
+            for (name, fills) in [("side-tabs", false), ("side-tabs-fill", true)] {
+                let tabbed = WindowState()
+                tabbed.showSidebar = true
+                tabbed.openSidePane(.review)
+                tabbed.openSidePane(.browser)
+                tabbed.openSidePane(.terminal)
+                if fills { tabbed.toggleSidePaneMaximized() }
+                save("\(name)-\(tone)\(suffix)", width: 1440, height: 900, scheme: scheme, grows: false) {
+                    MainView(store: store, window: tabbed, remoteControlOverride: true, zoomOverride: zoom)
+                }
             }
             // The outline: your messages in a session, with two pinned as chapters.
             save("outline-\(tone)\(suffix)", width: 468, height: nil, scheme: scheme) {

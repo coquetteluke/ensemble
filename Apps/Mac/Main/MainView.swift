@@ -59,14 +59,28 @@ struct MainView: View {
                         .transition(.move(edge: .leading))
                     VLine()
                 }
-                CenterColumn(store: store, window: window, rooms: rooms)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // A side panel that fills the window covers the conversation until it is put back.
+                if !sidePaneFillsWindow {
+                    CenterColumn(store: store, window: window, rooms: rooms)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
                 if showsSidePane {
-                    VLine()
+                    let width = sidePaneFillsWindow
+                        ? proxy.size.width - (window.showSidebar ? theme.z(Self.sidebarWidth) + 1 : 0)
+                        : sidePaneWidth(windowWidth: proxy.size.width)
+                    if !sidePaneFillsWindow { VLine() }
                     sidePane
-                        .frame(width: sidePaneWidth(windowWidth: proxy.size.width))
+                        .frame(width: width)
                         .frame(maxHeight: proxy.size.height, alignment: .top)
                         .clipped()
+                        .overlay(alignment: .topLeading) {
+                            if window.sidePane != .context {
+                                // The band above the pane: tabs on the left, the window's toolbar buttons on the right.
+                                SidePaneTabStrip(window: window)
+                                    .padding(.leading, sidePaneFillsWindow && !window.showSidebar ? (FullScreenState.shared.isOn ? 36 : 110) : 0)
+                                    .frame(width: max(0, width - Self.toolbarButtonsWidth), alignment: .leading)
+                            }
+                        }
                         .transition(.move(edge: .trailing))
                 }
             }
@@ -268,6 +282,11 @@ struct MainView: View {
             return reason + " Only \(folder) itself is trusted, not the folders inside it. You can remove it in Settings, General."
         }
         return reason + " Trusting \(folder) also trusts the folders inside it. You can remove it in Settings, General."
+    }
+
+    /// True while a side panel tab (not the context panel) fills the window.
+    private var sidePaneFillsWindow: Bool {
+        window.sidePaneMaximized && showsSidePane && window.sidePane != .context
     }
 
     /// The right-hand pane: always for a session; elsewhere only a file or review pane (a room shows its own panel
