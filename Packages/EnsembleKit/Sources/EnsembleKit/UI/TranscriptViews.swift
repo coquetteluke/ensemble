@@ -567,6 +567,8 @@ public struct UserBubble: View {
     /// Snapshots draw the toolbar without hovering.
     var alwaysShowActions: Bool
     @Environment(\.theme) private var theme
+    /// Pictures and files attached to messages, by row id.
+    @Environment(\.messageAttachments) private var attachments
     @State private var hovering = false
 
     public init(id: String = "", text: String, date: Date? = nil, alwaysShowActions: Bool = false) {
@@ -577,8 +579,17 @@ public struct UserBubble: View {
     }
 
     public var body: some View {
+        let attached = attachments[id] ?? []
         VStack(alignment: .trailing, spacing: theme.z(4)) {
-            bubble
+            if !attached.isEmpty {
+                MessageAttachmentStrip(attachments: attached)
+                    .padding(.leading, theme.z(72))
+                    .padding(.bottom, text.isEmpty ? 0 : theme.z(2))
+            }
+            // A message that is only a picture has no bubble.
+            if !text.isEmpty || attached.isEmpty {
+                bubble
+            }
             MessageActionBar(id: id, text: text, date: date)
                 .opacity(hovering || alwaysShowActions ? 1 : 0)
                 .allowsHitTesting(hovering || alwaysShowActions)

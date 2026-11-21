@@ -322,6 +322,8 @@ enum SnapshotRenderer {
         written += RelaySnapshots.render(to: outputDirectory, zoom: zoom)
         written += ParitySnapshots.render(to: outputDirectory, zoom: zoom)
         written += FontSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += LinkedSessionsSnapshots.render(to: outputDirectory, zoom: zoom)
+        written += TranscriptParitySnapshots.render(to: outputDirectory, zoom: zoom)
 
         print("Rendered \(written.count) snapshots:")
         for path in written { print(path) }

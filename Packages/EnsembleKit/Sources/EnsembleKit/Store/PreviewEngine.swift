@@ -37,6 +37,8 @@ public final class PreviewEngine: OpenCodeAPI, Sendable {
         var fastModes: [String: Bool] = [:]
         /// Rules a session holds when they differ from its mode's current ruleset (an older Ensemble wrote them).
         var storedRules: [String: [PermissionRule]] = [:]
+        /// Pictures and files attached to user rows, by row id.
+        var attachments: [String: [MessageAttachment]] = [:]
     }
 
     private let state: Mutex<State>
@@ -47,6 +49,7 @@ public final class PreviewEngine: OpenCodeAPI, Sendable {
         var s = State(seed: seed)
         for session in seed.sessions { s.sessions[session.id] = session }
         s.transcripts = seed.transcripts
+        s.attachments = seed.attachments
         s.activities = seed.activities
         s.permissions = seed.permissions
         s.contexts = seed.contexts
@@ -133,10 +136,11 @@ public final class PreviewEngine: OpenCodeAPI, Sendable {
     public func prompt(_ sessionID: String, text: String, files: [URL]) async throws {
         try requireSession(sessionID)
         let (mode, isFirst) = state.withLock { s -> (PermissionMode, Bool) in
-            var shown = text
-            if !files.isEmpty { shown += "\n\nAttached: " + files.map(\.lastPathComponent).joined(separator: ", ") }
             let isFirst = !(s.transcripts[sessionID] ?? []).contains { if case .user = $0 { true } else { false } }
-            s.transcripts[sessionID, default: []].append(.user(id: "user-\(UUID().uuidString)", text: shown, date: Date()))
+            let id = "user-\(UUID().uuidString)"
+            s.transcripts[sessionID, default: []].append(.user(id: id, text: text, date: Date()))
+            let attached = MessageAttachments.forFiles(files)
+            if !attached.isEmpty { s.attachments[id] = attached }
             return (s.modes[sessionID] ?? .auto, isFirst)
         }
         if isFirst {
@@ -563,6 +567,17 @@ public final class PreviewEngine: OpenCodeAPI, Sendable {
 }
 
 // MARK: - Optional abilities (so the preview exercises fork, rewind, effort, fast mode and slash commands)
+
+extension PreviewEngine: EngineMessageAttachments {
+    public func attachedTranscript(_ sessionID: String) async throws -> AttachedTranscript {
+        try requireSession(sessionID)
+        return state.withLock { s in
+            let items = s.transcripts[sessionID] ?? []
+            let ids = Set(items.map(\.id))
+            return AttachedTranscript(items: items, attachments: s.attachments.filter { ids.contains($0.key) })
+        }
+    }
+}
 
 extension PreviewEngine: EngineHistoryControl {
     public var rewindRestoresFiles: Bool { false }

@@ -269,6 +269,8 @@ final class AgentToolsCenter {
                 let created = try await store.newSession(directory: proposal.folder, model: proposal.model ?? session.model,
                                                          permissionMode: proposal.permissionMode)
                 if let previous { store.select(previous) }
+                // The new session nests under the one that proposed it in the sidebar.
+                store.recordStartedFrom(child: created.id, parent: session.rootID)
                 await store.send(proposal.brief, to: created.id)
                 return created.id
             },

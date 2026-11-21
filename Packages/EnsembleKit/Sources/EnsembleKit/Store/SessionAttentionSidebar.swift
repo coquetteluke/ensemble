@@ -155,7 +155,21 @@ public struct SidebarGroup: Identifiable, Sendable {
 
     public var kind: Kind
     public var title: String
-    public var entries: [SidebarEntry]
+    /// The group's sessions in the order shown: sorted, with linked sessions right under the session that started them.
+    public var entries: [SidebarEntry] { rows.map(\.entry) }
+    /// The same sessions with their nesting.
+    public var rows: [SidebarTreeRow]
+
+    public init(kind: Kind, title: String, rows: [SidebarTreeRow]) {
+        self.kind = kind
+        self.title = title
+        self.rows = rows
+    }
+
+    /// A group with no nesting.
+    public init(kind: Kind, title: String, entries: [SidebarEntry]) {
+        self.init(kind: kind, title: title, rows: entries.map { SidebarTreeRow(entry: $0) })
+    }
 
     /// Stable across launches: also the key for collapsed groups.
     public var id: String {
@@ -169,44 +183,56 @@ public struct SidebarGroup: Identifiable, Sendable {
 
 /// The sidebar's sessions: pinned ones first, then the rest grouped and sorted.
 public struct SidebarArrangement: Sendable {
-    public var pinned: [SidebarEntry]
+    public var pinnedRows: [SidebarTreeRow]
     public var groups: [SidebarGroup]
 
-    /// Every session in the order the sidebar shows them (Command-1 to 9).
+    /// Pinned sessions in the order shown.
+    public var pinned: [SidebarEntry] { pinnedRows.map(\.entry) }
+    /// Every session in the order the sidebar shows them, nested sessions included (Command-1 to 9).
     public var order: [SidebarEntry] { pinned + groups.flatMap(\.entries) }
-    public var isEmpty: Bool { pinned.isEmpty && groups.isEmpty }
+    public var isEmpty: Bool { pinnedRows.isEmpty && groups.isEmpty }
 
     public init(pinned: [SidebarEntry] = [], groups: [SidebarGroup] = []) {
-        self.pinned = pinned
+        self.init(pinnedRows: pinned.map { SidebarTreeRow(entry: $0) }, groups: groups)
+    }
+
+    public init(pinnedRows: [SidebarTreeRow], groups: [SidebarGroup]) {
+        self.pinnedRows = pinnedRows
         self.groups = groups
     }
 
+    /// - Parameters:
+    ///   - parents: child session id to the session that started it (`SessionLinks`); linked sessions nest under it.
+    ///   - folderOrder: the user's own folder order (`SidebarFolderOrder`), used only when grouping by project.
     public static func arrange(_ entries: [SidebarEntry], grouping: SidebarGrouping, sort: SidebarSort,
+                               parents: [String: String] = [:], folderOrder: [String] = [],
                                now: Date = Date(), calendar: Calendar = .current) -> SidebarArrangement {
-        let pinned = sorted(entries.filter(\.pinned), by: sort)
+        func rows(_ list: [SidebarEntry]) -> [SidebarTreeRow] { SidebarTree.rows(sorted(list, by: sort), parents: parents) }
+        let pinned = rows(entries.filter(\.pinned))
         let rest = entries.filter { !$0.pinned }
         let groups: [SidebarGroup]
         switch grouping {
         case .project:
-            groups = Dictionary(grouping: rest, by: \.directory)
+            let automatic = Dictionary(grouping: rest, by: \.directory)
                 .map { directory, list in
-                    SidebarGroup(kind: .project(directory: directory), title: Format.folderName(directory), entries: sorted(list, by: sort))
+                    SidebarGroup(kind: .project(directory: directory), title: Format.folderName(directory), rows: rows(list))
                 }
                 .sorted { projectOrder($0, $1, by: sort) }
+            groups = SidebarFolderOrder.apply(automatic, saved: folderOrder)
         case .state:
             let byState = Dictionary(grouping: rest) { SidebarStateGroup($0.status) }
             groups = SidebarStateGroup.allCases.compactMap { group in
                 guard let list = byState[group], !list.isEmpty else { return nil }
-                return SidebarGroup(kind: .state(group), title: group.label, entries: sorted(list, by: sort))
+                return SidebarGroup(kind: .state(group), title: group.label, rows: rows(list))
             }
         case .date:
             let byDate = Dictionary(grouping: rest) { SidebarDateGroup($0.updated, now: now, calendar: calendar) }
             groups = SidebarDateGroup.allCases.compactMap { group in
                 guard let list = byDate[group], !list.isEmpty else { return nil }
-                return SidebarGroup(kind: .date(group), title: group.label, entries: sorted(list, by: sort))
+                return SidebarGroup(kind: .date(group), title: group.label, rows: rows(list))
             }
         }
-        return SidebarArrangement(pinned: pinned, groups: groups)
+        return SidebarArrangement(pinnedRows: pinned, groups: groups)
     }
 
     public static func sorted(_ entries: [SidebarEntry], by sort: SidebarSort) -> [SidebarEntry] {

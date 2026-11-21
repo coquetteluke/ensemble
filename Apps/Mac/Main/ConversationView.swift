@@ -38,6 +38,7 @@ struct ConversationView: View {
             transcript
                 .environment(\.transcriptActions, enrichedTranscriptActions)
                 .environment(\.transcriptFindHighlight, findHighlight)
+                .environment(\.messageAttachments, session.attachments)
                 .overlay(alignment: .topTrailing) {
                     if showFind && !isSnapshot {
                         TranscriptFindBar(
@@ -112,15 +113,17 @@ struct ConversationView: View {
         RoomsController.live ?? AgentToolsCenter.shared.rooms
     }
 
+    /// Retry sends your newest message again, with what was attached to it. A message that was only attachments
+    /// whose files are gone has nothing to send, so it offers no Retry (and never falls back to an older message).
     private var retryLastMessage: (() -> Void)? {
         guard !session.isWorking else { return nil }
-        guard let text = session.items.reversed().compactMap({ item -> String? in
-            guard case .user(_, let text, _) = item else { return nil }
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : text
-        }).first else { return nil }
+        guard case .user(let id, let text, _)? = session.items.last(where: { if case .user = $0 { true } else { false } }) else {
+            return nil
+        }
+        let files = MessageAttachments.files(session.attachments[id] ?? [])
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !files.isEmpty else { return nil }
         return {
-            Task { await store.send(text, to: session.id) }
+            Task { await store.send(text, files: files, to: session.id) }
         }
     }
 
@@ -176,7 +179,9 @@ struct ConversationView: View {
             ProposalCardsHost(session: session)
             if let todos = TodoParser.latest(in: session.items), !todos.isEmpty,
                session.isWorking || todos.contains(where: { $0.status == .pending || $0.status == .inProgress }) {
-                TaskListCard(items: todos)
+                // Background work under this session's top-level session; a subagent does not count itself.
+                TaskListCard(items: todos, runningTasks: store.backgroundWork(forSession: session.id)
+                    .filter { $0.openSessionID != session.id || $0.kind != .subagent }.count)
             }
             if session.isWorking {
                 WorkingRow(items: session.items, since: session.workingSince,

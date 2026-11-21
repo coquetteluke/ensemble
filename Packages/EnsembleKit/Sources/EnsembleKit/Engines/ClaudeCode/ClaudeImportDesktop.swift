@@ -2,7 +2,8 @@
 import Foundation
 
 /// The Claude desktop app's own session list, read-only: `claude-code-sessions/<account>/<org>/local_<id>.json` (one
-/// file per session: title, folder, archived, starred, model, the CLI session it runs), `archived-sessions.idx` and the
+/// file per session: title, folder, archived, starred, model, the CLI session it runs, the session that started it),
+/// `archived-sessions.idx` and the
 /// `deleted_<id>` markers it leaves for deleted sessions (only their names are read). Only the fields below are
 /// decoded; the rest of each file is never kept.
 struct ClaudeDesktopSessions: Sendable {
@@ -18,6 +19,10 @@ struct ClaudeDesktopSessions: Sendable {
         var model: String?
         var effort: String?
         var priorCLISessionIDs: [String]
+        /// The desktop id (`local_...`) of the session that started this one (`spawnedFrom.sessionId`).
+        var spawnedFromSessionID: String? = nil
+        /// The user cut the link to the session that started this one (`lineageDetached`).
+        var lineageDetached: Bool = false
     }
 
     /// By CLI session id.
@@ -62,7 +67,9 @@ struct ClaudeDesktopSessions: Sendable {
                                       starred: file.isStarred ?? false,
                                       created: file.createdAt.map { Date(timeIntervalSince1970: $0 / 1000) },
                                       lastActivity: file.lastActivityAt.map { Date(timeIntervalSince1970: $0 / 1000) },
-                                      model: file.model, effort: file.effort, priorCLISessionIDs: file.priorCliSessionIds ?? [])
+                                      model: file.model, effort: file.effort, priorCLISessionIDs: file.priorCliSessionIds ?? [],
+                                      spawnedFromSessionID: file.spawnedFrom?.sessionId,
+                                      lineageDetached: file.lineageDetached ?? false)
                     if let existing = result.byCLISession[cli], (existing.lastActivity ?? .distantPast) > (entry.lastActivity ?? .distantPast) {
                         continue
                     }
@@ -103,9 +110,12 @@ struct ClaudeDesktopSessions: Sendable {
         var model: String?
         var effort: String?
         var priorCliSessionIds: [String]?
+        var spawnedFrom: SpawnedFrom?
+        var lineageDetached: Bool?
 
         private enum CodingKeys: String, CodingKey {
             case sessionId, cliSessionId, cwd, title, isArchived, isStarred, createdAt, lastActivityAt, model, effort, priorCliSessionIds
+            case spawnedFrom, lineageDetached
         }
 
         init(from decoder: Decoder) throws {
@@ -121,6 +131,18 @@ struct ClaudeDesktopSessions: Sendable {
             model = try? c.decodeIfPresent(String.self, forKey: .model)
             effort = try? c.decodeIfPresent(String.self, forKey: .effort)
             priorCliSessionIds = try? c.decodeIfPresent([String].self, forKey: .priorCliSessionIds)
+            spawnedFrom = try? c.decodeIfPresent(SpawnedFrom.self, forKey: .spawnedFrom)
+            lineageDetached = try? c.decodeIfPresent(Bool.self, forKey: .lineageDetached)
+        }
+    }
+
+    /// Only the started-from session's id is decoded; its title and task are left out.
+    private struct SpawnedFrom: Decodable {
+        var sessionId: String?
+        private enum CodingKeys: String, CodingKey { case sessionId }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            sessionId = try? c.decodeIfPresent(String.self, forKey: .sessionId)
         }
     }
 }

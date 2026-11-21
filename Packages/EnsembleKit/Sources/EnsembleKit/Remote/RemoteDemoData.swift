@@ -149,7 +149,10 @@ public struct RemoteDemoData: Sendable {
                 .permission(permission),
             ],
             activity: .waitingForPermission, permissionMode: .ask, agents: [agentA],
-            modelProviderID: "claude-code", modelID: "opus", secondOpinions: [fixOpinion])
+            modelProviderID: "claude-code", modelID: "opus", secondOpinions: [fixOpinion],
+            // A screenshot and a log sent with the first message: the phone shows them as chips.
+            attachments: ["u1": [MessageAttachment(id: "u1:0", kind: .image),
+                                 MessageAttachment(id: "u1:1", kind: .file, name: "auth.log")]])
 
         let roomTranscript = RemoteTranscript(
             sessionID: IDs.roomSession, title: "Design the sync API",

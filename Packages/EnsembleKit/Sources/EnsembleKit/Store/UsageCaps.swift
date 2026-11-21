@@ -95,12 +95,13 @@ extension SessionStore {
     @discardableResult
     public func refuseOverSpendingCap(_ text: String, files: [URL] = [], to sessionID: String) -> Bool {
         guard let refusal = spendingCapRefusal(for: sessionID), let session = byID[sessionID] else { return false }
-        var shown = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !files.isEmpty {
-            let names = files.map(\.lastPathComponent).joined(separator: ", ")
-            shown += shown.isEmpty ? "Attached: \(names)" : "\n\nAttached: \(names)"
+        let shown = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let attached = MessageAttachments.forFiles(files)
+        if !shown.isEmpty || !attached.isEmpty {
+            let id = "user-\(UUID().uuidString)"
+            session.items.append(.user(id: id, text: shown, date: Date()))
+            if !attached.isEmpty { session.attachments[id] = attached }
         }
-        if !shown.isEmpty { session.items.append(.user(id: "user-\(UUID().uuidString)", text: shown, date: Date())) }
         session.items.append(.error(id: "cap-\(UUID().uuidString)", message: "Not sent. " + refusal.message))
         session.touch()
         return true

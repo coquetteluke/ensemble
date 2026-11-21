@@ -170,16 +170,19 @@ final class MacRemoteHost: RemoteHost {
             if case .permission(let p) = item { return .permission(remotePermission(p)) }
             return item
         }
+        // Attachments go to the phone as names and kinds only (`RemoteTranscript.remoteRows`).
+        let rows = RemoteTranscript.remoteRows(mappedItems, attachments: s.attachments)
         return RemoteTranscript(
             sessionID: s.id,
             title: s.title,
-            items: mappedItems,
+            items: rows.items,
             activity: s.activity,
             permissionMode: s.permissionMode,
             modelProviderID: s.info.model?.providerID,
             modelID: s.info.model?.id,
             pendingModelName: staged.map { store.modelName($0) },
-            secondOpinions: remoteSecondOpinions(for: s.id)
+            secondOpinions: remoteSecondOpinions(for: s.id),
+            attachments: rows.attachments
         )
     }
 

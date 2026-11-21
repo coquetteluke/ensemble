@@ -10,6 +10,8 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
     public let baseURL: URL
     /// Project folder used for location-scoped calls that do not name one.
     public let defaultDirectory: String?
+    /// Where a picture is saved again from a message's own bytes when its file is gone (`MessagePictureCache`).
+    public let pictureCacheDirectory: URL
 
     private let authorization: String
     private let session: URLSession
@@ -32,9 +34,10 @@ public final class OpenCodeClient: OpenCodeAPI, Sendable {
     }
 
     public init(baseURL: URL, password: String, defaultDirectory: String? = nil,
-                configuration: URLSessionConfiguration = .ephemeral) {
+                configuration: URLSessionConfiguration = .ephemeral, pictureCacheDirectory: URL? = nil) {
         self.baseURL = baseURL
         self.defaultDirectory = defaultDirectory
+        self.pictureCacheDirectory = pictureCacheDirectory ?? MessagePictureCache.appDirectory
         let token = Data("opencode:\(password)".utf8).base64EncodedString()
         self.authorization = "Basic \(token)"
         let requestConfiguration = configuration.copy() as! URLSessionConfiguration

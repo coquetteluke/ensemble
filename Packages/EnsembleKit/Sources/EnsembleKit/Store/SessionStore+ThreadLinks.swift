@@ -529,10 +529,10 @@ extension SessionStore {
             var items: [TranscriptItem]
         }
 
-        let primaryRaw = try await engine.transcript(primaryID)
+        let primaryRaw = try await fetchTranscript(primaryID, for: primaryID)
         var rawBySession: [(id: String, items: [TranscriptItem])] = [(primaryID, primaryRaw)]
         for link in links where link.backingSessionID != primaryID {
-            let items = (try? await engine.transcript(link.backingSessionID)) ?? []
+            let items = (try? await fetchTranscript(link.backingSessionID, for: primaryID)) ?? []
             if !items.isEmpty { rawBySession.append((link.backingSessionID, items)) }
         }
 

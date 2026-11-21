@@ -155,11 +155,35 @@ struct ClaudeTranscriptBuilder {
     var finished = true
     /// Subagent files: every line is a sidechain line.
     var includeSidechains = false
+    /// True: pictures and files attached to a message come back in `Built.attached` and the message keeps only what
+    /// the user typed. False (the plain `items(from:)`): a picture is the text "[image]".
+    var attachmentsApart = false
 
     static let interruptedPrefix = "[Request interrupted by user"
+    /// The first line of the text block `ClaudeCLI.contentBlocks` writes for attached files that are not pictures.
+    static let attachedFilesPrefix = "Attached files (read them with your tools):"
+
+    /// Something attached to a user message, as the CLI's transcript stores it.
+    enum Attached: Equatable, Sendable {
+        /// An image block: base64 text.
+        case picture(mediaType: String?, base64: String)
+        /// A file Ensemble listed by path.
+        case file(path: String)
+    }
+
+    struct Built: Sendable {
+        var items: [TranscriptItem] = []
+        /// By user row id; only filled when `attachmentsApart` is set.
+        var attached: [String: [Attached]] = [:]
+    }
 
     func items(from lines: [JSONValue]) -> [TranscriptItem] {
+        build(from: lines).items
+    }
+
+    func build(from lines: [JSONValue]) -> Built {
         var items: [TranscriptItem] = []
+        var attached: [String: [Attached]] = [:]
         var index: [String: Int] = [:]
         var tools: [String: (name: String, input: JSONValue?)] = [:]
         var counters: [String: Int] = [:]
@@ -189,6 +213,7 @@ struct ClaudeTranscriptBuilder {
                 let blocks: [JSONValue]
                 if let text = content?.stringValue { blocks = [["type": "text", "text": .string(text)]] } else { blocks = content?.arrayValue ?? [] }
                 var spoken: [String] = []
+                var extras: [Attached] = []
                 for (offset, block) in blocks.enumerated() {
                     switch block["type"]?.stringValue {
                     case "text":
@@ -198,11 +223,22 @@ struct ClaudeTranscriptBuilder {
                             upsert(.notice(id: "\(uuid):\(offset)", text: "Interrupted"))
                         } else if syntheticTexts.contains(text) {
                             upsert(.notice(id: "\(uuid):\(offset)", text: text))
+                        } else if attachmentsApart, let paths = Self.attachedFilePaths(text) {
+                            extras += paths.map { .file(path: $0) }
                         } else {
                             spoken.append(text)
                         }
                     case "image":
-                        spoken.append("[image]")
+                        if attachmentsApart {
+                            // Only base64 pictures can be shown; a picture given by URL or file id stays a marker.
+                            if let data = block["source"]?["data"]?.stringValue, !data.isEmpty {
+                                extras.append(.picture(mediaType: block["source"]?["media_type"]?.stringValue, base64: data))
+                            } else {
+                                spoken.append("[image]")
+                            }
+                        } else {
+                            spoken.append("[image]")
+                        }
                     case "tool_result":
                         guard let id = block["tool_use_id"]?.stringValue, let position = index[id],
                               case .tool(var info) = items[position] else { continue }
@@ -219,7 +255,11 @@ struct ClaudeTranscriptBuilder {
                         continue
                     }
                 }
-                if !spoken.isEmpty { upsert(.user(id: uuid, text: spoken.joined(separator: "\n\n"), date: date)) }
+                // A message that is only a picture still gets its row: the picture hangs on it.
+                if !spoken.isEmpty || !extras.isEmpty {
+                    upsert(.user(id: uuid, text: spoken.joined(separator: "\n\n"), date: date))
+                    attached[uuid] = extras.isEmpty ? nil : extras
+                }
 
             case "assistant":
                 guard let message = line["message"] else { continue }
@@ -289,7 +329,16 @@ struct ClaudeTranscriptBuilder {
                 }
             }
         }
-        return items
+        return Built(items: items, attached: attached)
+    }
+
+    /// The paths in the text block Ensemble writes for attached files that are not pictures, or nil for any other text.
+    static func attachedFilePaths(_ text: String) -> [String]? {
+        guard text.hasPrefix(attachedFilesPrefix) else { return nil }
+        let paths = text.dropFirst(attachedFilesPrefix.count).split(whereSeparator: \.isNewline).map(String.init)
+        // Every line must be a path: text the user typed that happens to start the same way stays text.
+        guard !paths.isEmpty, paths.allSatisfy({ $0.hasPrefix("/") }) else { return nil }
+        return paths
     }
 
     /// Removes the CLI's injected tags from a user message.

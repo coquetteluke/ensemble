@@ -136,7 +136,12 @@ struct ComposerQueueTests {
         #expect(engine.calls == ["prompt:First task"])
 
         try await waitUntil("both held messages to go out") { userTexts(session).count == 3 && !session.isWorking }
-        #expect(userTexts(session) == ["First task", "Second", "Third\n\nAttached: notes.md"])
+        #expect(userTexts(session) == ["First task", "Second", "Third"], "the row shows what was typed")
+        let thirdRow = session.items.compactMap { item -> String? in
+            if case .user(let id, "Third", _) = item { return id }
+            return nil
+        }.first
+        #expect(thirdRow.flatMap { session.attachments[$0] }?.map(\.name) == ["notes.md"], "the file hangs on its row")
         #expect(engine.calls == ["prompt:First task", "prompt:Second", "prompt:Third"], "one prompt per turn, oldest first")
         #expect(store.queue(for: session.id).isEmpty)
     }

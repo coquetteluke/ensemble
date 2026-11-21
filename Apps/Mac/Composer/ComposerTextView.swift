@@ -1,8 +1,9 @@
 import SwiftUI
 import AppKit
+import EnsembleKit
 
 /// Multi-line message field. Return sends, Shift-Return inserts a new line, Shift-Tab cycles the permission mode.
-/// Grows with its text up to `maxHeight`, then scrolls.
+/// Grows with its text up to `maxHeight`, then scrolls. Pasting or dropping files or a picture attaches them.
 struct ComposerTextView: NSViewRepresentable {
     @Binding var text: String
     @Binding var height: CGFloat
@@ -17,11 +18,13 @@ struct ComposerTextView: NSViewRepresentable {
     var onKey: (ComposerKey) -> Bool = { _ in false }
     /// Voice dictation: its text goes in at the cursor (replacing the selection), updated as recognition improves.
     var dictation: DictationController?
+    /// Files and pictures pasted or dropped into the field.
+    var onAttach: ([URL]) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
+        let scroll = ComposerNSTextView.scrollableTextView()
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
         scroll.hasVerticalScroller = true
@@ -48,6 +51,9 @@ struct ComposerTextView: NSViewRepresentable {
         textView.setAccessibilityLabel("Message")
         context.coordinator.textView = textView
         context.coordinator.connect(dictation)
+        (textView as? ComposerNSTextView)?.onAttach = { [weak coordinator = context.coordinator] urls in
+            coordinator?.parent.onAttach(urls)
+        }
         DispatchQueue.main.async {
             context.coordinator.updateHeight()
             textView.window?.makeFirstResponder(textView)
@@ -174,6 +180,82 @@ struct ComposerTextView: NSViewRepresentable {
                 parent.height = height
             }
         }
+    }
+}
+
+/// The message field's text view. A paste or a drop that carries files or a picture attaches them instead of typing
+/// a path (a plain `NSTextView` types the path, and ignores a picture that has no file, such as a screenshot on the
+/// clipboard).
+final class ComposerNSTextView: NSTextView {
+    var onAttach: (([URL]) -> Void)?
+
+    override func paste(_ sender: Any?) {
+        let urls = ComposerPasteboard.attachments(from: .general)
+        if !urls.isEmpty, let onAttach {
+            onAttach(urls)
+        } else {
+            super.paste(sender)
+        }
+    }
+
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        // Paste stays on with a picture on the clipboard (the text view only looks for text).
+        if item.action == #selector(paste(_:)), ComposerPasteboard.hasAttachments(.general) { return true }
+        return super.validateUserInterfaceItem(item)
+    }
+
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
+        super.acceptableDragTypes + [.fileURL, .png, .tiff]
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        ComposerPasteboard.hasAttachments(sender.draggingPasteboard) ? .copy : super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        ComposerPasteboard.hasAttachments(sender.draggingPasteboard) ? .copy : super.draggingUpdated(sender)
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        let urls = ComposerPasteboard.attachments(from: sender.draggingPasteboard)
+        if !urls.isEmpty, let onAttach {
+            onAttach(urls)
+            return true
+        }
+        return super.performDragOperation(sender)
+    }
+}
+
+/// What on a pasteboard gets attached to the message instead of typed.
+@MainActor
+enum ComposerPasteboard {
+    private static func fileURLs(_ pasteboard: NSPasteboard) -> [URL] {
+        (pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]) ?? []
+    }
+
+    /// A picture with no text beside it: a screenshot, or a picture copied out of an app. Text with a picture (a
+    /// copied part of a web page) is pasted as text.
+    private static func hasLonePicture(_ pasteboard: NSPasteboard) -> Bool {
+        let types = pasteboard.types ?? []
+        return !types.contains(.string) && (types.contains(.png) || types.contains(.tiff))
+    }
+
+    static func hasAttachments(_ pasteboard: NSPasteboard) -> Bool {
+        !fileURLs(pasteboard).isEmpty || hasLonePicture(pasteboard)
+    }
+
+    /// Files as they are; a picture that has no file is saved as a PNG in the picture cache first.
+    static func attachments(from pasteboard: NSPasteboard,
+                            cache: MessagePictureCache = MessagePictureCache(directory: MessagePictureCache.appDirectory)) -> [URL] {
+        let files = fileURLs(pasteboard)
+        if !files.isEmpty { return files }
+        guard hasLonePicture(pasteboard) else { return [] }
+        if let png = pasteboard.data(forType: .png), let url = cache.store(data: png) { return [url] }
+        if let tiff = pasteboard.data(forType: .tiff), let bitmap = NSBitmapImageRep(data: tiff),
+           let png = bitmap.representation(using: .png, properties: [:]), let url = cache.store(data: png) {
+            return [url]
+        }
+        return []
     }
 }
 

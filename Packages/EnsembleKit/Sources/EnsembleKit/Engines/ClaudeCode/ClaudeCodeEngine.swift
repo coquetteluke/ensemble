@@ -69,15 +69,21 @@ public final class ClaudeCodeEngine: OpenCodeAPI, EngineModelOptionsControl, Eng
         public var baseEnvironment: [String: String]
         /// Ensemble's own MCP server (`AgentToolsServer`), attached to every agent with a private `--mcp-config` file.
         public var agentTools: (any AgentToolsAttaching)? = AgentToolsServer.shared
+        /// Where pictures taken out of transcripts are kept as files (`MessagePictureCache`). The app's caches folder
+        /// with the default session list; next to the session list otherwise, so a test engine stays in its own folder.
+        public var pictureCacheDirectory: URL
 
         public init(executablePath: String? = nil, storeURL: URL? = nil, projectsDirectory: URL? = nil,
                     settingSources: ClaudeSettingSources = .all, thinkingDisplay: String? = "summarized",
                     fileCheckpointing: Bool = true, keychainService: String = "Ensemble Claude API key",
                     extraArguments: [String] = [], baseEnvironment: [String: String] = ProcessInfo.processInfo.environment,
-                    trust: WorkspaceTrust = .shared) {
+                    trust: WorkspaceTrust = .shared, pictureCacheDirectory: URL? = nil) {
             self.executablePath = executablePath
             self.trust = trust
             self.storeURL = storeURL ?? ClaudeSessionStore.defaultURL
+            self.pictureCacheDirectory = pictureCacheDirectory
+                ?? storeURL.map { $0.deletingLastPathComponent().appendingPathComponent("pictures", isDirectory: true) }
+                ?? MessagePictureCache.appDirectory
             self.projectsDirectory = projectsDirectory ?? ClaudeTranscriptFiles.defaultProjectsDirectory(environment: baseEnvironment)
             self.settingSources = settingSources
             self.thinkingDisplay = thinkingDisplay
@@ -159,6 +165,33 @@ public final class ClaudeCodeEngine: OpenCodeAPI, EngineModelOptionsControl, Eng
 
     public func children(_ sessionID: String) async throws -> [EngineSession] {
         await core.children(of: sessionID)
+    }
+
+    /// The transcript with each message's pictures and files beside it (`EngineMessageAttachments`). A picture in the
+    /// CLI's transcript is base64 text inside its line; it is copied once into the picture cache so it can be shown.
+    public func attachedTranscript(_ sessionID: String) async throws -> AttachedTranscript {
+        var source = try await core.transcriptSource(sessionID)
+        guard let file = source.file else { return AttachedTranscript() }
+        source.builder.attachmentsApart = true
+        let data = ClaudeTranscriptFiles.read(file)
+        let chain = data.activeChain(leafOverride: source.leafOverride, includeSidechains: source.builder.includeSidechains)
+        let built = source.builder.build(from: chain)
+        let cache = MessagePictureCache(directory: configuration.pictureCacheDirectory)
+        var table: [String: [MessageAttachment]] = [:]
+        for (rowID, entries) in built.attached {
+            table[rowID] = entries.enumerated().map { index, entry in
+                switch entry {
+                case .picture(let mediaType, let base64):
+                    return MessageAttachment(id: "\(rowID):\(index)", kind: .image, mediaType: mediaType,
+                                             path: cache.store(base64: base64, mediaType: mediaType)?.path)
+                case .file(let path):
+                    var attachment = MessageAttachments.forFiles([URL(fileURLWithPath: path)])[0]
+                    attachment.id = "\(rowID):\(index)"
+                    return attachment
+                }
+            }
+        }
+        return AttachedTranscript(items: built.items, attachments: table)
     }
 
     // MARK: Talking
@@ -335,3 +368,7 @@ public final class ClaudeCodeEngine: OpenCodeAPI, EngineModelOptionsControl, Eng
 
     #endif
 }
+
+#if os(macOS)
+extension ClaudeCodeEngine: EngineMessageAttachments {}
+#endif

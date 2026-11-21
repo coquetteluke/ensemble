@@ -229,9 +229,37 @@ struct ACPTurnUsage: Equatable, Sendable {
     }
 }
 
+/// A picture or file inside a user message the agent replays from its history (`image` and `resource_link` blocks,
+/// the same shapes Ensemble sends them in).
+struct ACPUserAttachment: Equatable, Sendable {
+    var isImage: Bool
+    var name: String?
+    var mediaType: String?
+    /// The file on this Mac, when the block names one with a `file:` address.
+    var path: String?
+    /// A picture's bytes as base64 text, when the block carries them and names no file.
+    var base64: String?
+
+    init?(_ block: JSONValue?) {
+        guard let block, let type = block["type"]?.stringValue, type == "image" || type == "resource_link" else { return nil }
+        let url = block["uri"]?.stringValue.flatMap { URL(string: $0) }
+        let file = url.flatMap { $0.isFileURL ? $0 : nil }
+        mediaType = block["mimeType"]?.stringValue
+            ?? file.flatMap { MessageAttachments.imageMediaTypes[$0.pathExtension.lowercased()] }
+        isImage = type == "image" || mediaType?.hasPrefix("image/") == true
+        name = MessageAttachments.displayName(block["name"]?.stringValue ?? file?.lastPathComponent)
+        // The file may be gone since the message was sent (deleted, or a pasted picture cleaned out of the cache).
+        path = file.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0.path : nil }
+        // Bytes are only kept when there is no file to read them from.
+        base64 = path == nil ? block["data"]?.stringValue.flatMap { $0.isEmpty ? nil : $0 } : nil
+    }
+}
+
 /// A `session/update` notification's payload.
 enum ACPSessionUpdate: Equatable, Sendable {
     case userMessage(text: String, messageID: String?)
+    /// A picture or file in a replayed user message.
+    case userAttachment(ACPUserAttachment, messageID: String?)
     case agentMessage(text: String, messageID: String?)
     case agentThought(text: String, messageID: String?)
     case toolCall(ACPToolCallUpdate)
@@ -250,9 +278,14 @@ enum ACPSessionUpdate: Equatable, Sendable {
         guard let kind = update["sessionUpdate"]?.stringValue else { return nil }
         switch kind {
         case "user_message_chunk", "agent_message_chunk", "agent_thought_chunk":
-            // Non-text chunks (images, resources) are shown as a short placeholder.
-            let text = ACPContentBlock.text(of: update["content"]) ?? ACPContentBlock.placeholder(of: update["content"])
             let messageID = update["messageId"]?.acpText
+            // A picture or file in one of the user's own messages hangs on the message as an attachment.
+            if kind == "user_message_chunk", let attachment = ACPUserAttachment(update["content"]) {
+                self = .userAttachment(attachment, messageID: messageID)
+                return
+            }
+            // Other non-text chunks (the agent's images, resources) are shown as a short placeholder.
+            let text = ACPContentBlock.text(of: update["content"]) ?? ACPContentBlock.placeholder(of: update["content"])
             switch kind {
             case "user_message_chunk": self = .userMessage(text: text, messageID: messageID)
             case "agent_message_chunk": self = .agentMessage(text: text, messageID: messageID)
