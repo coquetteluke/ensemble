@@ -171,7 +171,9 @@ There is no automatic update. To update:
 
 Your sessions, settings and sign-ins stay.
 
-One thing does come back after every update: if Ensemble keeps something in your login keychain, macOS asks for your login password once for each item the first time the new version opens. Choose **Always Allow** (the blue Allow button only lasts until you quit). The items are the iPhone pairing code and the relay key if you use the iPhone remote, and an API key or alert token if you saved one in Settings. If you use none of those, you are never asked. This cannot be avoided without a certificate issued by Apple: for every other app, macOS ties that approval to the exact build.
+One thing does come back after every update: if Ensemble keeps something in your login keychain, macOS asks for your login password once, the first time the new version opens. Choose **Always Allow** (the blue Allow button only lasts until you quit). Ensemble keeps all of its saved data (the iPhone pairing code and relay key, and an API key or alert token if you saved one) in a single keychain item, so it is one question, not one per thing. If you use none of those, you are never asked. It cannot be avoided without a certificate issued by Apple: for every other app, macOS ties that approval to the exact build.
+
+Updating from 0.1.1 or earlier asks once for each item the old version kept separately, one last time. After that it is one question per update.
 
 To update the engine: `~/.opencode/bin/opencode upgrade`, or `brew upgrade opencode` if you installed it with Homebrew.
 

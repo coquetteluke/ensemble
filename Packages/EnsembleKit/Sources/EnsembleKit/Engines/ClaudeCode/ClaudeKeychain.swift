@@ -20,7 +20,23 @@ struct ClaudeKeychain: Sendable {
          kSecAttrAccount as String: account]
     }
 
+    /// Ensemble's own key lives in the one-item vault on the Mac; other service names (tests) keep their own item.
+    private var usesVault: Bool {
+        #if os(macOS)
+        SecretVault.services.contains(service)
+        #else
+        false
+        #endif
+    }
+
     func read() -> String? {
+        #if os(macOS)
+        if usesVault {
+            guard let data = try? SecretVault.shared.read(service: service, account: account) else { return nil }
+            let key = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            return key.isEmpty ? nil : key
+        }
+        #endif
         var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -31,6 +47,7 @@ struct ClaudeKeychain: Sendable {
     }
 
     var hasKey: Bool {
+        if usesVault { return read() != nil }
         var query = baseQuery
         query[kSecReturnAttributes as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -40,6 +57,16 @@ struct ClaudeKeychain: Sendable {
 
     func save(_ key: String) throws {
         let data = Data(key.utf8)
+        #if os(macOS)
+        if usesVault {
+            do {
+                try SecretVault.shared.write(data, service: service, account: account)
+            } catch {
+                throw ClaudeCodeError.keychain(error.localizedDescription)
+            }
+            return
+        }
+        #endif
         let status = SecItemUpdate(
             baseQuery as CFDictionary,
             [kSecValueData as String: data,
@@ -58,6 +85,16 @@ struct ClaudeKeychain: Sendable {
     }
 
     func delete() throws {
+        #if os(macOS)
+        if usesVault {
+            do {
+                try SecretVault.shared.delete(service: service, account: account)
+            } catch {
+                throw ClaudeCodeError.keychain(error.localizedDescription)
+            }
+            return
+        }
+        #endif
         let status = SecItemDelete(baseQuery as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw ClaudeCodeError.keychain(Self.message(status)) }
     }

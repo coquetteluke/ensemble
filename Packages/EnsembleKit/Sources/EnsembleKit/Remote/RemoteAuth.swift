@@ -302,7 +302,8 @@ public struct RemotePairingStore: Sendable {
     }
 }
 
-/// Small wrapper over Keychain generic passwords.
+/// Small wrapper over Keychain generic passwords. On the Mac, Ensemble's own items live together in one item
+/// (`SecretVault`), so an update asks for the keychain password once instead of once per item.
 public enum RemoteKeychain {
     public static let defaultService = "com.coquetteluke.ensemble.remote"
 
@@ -321,6 +322,9 @@ public enum RemoteKeychain {
     }
 
     public static func read(service: String, account: String) throws -> Data? {
+        #if os(macOS)
+        if SecretVault.services.contains(service) { return try SecretVault.shared.read(service: service, account: account) }
+        #endif
         var query = baseQuery(service: service, account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -332,6 +336,9 @@ public enum RemoteKeychain {
     }
 
     public static func write(_ data: Data, service: String, account: String, label: String = "Ensemble Remote pairing") throws {
+        #if os(macOS)
+        if SecretVault.services.contains(service) { return try SecretVault.shared.write(data, service: service, account: account) }
+        #endif
         let query = baseQuery(service: service, account: account)
         let update: [String: Any] = [kSecValueData as String: data]
         let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
@@ -346,6 +353,9 @@ public enum RemoteKeychain {
     }
 
     public static func delete(service: String, account: String) throws {
+        #if os(macOS)
+        if SecretVault.services.contains(service) { return try SecretVault.shared.delete(service: service, account: account) }
+        #endif
         let status = SecItemDelete(baseQuery(service: service, account: account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw Failure(status: status) }
     }
