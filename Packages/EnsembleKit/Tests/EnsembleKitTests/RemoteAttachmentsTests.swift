@@ -138,5 +138,10 @@ struct RemoteAttachmentsTests {
         #expect(attached.count == 1)
         #expect(attached[0].kind == .image)
         #expect(attached[0].name == "IMG_001.jpg")
+
+        // Preview fetch returns the uploaded image bytes for display on iPhone/iPad.
+        let preview = try await client.attachmentPreview(sessionID: sessionID, attachmentID: attached[0].id)
+        #expect(preview.attachmentID == attached[0].id)
+        #expect(preview.data == photoBytes)
     }
 }

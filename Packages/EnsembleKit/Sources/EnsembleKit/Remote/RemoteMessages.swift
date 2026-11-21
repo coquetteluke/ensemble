@@ -170,6 +170,8 @@ public enum RemoteClientMessage: Hashable, Sendable {
     case fontUpload(RemoteFontChunk)
     /// One piece of a photo or file attached to a message. Reply: `.ack`.
     case attachmentUpload(RemoteAttachmentChunk)
+    /// Requests a display-sized preview of an image attachment. Reply: `.attachmentPreview`.
+    case attachmentPreview(RemoteAttachmentPreviewRequest)
 
     public var typeName: String {
         switch self {
@@ -198,6 +200,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .fontFile: "fontFile"
         case .fontUpload: "fontUpload"
         case .attachmentUpload: "attachmentUpload"
+        case .attachmentPreview: "attachmentPreview"
         }
     }
 
@@ -225,6 +228,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case .fontFile(let p): try c.encode(p, forKey: .data)
         case .fontUpload(let p): try c.encode(p, forKey: .data)
         case .attachmentUpload(let p): try c.encode(p, forKey: .data)
+        case .attachmentPreview(let p): try c.encode(p, forKey: .data)
         }
     }
 
@@ -256,6 +260,7 @@ public enum RemoteClientMessage: Hashable, Sendable {
         case "fontFile": return .fontFile(try c.decode(RemoteFontFileRequest.self, forKey: .data))
         case "fontUpload": return .fontUpload(try c.decode(RemoteFontChunk.self, forKey: .data))
         case "attachmentUpload": return .attachmentUpload(try c.decode(RemoteAttachmentChunk.self, forKey: .data))
+        case "attachmentPreview": return .attachmentPreview(try c.decode(RemoteAttachmentPreviewRequest.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)
         }
     }
@@ -321,6 +326,8 @@ public enum RemoteServerMessage: Hashable, Sendable {
     case fontSettings(RemoteFontSettings)
     /// The reply to `.fontFile`.
     case fontChunk(RemoteFontChunk)
+    /// The reply to `.attachmentPreview`.
+    case attachmentPreview(RemoteAttachmentPreview)
     /// The request in `re` was carried out.
     case ack
     case error(RemoteError)
@@ -341,6 +348,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
         case .sessionDetails: "sessionDetails"
         case .fontSettings: "fontSettings"
         case .fontChunk: "fontChunk"
+        case .attachmentPreview: "attachmentPreview"
         case .ack: "ack"
         case .error: "error"
         }
@@ -363,6 +371,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
         case .sessionDetails(let p): try c.encode(p, forKey: .data)
         case .fontSettings(let p): try c.encode(p, forKey: .data)
         case .fontChunk(let p): try c.encode(p, forKey: .data)
+        case .attachmentPreview(let p): try c.encode(p, forKey: .data)
         case .ack: break
         case .error(let p): try c.encode(p, forKey: .data)
         }
@@ -385,6 +394,7 @@ public enum RemoteServerMessage: Hashable, Sendable {
         case "sessionDetails": return .sessionDetails(try c.decode(RemoteSessionDetails.self, forKey: .data))
         case "fontSettings": return .fontSettings(try c.decode(RemoteFontSettings.self, forKey: .data))
         case "fontChunk": return .fontChunk(try c.decode(RemoteFontChunk.self, forKey: .data))
+        case "attachmentPreview": return .attachmentPreview(try c.decode(RemoteAttachmentPreview.self, forKey: .data))
         case "ack": return .ack
         case "error": return .error(try c.decode(RemoteError.self, forKey: .data))
         default: throw RemoteWireError.unknownType(type)

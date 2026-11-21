@@ -20,6 +20,31 @@ public struct RemoteAttachmentChunk: Codable, Hashable, Sendable {
     }
 }
 
+
+/// Request from a phone or iPad for a display-sized preview of an image attached to a session message.
+public struct RemoteAttachmentPreviewRequest: Codable, Hashable, Sendable {
+    public var sessionID: String
+    public var attachmentID: String
+
+    public init(sessionID: String, attachmentID: String) {
+        self.sessionID = sessionID
+        self.attachmentID = attachmentID
+    }
+}
+
+/// Display-sized image bytes returned by the Mac for one attachment, cached on the phone/iPad after first fetch.
+public struct RemoteAttachmentPreview: Codable, Hashable, Sendable {
+    public var attachmentID: String
+    public var mediaType: String
+    public var data: Data
+
+    public init(attachmentID: String, mediaType: String = "image/jpeg", data: Data) {
+        self.attachmentID = attachmentID
+        self.mediaType = mediaType
+        self.data = data
+    }
+}
+
 /// Limits and filename safety helpers shared by the phone uploader and the Mac receiver.
 public enum RemoteAttachments {
     /// Raw bytes per WebSocket frame (base64 + JSON stays well under the 1 MiB frame limit).

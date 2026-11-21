@@ -76,6 +76,8 @@ public enum RemoteDispatcher {
             case .attachmentUpload(let chunk):
                 try await host.receiveAttachmentChunk(chunk)
                 return .ack
+            case .attachmentPreview(let req):
+                return .attachmentPreview(try await host.attachmentPreview(sessionID: req.sessionID, attachmentID: req.attachmentID))
             }
         } catch let error as RemoteError {
             return .error(error)

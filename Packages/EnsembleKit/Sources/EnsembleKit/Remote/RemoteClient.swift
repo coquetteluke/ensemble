@@ -841,7 +841,7 @@ public final class RemoteClient {
             if let i = sessions.firstIndex(where: { $0.id == s.id }) { sessions[i] = s } else { sessions.insert(s, at: 0) }
         case .roomCreated(let r):
             if let i = rooms.firstIndex(where: { $0.id == r.id }) { rooms[i] = r } else { rooms.insert(r, at: 0) }
-        case .sessionDiff, .sessionDetails, .fontChunk:
+        case .sessionDiff, .sessionDetails, .fontChunk, .attachmentPreview:
             break
         case .fontSettings:
             // Sent unasked when the fonts changed on the Mac; as a reply it goes to the caller below.
@@ -941,6 +941,18 @@ public final class RemoteClient {
             offset = end
         }
         return uploadID
+    }
+
+    /// Fetches a display-sized preview of an image attached to `sessionID` on the Mac.
+    public func attachmentPreview(sessionID: String, attachmentID: String) async throws -> RemoteAttachmentPreview {
+        let reply = try await request(.attachmentPreview(RemoteAttachmentPreviewRequest(
+            sessionID: sessionID,
+            attachmentID: attachmentID
+        )))
+        guard case .attachmentPreview(let preview) = reply else {
+            throw RemoteError(.badRequest, "Unexpected reply for image preview.")
+        }
+        return preview
     }
 
     public func reply(to permission: PermissionRequest, decision: PermissionDecision) async throws {

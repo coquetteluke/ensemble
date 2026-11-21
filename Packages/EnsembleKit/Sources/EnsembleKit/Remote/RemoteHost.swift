@@ -55,6 +55,8 @@ public protocol RemoteHost: AnyObject, Sendable {
     func receiveAttachmentChunk(_ chunk: RemoteAttachmentChunk) async throws
     /// Sends a user message with optional previously uploaded attachment ids.
     func sendMessage(_ text: String, to target: RemoteTarget, agent: String?, attachmentIDs: [String]) async throws
+    /// Returns a display-sized preview for an image attachment belonging to `sessionID`.
+    func attachmentPreview(sessionID: String, attachmentID: String) async throws -> RemoteAttachmentPreview
 }
 
 public extension RemoteHost {
@@ -124,6 +126,10 @@ public extension RemoteHost {
         }
         try await sendMessage(text, to: target, agent: agent)
     }
+
+    func attachmentPreview(sessionID: String, attachmentID: String) async throws -> RemoteAttachmentPreview {
+        throw RemoteError(.unknownMessage, "Update Ensemble on your Mac to preview photos.")
+    }
 }
 
 /// An action the phone asked for, as `DemoRemoteHost` records it.
@@ -163,7 +169,8 @@ public actor DemoRemoteHost: RemoteHost {
     private var continuations: [UUID: AsyncStream<RemoteUpdate>.Continuation] = [:]
     private var stagedModels: [String: (providerID: String, modelID: String, name: String)] = [:]
     private var counter = 0
-    private var demoAttachments: [String: (name: String, kind: MessageAttachment.Kind, totalBytes: Int, receivedBytes: Int)] = [:]
+    private var demoAttachments: [String: (name: String, kind: MessageAttachment.Kind, totalBytes: Int, data: Data)] = [:]
+    private var demoPreviews: [String: Data] = [:]
 
     public init(data: RemoteDemoData = .sample()) {
         sessions = data.sessions
@@ -212,14 +219,14 @@ public actor DemoRemoteHost: RemoteHost {
         }
         if chunk.offset == 0 {
             let safeName = RemoteAttachments.sanitizeFilename(chunk.name, kind: chunk.kind)
-            demoAttachments[chunk.uploadID] = (safeName, chunk.kind, chunk.totalBytes, chunk.data.count)
+            demoAttachments[chunk.uploadID] = (safeName, chunk.kind, chunk.totalBytes, chunk.data)
         } else {
             guard var existing = demoAttachments[chunk.uploadID],
                   existing.totalBytes == chunk.totalBytes,
-                  chunk.offset == existing.receivedBytes else {
+                  chunk.offset == existing.data.count else {
                 throw RemoteError(.badRequest, "Attachment chunk out of order.")
             }
-            existing.receivedBytes += chunk.data.count
+            existing.data.append(chunk.data)
             demoAttachments[chunk.uploadID] = existing
         }
     }
@@ -232,10 +239,14 @@ public actor DemoRemoteHost: RemoteHost {
         recordedActions.append(.sendMessage(text: text, target: target, agent: agent))
         var claimed: [MessageAttachment] = []
         for id in attachmentIDs {
-            guard let item = demoAttachments[id], item.receivedBytes == item.totalBytes else {
+            guard let item = demoAttachments[id], item.data.count == item.totalBytes else {
                 throw RemoteError(.badRequest, "Attachment upload was not found or is incomplete.")
             }
-            claimed.append(MessageAttachment(kind: item.kind, name: item.name))
+            let att = MessageAttachment(kind: item.kind, name: item.name)
+            if item.kind == .image {
+                demoPreviews[att.id] = item.data
+            }
+            claimed.append(att)
         }
         for id in attachmentIDs { demoAttachments.removeValue(forKey: id) }
         let sessionID: String
@@ -277,6 +288,13 @@ public actor DemoRemoteHost: RemoteHost {
         if let t = transcripts[sessionID] {
             emit(.transcriptUpdated(transcript: t))
         }
+    }
+
+    public func attachmentPreview(sessionID: String, attachmentID: String) async throws -> RemoteAttachmentPreview {
+        guard let data = demoPreviews[attachmentID] else {
+            throw RemoteError(.notFound, "Preview not available.")
+        }
+        return RemoteAttachmentPreview(attachmentID: attachmentID, mediaType: "image/jpeg", data: data)
     }
 
     public func replyPermission(sessionID: String, requestID: String, decision: PermissionDecision) async throws {

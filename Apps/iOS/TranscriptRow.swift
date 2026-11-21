@@ -19,10 +19,11 @@ struct TranscriptRow: View {
     var body: some View {
         switch item {
         case .user(let id, let text, _):
-            // Attachments arrive as names and kinds; the pictures themselves stay on the Mac.
             let attached = client.openTranscript?.attachments[id] ?? []
             UserMessageBubble(text: client.openTranscript?.showsText(of: id, text: text) == false ? "" : text,
-                              attachments: attached)
+                              attachments: attached,
+                              sessionID: client.openTranscript?.sessionID,
+                              client: client)
         case .agentText(let id, let text, let agentID, let streaming):
             AgentTextRow(
                 itemID: id,
@@ -69,13 +70,15 @@ struct TranscriptRow: View {
 private struct UserMessageBubble: View {
     let text: String
     var attachments: [MessageAttachment] = []
+    var sessionID: String? = nil
+    var client: RemoteClient? = nil
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 6) {
             if !attachments.isEmpty {
                 VStack(alignment: .trailing, spacing: 6) {
                     ForEach(attachments) { attachment in
-                        AttachmentChipRow(attachment: attachment)
+                        AttachmentChipRow(attachment: attachment, sessionID: sessionID, client: client)
                     }
                 }
                 .padding(.leading, 48)
@@ -110,31 +113,72 @@ private struct UserMessageBubble: View {
     }
 }
 
-/// A picture or file attached to a message: an icon and its name ("Picture" for a picture without one). The file
-/// itself is on the Mac.
+/// A picture or file attached to a message. Pictures fetch a cached preview from the Mac and open full-screen on tap;
+/// files (or pictures on older Macs) render as a chip with their name.
 private struct AttachmentChipRow: View {
     let attachment: MessageAttachment
+    var sessionID: String? = nil
+    var client: RemoteClient? = nil
+
+    @State private var previewImage: UIImage?
+    @State private var showLightbox = false
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: attachment.kind == .image ? "photo" : "doc")
-                .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
-                .foregroundStyle(RemoteTheme.secondaryText)
-            Text(attachment.label)
-                .font(RemoteTheme.font(size: 14, relativeTo: .subheadline))
-                .foregroundStyle(RemoteTheme.primaryText)
-                .lineLimit(1)
-                .truncationMode(.middle)
+        Group {
+            if attachment.kind == .image, let image = previewImage {
+                Button {
+                    showLightbox = true
+                } label: {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: 240, maxHeight: 200)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .strokeBorder(RemoteTheme.border.opacity(0.75), lineWidth: 0.75)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("View picture \(attachment.label)")
+                .sheet(isPresented: $showLightbox) {
+                    RemoteImageLightboxSheet(title: attachment.label, image: image)
+                }
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: attachment.kind == .image ? "photo" : "doc")
+                        .font(RemoteTheme.font(size: 13, relativeTo: .footnote))
+                        .foregroundStyle(RemoteTheme.secondaryText)
+                    Text(attachment.label)
+                        .font(RemoteTheme.font(size: 14, relativeTo: .subheadline))
+                        .foregroundStyle(RemoteTheme.primaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(RemoteTheme.userBubble, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(RemoteTheme.border.opacity(0.6), lineWidth: 0.75)
+                )
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(attachment.kind == .image ? "Picture \(attachment.name ?? "")" : "File \(attachment.label)")
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .background(RemoteTheme.userBubble, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(RemoteTheme.border.opacity(0.6), lineWidth: 0.75)
-        )
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(attachment.kind == .image ? "Picture \(attachment.name ?? "")" : "File \(attachment.label)")
+        .task(id: attachment.id) {
+            guard attachment.kind == .image, previewImage == nil else { return }
+            if let cached = RemoteAttachmentImageCache.shared.cachedImage(for: attachment.id) {
+                previewImage = cached
+                return
+            }
+            guard let sessionID, let client, client.state.isConnected else { return }
+            previewImage = await RemoteAttachmentImageCache.shared.loadImage(
+                attachmentID: attachment.id,
+                sessionID: sessionID,
+                client: client
+            )
+        }
     }
 }
 

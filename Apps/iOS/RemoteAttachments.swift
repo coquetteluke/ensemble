@@ -276,3 +276,102 @@ struct CameraPickerSheet: UIViewControllerRepresentable {
         }
     }
 }
+
+
+/// Memory + disk cache of fetched transcript image previews on iPhone and iPad so each photo is fetched once.
+@MainActor
+final class RemoteAttachmentImageCache {
+    static let shared = RemoteAttachmentImageCache()
+
+    private let memory = NSCache<NSString, UIImage>()
+    private var inFlight: [String: Task<UIImage?, Never>] = [:]
+    private let directory: URL
+
+    private init() {
+        memory.countLimit = 80
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        directory = base.appendingPathComponent("Ensemble/remote-previews", isDirectory: true)
+    }
+
+    func cachedImage(for attachmentID: String) -> UIImage? {
+        if let hit = memory.object(forKey: attachmentID as NSString) {
+            return hit
+        }
+        let url = fileURL(for: attachmentID)
+        if let data = try? Data(contentsOf: url), let image = UIImage(data: data) {
+            memory.setObject(image, forKey: attachmentID as NSString)
+            return image
+        }
+        return nil
+    }
+
+    func loadImage(attachmentID: String, sessionID: String, client: RemoteClient) async -> UIImage? {
+        if let cached = cachedImage(for: attachmentID) {
+            return cached
+        }
+        if let existing = inFlight[attachmentID] {
+            return await existing.value
+        }
+        let task = Task<UIImage?, Never> { [weak self] in
+            guard let self else { return nil }
+            do {
+                let preview = try await client.attachmentPreview(sessionID: sessionID, attachmentID: attachmentID)
+                guard let image = UIImage(data: preview.data) else { return nil }
+                self.store(preview.data, image: image, for: attachmentID)
+                return image
+            } catch {
+                return nil
+            }
+        }
+        inFlight[attachmentID] = task
+        let result = await task.value
+        inFlight[attachmentID] = nil
+        return result
+    }
+
+    private func store(_ data: Data, image: UIImage, for attachmentID: String) {
+        memory.setObject(image, forKey: attachmentID as NSString)
+        let url = fileURL(for: attachmentID)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try? data.write(to: url, options: .atomic)
+    }
+
+    private func fileURL(for attachmentID: String) -> URL {
+        let safe = attachmentID.unicodeScalars.filter {
+            ($0.value >= 48 && $0.value <= 57) || ($0.value >= 65 && $0.value <= 90)
+                || ($0.value >= 97 && $0.value <= 122) || $0.value == 45 || $0.value == 95
+        }
+        let name = safe.isEmpty ? "preview" : String(String.UnicodeScalarView(safe))
+        return directory.appendingPathComponent("\(name).jpg", isDirectory: false)
+    }
+}
+
+/// Full-screen viewer when tapping a photo thumbnail in the mobile transcript.
+struct RemoteImageLightboxSheet: View {
+    let title: String
+    let image: UIImage
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            GeometryReader { proxy in
+                ScrollView([.horizontal, .vertical], showsIndicators: false) {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                }
+            }
+            .background(Color.black.ignoresSafeArea())
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .toolbarColorScheme(.dark, for: .navigationBar)
+        }
+    }
+}

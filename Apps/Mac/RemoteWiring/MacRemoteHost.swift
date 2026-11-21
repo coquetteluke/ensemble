@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 import Observation
 import Synchronization
 import SystemConfiguration
@@ -551,6 +553,43 @@ final class MacRemoteHost: RemoteHost {
             broadcast(.transcriptUpdated(transcript: remoteTranscript(for: s)))
             broadcast(.sessionUpserted(session: summary(s)))
         }
+    }
+
+    func attachmentPreview(sessionID: String, attachmentID: String) async throws -> RemoteAttachmentPreview {
+        guard let s = session(sessionID) else { throw MacRemoteHostError.sessionNotFound }
+        let match = s.attachments.values
+            .flatMap { $0 }
+            .first { $0.id == attachmentID && $0.kind == .image }
+        guard let url = match?.fileURL, FileManager.default.fileExists(atPath: url.path) else {
+            throw RemoteError(.notFound, "That picture is no longer on this Mac.")
+        }
+        guard let previewData = Self.makeJPEGPreview(for: url, maxPixelSize: 960) else {
+            throw RemoteError(.failed, "Could not prepare a preview for that picture.")
+        }
+        return RemoteAttachmentPreview(attachmentID: attachmentID, mediaType: "image/jpeg", data: previewData)
+    }
+
+    private static func makeJPEGPreview(for url: URL, maxPixelSize: Int) -> Data? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        for quality in [0.80, 0.62, 0.45] {
+            let output = NSMutableData()
+            guard let dest = CGImageDestinationCreateWithData(output, UTType.jpeg.identifier as CFString, 1, nil) else {
+                return nil
+            }
+            let props: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
+            CGImageDestinationAddImage(dest, image, props as CFDictionary)
+            guard CGImageDestinationFinalize(dest) else { continue }
+            let data = output as Data
+            if data.count <= 512 * 1024 { return data }
+        }
+        return nil
     }
 
     private func roomMessageText(_ text: String, files: [URL]) -> String {
