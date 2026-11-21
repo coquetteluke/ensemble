@@ -106,3 +106,4 @@ Newest first. One line per finished piece; details in commits.
 - Logic in `EnsembleKit/Install/AppInstaller.swift` (8 tests). The installer target compiles that file and `Engine/EngineSetup.swift` directly and links nothing else, so it stays small. `--destination`, `--payload`, `--render` and `--unattended` are for tests and pictures.
 - `scripts/make-installer.sh` builds both targets, finishes the app, puts it inside the installer, signs the installer after it, and checks both on the mounted image.
 - Found on the way: the system's app icon image carries a wide colour range, and drawing it made `ImageRenderer` tone down the whole picture. The installer flattens the icon to an sRGB bitmap first.
+- Luke ran the installer on his own Mac ("looks good"). Version 0.1.1 (build 2) is the first with the installer: same app as 0.1.0, new packaging.
